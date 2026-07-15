@@ -2,6 +2,13 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.7
+
+- Apply ownership explicitly to every popup discard scope: tab, tab group, current window, right, left, other windows, and all other tabs.
+- Re-read and claim already-discarded targets inside the selected command scope; if a stale snapshot has woken, return it to the normal eligibility and tagged native-discard pipeline.
+- Make every matching release control reload its discarded targets and clear ownership when Chromium reports `discarded: false`, without erasing a newer concurrent discard.
+- Share and test the exact query, positional filtering, active-keeper, ownership, Shift-force, release, and X-control behavior used by the popup commands.
+
 ## Changes in 0.6.8.6
 
 - Persist a per-tab ownership tag in `chrome.storage.session` before every native discard request.

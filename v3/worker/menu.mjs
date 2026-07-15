@@ -6,6 +6,11 @@ import {query, notify, match} from './core/utils.mjs';
 import {starters} from './core/startup.mjs';
 import {actionCommand} from './core/action.mjs';
 import {tabsForGroupCommand} from './core/group.mjs';
+import {
+  runDirectDiscardCommand,
+  runScopedCommand
+} from './core/command-scope.mjs';
+import {ownership} from './core/ownership.mjs';
 import {dispatchPopup, respondAsync} from './core/respond.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
@@ -215,34 +220,17 @@ import {interrupts} from './plugins/loader.mjs';
       else {
         htabs.push(tab);
       }
-      if (htabs.filter(t => t.active).length) {
-        // ids to be discarded
-        const ids = htabs.map(t => t.id);
-
-        const otab = tabs
-          .filter(t => {
-            return t.discarded === false && t.highlighted === false && t.status !== 'unloaded' &&
-              ids.indexOf(t.id) === -1 &&
-              inprogress.has(t.id) === false;
-          })
-          .sort((a, b) => Math.abs(a.index - tab.index) - Math.abs(b.index - tab.index))
-          .shift();
-
-        if (otab) {
-          await chrome.tabs.update(otab.id, {
-            active: true
-          });
-          // At the time we recorded htabs, one tab was active. Mark it inactive before discarding.
-          htabs.forEach(t => t.active = false);
-          await Promise.all(htabs.map(discard));
-        }
-        else {
-          notify(chrome.i18n.getMessage('menu_msg3'));
-        }
-      }
-      else {
-        await Promise.all(htabs.map(discard));
-      }
+      await runDirectDiscardCommand({
+        activate: keeper => chrome.tabs.update(keeper.id, {active: true}),
+        allTabs: tabs,
+        command: menuItemId,
+        discard,
+        inProgress: id => inprogress.has(id),
+        notifyNoKeeper: () => notify(chrome.i18n.getMessage('menu_msg3')),
+        resolveFresh: ownership.resolveFresh,
+        selected: tab,
+        targets: htabs
+      });
     }
     else if (menuItemId === 'open-tab-then-discard') {
       if (/Firefox/.test(navigator.userAgent)) {
@@ -281,45 +269,17 @@ import {interrupts} from './plugins/loader.mjs';
     // discard-tabs, discard-window, discard-other-windows, discard-rights, discard-lefts
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
-      const info = {
-        url: '*://*/*',
-        discarded: menuItemId.startsWith('release'),
-        active: false
-      };
-      if (
-        ['discard-window', 'discard-rights', 'discard-lefts', 'release-window', 'release-rights', 'release-lefts']
-          .some(k => k === menuItemId)
-      ) {
-        info.currentWindow = true;
-      }
-      else if (menuItemId === 'discard-other-windows' || menuItemId === 'release-other-windows') {
-        info.currentWindow = false;
-      }
-      let tabs = await query(info);
-
-      if (menuItemId.endsWith('rights') || menuItemId.endsWith('lefts')) {
-        if (menuItemId.endsWith('lefts')) {
-          tabs = tabs.filter(t => t.index < tab.index);
-        }
-        else {
-          tabs = tabs.filter(t => t.index > tab.index);
-        }
-      }
-      if (menuItemId.startsWith('discard')) {
-        if (shiftKey) {
-          await Promise.all(tabs.map(discard));
-        }
-        else {
-          // make sure to only discard possible tabs not all of them
-          await number.check(tabs, number.IGNORE, 'menu/2');
-        }
-      }
-      // release
-      else {
-        await Promise.all(tabs.map(tab => chrome.tabs.reload(tab.id, {
-            bypassCache: shiftKey ? true : false
-        })));
-      }
+      await runScopedCommand({
+        command: menuItemId,
+        selected: tab,
+        shiftKey,
+        query,
+        discard,
+        // Make sure normal clicks only discard eligible tabs; Shift remains forced.
+        check: tabs => number.check(tabs, number.IGNORE, 'menu/2'),
+        reload: (tab, options) => chrome.tabs.reload(tab.id, options),
+        resolveFresh: ownership.resolveFresh
+      });
     }
   };
   chrome.contextMenus.onClicked.addListener(onClicked);

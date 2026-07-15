@@ -2,6 +2,7 @@ const STORAGE_KEY = '__discardOwnership';
 
 const attempts = new Map();
 const observedDiscards = new Map();
+const generations = new Map();
 let sequence = 0;
 let cached;
 let loading;
@@ -182,6 +183,7 @@ const finish = async (tab, attemptId, source) => {
 };
 
 const invalidate = id => {
+  generations.set(id, (generations.get(id) || 0) + 1);
   attempts.delete(id);
   observedDiscards.delete(id);
   return mutate(state => {
@@ -191,9 +193,12 @@ const invalidate = id => {
   });
 };
 
-const claim = tab => {
+const claimAtGeneration = (tab, generation) => {
   const id = tab && tab.id;
   if (!Number.isInteger(id) || tab.discarded !== true) {
+    return Promise.resolve(false);
+  }
+  if ((generations.get(id) || 0) !== generation) {
     return Promise.resolve(false);
   }
   if (attempts.has(id)) {
@@ -202,6 +207,9 @@ const claim = tab => {
   }
 
   return mutate(state => {
+    if ((generations.get(id) || 0) !== generation) {
+      return false;
+    }
     // A discard attempt may have started while this claim waited its turn.
     if (attempts.has(id)) {
       observedDiscards.set(id, tab);
@@ -220,6 +228,64 @@ const claim = tab => {
     return state[id];
   });
 };
+
+const claim = tab => claimAtGeneration(tab, generations.get(tab && tab.id) || 0);
+
+// Resolve a tabs.query snapshot against the live tab. If a discarded snapshot
+// woke in the meantime, callers receive the loaded tab so it can re-enter the
+// discard pipeline instead of being silently skipped.
+const resolveFresh = async tab => {
+  const id = tab && tab.id;
+  if (!Number.isInteger(id)) {
+    return {state: 'missing'};
+  }
+  let lastError;
+
+  for (let pass = 0; pass < 3; pass += 1) {
+    const generation = generations.get(id) || 0;
+    const current = await getTab(id);
+    if (!current) {
+      return {state: 'missing'};
+    }
+    if ((generations.get(id) || 0) !== generation) {
+      continue;
+    }
+    if (current.discarded !== true) {
+      return {state: 'loaded', tab: current};
+    }
+
+    try {
+      const marker = await claimAtGeneration(current, generation);
+      if ((generations.get(id) || 0) !== generation) {
+        continue;
+      }
+      return {marker, state: 'discarded', tab: current};
+    }
+    catch (error) {
+      lastError = error;
+      // Retry against a new live read. The serialized write tail is recoverable,
+      // so a transient storage error does not permanently lose the ownership tag.
+      continue;
+    }
+  }
+
+  // Continuous lifecycle churn is rare; make one final live classification
+  // without applying a potentially stale ownership mutation.
+  const current = await getTab(id);
+  if (!current) {
+    return {state: 'missing', unstable: true};
+  }
+  return {
+    error: lastError,
+    state: current.discarded === true ? 'discarded' : 'loaded',
+    tab: current,
+    unstable: true
+  };
+};
+
+// Lifecycle listeners only need to know whether a current discarded tab was
+// claimed. Popup commands use resolveFresh() for the full live classification.
+const claimFresh = async tab => (await resolveFresh(tab)).marker || false;
 
 const observe = async (id, changeInfo, tab) => {
   if (changeInfo.discarded === false) {
@@ -315,12 +381,12 @@ const bind = () => {
     }
   });
   chrome.tabs.onAttached?.addListener(id => {
-    getTab(id).then(tab => {
-      if (tab && tab.discarded === true) {
-        return claim(tab);
-      }
-      return invalidate(id);
-    }).catch(report);
+    if (attempts.has(id)) {
+      return;
+    }
+    // Clear any marker tied to the pre-attachment snapshot, then re-read and
+    // reclaim only if the moved tab is still discarded.
+    invalidate(id).then(() => claimFresh({id})).catch(report);
   });
   chrome.tabs.onRemoved?.addListener(id => {
     invalidate(id).catch(report);
@@ -330,11 +396,7 @@ const bind = () => {
     Promise.all([
       invalidate(removedId),
       invalidate(addedId)
-    ]).then(() => getTab(addedId)).then(tab => {
-      if (tab && tab.discarded === true) {
-        return claim(tab);
-      }
-    }).catch(report);
+    ]).then(() => claimFresh({id: addedId})).catch(report);
   });
 };
 
@@ -344,10 +406,12 @@ const ownership = {
   begin,
   bind,
   claim,
+  claimFresh,
   finish,
   invalidate,
   observe,
   reconcile,
+  resolveFresh,
   start,
   snapshot
 };

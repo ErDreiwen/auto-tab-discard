@@ -1,4 +1,5 @@
 import {match} from '../../worker/core/utils.mjs';
+import {releaseAvailability, releaseCommands} from '../../worker/core/command-scope.mjs';
 
 // localization
 [...document.querySelectorAll('[data-i18n]')].forEach(e => {
@@ -93,19 +94,10 @@ const init = async () => {
     }
   }
 
-  /* disable unavailable releasing options */
-  const [current, other, all] = await Promise.all([
-    queryTabs({currentWindow: true, discarded: true}),
-    queryTabs({currentWindow: false, discarded: true}),
-    queryTabs({discarded: true})
-  ]);
+  /* Disable release controls using the exact same scope as worker execution. */
   const toggle = (cmd, disabled) => document.querySelector(`[data-cmd=${cmd}]`).classList.toggle('disabled', disabled);
-
-  toggle('release-window', current.length === 0);
-  toggle('release-rights', !tab || current.some(t => t.index > tab.index) === false);
-  toggle('release-lefts', !tab || current.some(t => t.index < tab.index) === false);
-  toggle('release-other-windows', other.length === 0);
-  toggle('release-tabs', all.length === 0);
+  const available = await releaseAvailability(queryTabs, tab);
+  releaseCommands.forEach(command => toggle(command, available[command] === false));
 };
 init().catch(e => console.error('popup initialization failed', e));
 

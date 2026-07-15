@@ -106,6 +106,79 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     assert.equal(state[30].source, 'claimed');
     assert.equal(state[31].source, 'claimed');
 
+    const freshSnapshot = {
+      id: 32,
+      windowId: 3,
+      url: 'https://fresh-snapshot.example/',
+      discarded: true
+    };
+    liveTabs = [freshSnapshot];
+    assert.ok(await ownership.claimFresh({...freshSnapshot}));
+    state = await ownership.snapshot();
+    assert.equal(state[freshSnapshot.id].source, 'claimed');
+    await ownership.invalidate(freshSnapshot.id);
+
+    // A popup query can become stale before its command is handled. The live
+    // tab read must win so an already-awake or removed tab is never re-tagged.
+    const staleSnapshot = {
+      id: 33,
+      windowId: 3,
+      url: 'https://stale-snapshot.example/',
+      discarded: true
+    };
+    liveTabs = [{...staleSnapshot, discarded: false}];
+    let resolution = await ownership.resolveFresh(staleSnapshot);
+    assert.equal(resolution.state, 'loaded');
+    assert.equal(resolution.tab.discarded, false);
+    liveTabs = [];
+    resolution = await ownership.resolveFresh(staleSnapshot);
+    assert.equal(resolution.state, 'missing');
+    state = await ownership.snapshot();
+    assert.equal(state[staleSnapshot.id], undefined);
+
+    const failedFreshClaim = {
+      id: 34,
+      windowId: 3,
+      url: 'https://failed-fresh-claim.example/',
+      discarded: true
+    };
+    liveTabs = [failedFreshClaim];
+    failWrites = 3;
+    resolution = await ownership.resolveFresh(failedFreshClaim);
+    assert.equal(resolution.state, 'discarded');
+    assert.match(resolution.error.message, /temporary storage failure/);
+    state = await ownership.snapshot();
+    assert.equal(state[failedFreshClaim.id], undefined);
+
+    const attached = {
+      id: 35,
+      windowId: 4,
+      url: 'https://attached.example/',
+      discarded: true
+    };
+    liveTabs = [attached];
+    await ownership.claim(attached);
+    liveTabs = [{...attached, discarded: false}];
+    listeners.attached(attached.id);
+    await new Promise(resolve => setTimeout(resolve));
+    state = await ownership.snapshot();
+    assert.equal(state[attached.id], undefined);
+
+    const attachedDiscarded = {...attached, id: 36, discarded: true};
+    liveTabs = [attachedDiscarded];
+    listeners.attached(attachedDiscarded.id);
+    await new Promise(resolve => setTimeout(resolve));
+    state = await ownership.snapshot();
+    assert.equal(state[attachedDiscarded.id].source, 'claimed');
+
+    const replacement = {...attached, id: 37, discarded: true};
+    liveTabs = [replacement];
+    listeners.replaced(replacement.id, attachedDiscarded.id);
+    await new Promise(resolve => setTimeout(resolve));
+    state = await ownership.snapshot();
+    assert.equal(state[attachedDiscarded.id], undefined);
+    assert.equal(state[replacement.id].source, 'claimed');
+
     const navigated = {...concurrent[0], url: 'https://navigated.example/'};
     await ownership.observe(30, {url: navigated.url}, navigated);
     state = await ownership.snapshot();
