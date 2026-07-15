@@ -2,6 +2,14 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.8
+
+- Replace bookkeeping-only `claimed` adoption with a genuine takeover: reload the external discard, wait for `discarded: false`, then issue a fresh native discard.
+- Record `source: self` only after Chromium returns a strong successful discard result; bounded contention retries never relabel another extension's discard as self.
+- Deduplicate and serialize takeovers from popup commands, new external discard events, and legacy/pre-existing `claimed` tabs at worker startup.
+- Make all seven discard commands await their takeover work, while the five release controls cancel any pending takeover before waking a tab.
+- Let a release bypass unrelated queued takeovers, and use persisted alarms to retry genuine contention after a Manifest V3 worker sleeps or restarts.
+
 ## Changes in 0.6.8.7
 
 - Apply ownership explicitly to every popup discard scope: tab, tab group, current window, right, left, other windows, and all other tabs.

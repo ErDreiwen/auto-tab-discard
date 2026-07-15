@@ -1,6 +1,7 @@
 const STORAGE_KEY = '__discardOwnership';
 
 const attempts = new Map();
+const takeoverAttempts = new Map();
 const observedDiscards = new Map();
 const generations = new Map();
 let sequence = 0;
@@ -86,7 +87,7 @@ const getTab = id => new Promise(resolve => chrome.tabs.get(id, tab => {
   resolve(error ? undefined : tab);
 }));
 
-const begin = async tab => {
+const begin = async (tab, mode = 'discard') => {
   const id = tab && tab.id;
   if (!Number.isInteger(id) || attempts.has(id)) {
     return null;
@@ -95,6 +96,9 @@ const begin = async tab => {
   const attemptId = `${Date.now().toString(36)}-${(++sequence).toString(36)}-${Math.random().toString(36).slice(2)}`;
   observedDiscards.delete(id);
   attempts.set(id, attemptId);
+  if (mode === 'takeover') {
+    takeoverAttempts.set(id, attemptId);
+  }
 
   try {
     const active = await mutate(state => {
@@ -102,7 +106,7 @@ const begin = async tab => {
         return false;
       }
       state[id] = {
-        state: 'pending',
+        state: mode === 'takeover' ? 'takeover-waking' : 'pending',
         attemptId,
         updatedAt: Date.now()
       };
@@ -113,18 +117,32 @@ const begin = async tab => {
       if (attempts.get(id) === attemptId) {
         attempts.delete(id);
       }
+      if (takeoverAttempts.get(id) === attemptId) {
+        takeoverAttempts.delete(id);
+      }
       return null;
     }
     return attemptId;
   }
   catch (e) {
+    if (mode === 'takeover') {
+      if (attempts.get(id) === attemptId) {
+        attempts.delete(id);
+      }
+      if (takeoverAttempts.get(id) === attemptId) {
+        takeoverAttempts.delete(id);
+      }
+      throw e;
+    }
     // Ownership persistence is best-effort. Keep the live attempt token so a
     // temporary storage failure never disables the extension's core action.
     return attempts.get(id) === attemptId ? attemptId : null;
   }
 };
 
-const finish = async (tab, attemptId, source) => {
+const beginTakeover = tab => begin(tab, 'takeover');
+
+const finish = async (tab, attemptId, source, {allowClaimed = true} = {}) => {
   const id = tab && tab.id;
   if (!Number.isInteger(id) || attempts.get(id) !== attemptId) {
     return false;
@@ -142,7 +160,7 @@ const finish = async (tab, attemptId, source) => {
           return false;
         }
         const observed = observedDiscards.get(id);
-        const finalSource = source || (observed && observed.discarded === true ? 'claimed' : undefined);
+        const finalSource = source || (allowClaimed && observed && observed.discarded === true ? 'claimed' : undefined);
         const finalTab = finalSource === 'claimed' && observed ? observed : tab;
         if (finalSource && finalTab.discarded) {
           state[id] = ownedMarker(finalSource, attemptId);
@@ -155,13 +173,16 @@ const finish = async (tab, attemptId, source) => {
 
       // An event can arrive while persist() is in flight, after the task above
       // inspected the Map. Run one more serialized pass before clearing it.
-      if (!source && result === false && observedDiscards.get(id)?.discarded === true &&
+      if (allowClaimed && !source && result === false && observedDiscards.get(id)?.discarded === true &&
           attempts.get(id) === attemptId && latePasses < 1) {
         latePasses += 1;
         continue;
       }
       if (attempts.get(id) === attemptId) {
         attempts.delete(id);
+      }
+      if (takeoverAttempts.get(id) === attemptId) {
+        takeoverAttempts.delete(id);
       }
       observedDiscards.delete(id);
       return result;
@@ -177,6 +198,9 @@ const finish = async (tab, attemptId, source) => {
   if (attempts.get(id) === attemptId) {
     attempts.delete(id);
   }
+  if (takeoverAttempts.get(id) === attemptId) {
+    takeoverAttempts.delete(id);
+  }
   observedDiscards.delete(id);
   start().catch(report);
   throw lastError;
@@ -185,6 +209,7 @@ const finish = async (tab, attemptId, source) => {
 const invalidate = id => {
   generations.set(id, (generations.get(id) || 0) + 1);
   attempts.delete(id);
+  takeoverAttempts.delete(id);
   observedDiscards.delete(id);
   return mutate(state => {
     const existed = id in state;
@@ -192,6 +217,19 @@ const invalidate = id => {
     return existed;
   });
 };
+
+const deferTakeover = (id, retryAfter) => mutate(state => {
+  if (!Number.isInteger(id)) {
+    return false;
+  }
+  state[id] = {
+    state: 'owned',
+    source: 'contended',
+    retryAfter,
+    updatedAt: Date.now()
+  };
+  return state[id];
+});
 
 const claimAtGeneration = (tab, generation) => {
   const id = tab && tab.id;
@@ -287,13 +325,39 @@ const resolveFresh = async tab => {
 // claimed. Popup commands use resolveFresh() for the full live classification.
 const claimFresh = async tab => (await resolveFresh(tab)).marker || false;
 
+const preserveTakeover = id => {
+  const attemptId = takeoverAttempts.get(id);
+  if (!attemptId || attempts.get(id) !== attemptId) {
+    return Promise.resolve(false);
+  }
+  return mutate(state => {
+    const marker = state[id];
+    if (attempts.get(id) !== attemptId || takeoverAttempts.get(id) !== attemptId ||
+        marker?.attemptId !== attemptId) {
+      return false;
+    }
+    state[id] = {
+      ...marker,
+      state: 'takeover-awake',
+      updatedAt: Date.now()
+    };
+    return true;
+  });
+};
+
 const observe = async (id, changeInfo, tab) => {
   if (changeInfo.discarded === false) {
+    if (takeoverAttempts.has(id)) {
+      return preserveTakeover(id);
+    }
     return invalidate(id);
   }
   if ('url' in changeInfo) {
     if (tab.discarded === true) {
       return claim(tab);
+    }
+    if (takeoverAttempts.has(id)) {
+      return preserveTakeover(id);
     }
     return invalidate(id);
   }
@@ -312,18 +376,30 @@ const reconcile = () => mutate(async state => {
     const tab = live.get(id);
     const marker = state[key];
     const pendingHere = marker && attempts.get(id) === marker.attemptId;
+    const takeoverMarker = typeof marker?.state === 'string' && marker.state.startsWith('takeover-');
 
     if (!marker || typeof marker !== 'object' || !tab) {
       attempts.delete(id);
+      takeoverAttempts.delete(id);
       delete state[key];
     }
     else if (tab.discarded === true) {
-      if (marker.state === 'pending' && !pendingHere) {
+      if ((marker.state === 'pending' || takeoverMarker) && !pendingHere) {
         state[key] = ownedMarker('claimed', marker.attemptId);
       }
       else if (marker.state === 'owned') {
         state[key] = marker;
       }
+    }
+    else if (takeoverMarker && pendingHere) {
+      state[key] = marker;
+    }
+    else if (takeoverMarker && tab.active !== true) {
+      state[key] = {
+        ...marker,
+        state: 'takeover-recovery',
+        updatedAt: Date.now()
+      };
     }
     else if (!(marker.state === 'pending' && pendingHere)) {
       delete state[key];
@@ -365,6 +441,19 @@ const snapshot = async () => {
   return JSON.parse(JSON.stringify(await load()));
 };
 
+const status = async id => {
+  await writes;
+  const state = await load();
+  const marker = state[id];
+  return {
+    attemptId: attempts.get(id),
+    marker: marker ? JSON.parse(JSON.stringify(marker)) : undefined,
+    takeover: takeoverAttempts.has(id)
+  };
+};
+
+const isCurrent = (id, attemptId) => attempts.get(id) === attemptId;
+
 const report = error => console.warn('discard ownership update failed', error);
 const bind = () => {
   if (bound) {
@@ -404,15 +493,19 @@ bind();
 
 const ownership = {
   begin,
+  beginTakeover,
   bind,
   claim,
   claimFresh,
+  deferTakeover,
   finish,
   invalidate,
+  isCurrent,
   observe,
   reconcile,
   resolveFresh,
   start,
+  status,
   snapshot
 };
 

@@ -1,5 +1,5 @@
 import {prefs, storage} from './prefs.mjs';
-import {log} from './utils.mjs';
+import {log, query} from './utils.mjs';
 import {withTimeout} from './promise.mjs';
 import {ownership} from './ownership.mjs';
 
@@ -183,6 +183,322 @@ const nativeDiscard = tab => new Promise(resolve => {
   }
 });
 
+const reloadTab = id => new Promise(resolve => {
+  try {
+    chrome.tabs.reload(id, {bypassCache: false}, () => {
+      const error = chrome.runtime.lastError;
+      resolve(error ? {error: error.message || String(error)} : {success: true});
+    });
+  }
+  catch (e) {
+    resolve({error: e.message || String(e)});
+  }
+});
+
+const waitForAwake = async (id, token) => {
+  const deadline = Date.now() + discard.takeoverTimeout;
+  while (Date.now() < deadline && token.cancelled === false) {
+    const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+    if (!current) {
+      return undefined;
+    }
+    if (current.discarded === false) {
+      return current;
+    }
+    await new Promise(resolve => setTimeout(resolve, discard.takeoverPoll));
+  }
+};
+
+const waitForOwnership = async (id, token) => {
+  const deadline = Date.now() + discard.takeoverTimeout;
+  while (Date.now() < deadline && token.cancelled === false) {
+    const state = await ownership.status(id);
+    if (!state.attemptId) {
+      return state.marker?.state === 'owned' && state.marker.source === 'self';
+    }
+    await new Promise(resolve => setTimeout(resolve, discard.takeoverPoll));
+  }
+  throw Error(`timed out waiting for existing discard attempt on tab ${id}`);
+};
+
+const takeoverOnce = async (tab, token) => {
+  const id = tab.id;
+  const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+  const initialState = await ownership.status(id);
+  const recovering = current?.discarded === false && initialState.marker?.state === 'takeover-recovery';
+  if (!current || current.active === true || (current.discarded !== true && recovering === false)) {
+    throw Error(`tab ${id} is no longer an inactive takeover target`);
+  }
+
+  const attemptId = await ownership.beginTakeover(current);
+  if (!attemptId) {
+    if (await waitForOwnership(id, token)) {
+      return true;
+    }
+    throw Error(`cannot start discard takeover for tab ${id}`);
+  }
+
+  let finished = false;
+  try {
+    let awake = current;
+    if (current.discarded === true) {
+      const reloadTimeout = {};
+      const reload = await withTimeout(reloadTab(id), discard.takeoverTimeout, reloadTimeout);
+      if (reload === reloadTimeout || reload.error) {
+        throw Error(reload.error || `timed out waking tab ${id}`);
+      }
+      awake = await waitForAwake(id, token);
+    }
+    if (token.cancelled) {
+      throw Error(`discard takeover cancelled for tab ${id}`);
+    }
+    if (!awake || awake.discarded !== false || awake.active === true) {
+      throw Error(`tab ${id} did not wake as an inactive tab`);
+    }
+    if (!ownership.isCurrent(id, attemptId)) {
+      throw Error(`discard takeover became stale for tab ${id}`);
+    }
+
+    const nativeTimeout = {};
+    const nativeOperation = nativeDiscard(awake);
+    let outcome = await withTimeout(nativeOperation, discard.nativeTimeout, nativeTimeout);
+    if (outcome === nativeTimeout) {
+      const fenceTimeout = {};
+      outcome = await withTimeout(nativeOperation, discard.takeoverFenceTimeout, fenceTimeout);
+      if (outcome === fenceTimeout) {
+        outcome = nativeTimeout;
+      }
+    }
+    const strong = outcome !== nativeTimeout && outcome.success === true && outcome.source === 'self' &&
+      outcome.result?.discarded === true;
+    const finalTab = outcome?.result || await withTimeout(getTab(id), discard.getTimeout, undefined) || awake;
+    const owned = await ownership.finish(finalTab, attemptId, strong ? 'self' : undefined, {
+      allowClaimed: false
+    });
+    finished = true;
+
+    if (strong && owned) {
+      return true;
+    }
+    const reason = outcome === nativeTimeout ? 'native discard timed out' :
+      outcome?.error || 'another discarder won before the native discard';
+    throw Error(`discard takeover failed for tab ${id}: ${reason}`);
+  }
+  catch (e) {
+    if (!finished && ownership.isCurrent(id, attemptId)) {
+      const finalTab = await withTimeout(getTab(id), discard.getTimeout, undefined) || {
+        ...current,
+        discarded: false
+      };
+      await ownership.finish(finalTab, attemptId, undefined, {allowClaimed: false}).catch(() => {
+        return ownership.invalidate(id);
+      });
+    }
+    throw e;
+  }
+};
+
+const takeoverJobs = new Map();
+const releaseSuppressions = new Map();
+const TAKEOVER_RETRY_PREFIX = 'discard.takeover.retry.';
+let takeoverTail = Promise.resolve();
+
+const retryAlarmName = id => `${TAKEOVER_RETRY_PREFIX}${id}`;
+const scheduleTakeoverRetry = (id, when) => {
+  try {
+    chrome.alarms?.create(retryAlarmName(id), {when});
+  }
+  catch (e) {
+    log('discard takeover retry could not be scheduled', e);
+  }
+};
+const clearTakeoverRetry = id => new Promise(resolve => {
+  if (!chrome.alarms?.clear) {
+    resolve(false);
+    return;
+  }
+  try {
+    chrome.alarms.clear(retryAlarmName(id), cleared => {
+      chrome.runtime.lastError;
+      resolve(cleared);
+    });
+  }
+  catch (e) {
+    log('discard takeover retry could not be cleared', e);
+    resolve(false);
+  }
+});
+
+discard.takeover = tab => {
+  const id = tab && tab.id;
+  if (!Number.isInteger(id)) {
+    return Promise.reject(Error('invalid tab for discard takeover'));
+  }
+  const existing = takeoverJobs.get(id);
+  if (existing) {
+    return existing.promise;
+  }
+
+  const token = {cancelled: false};
+  const job = {started: false, token};
+  const execute = async () => {
+    job.started = true;
+    let lastError;
+    for (let pass = 0; pass < discard.takeoverRetries && token.cancelled === false; pass += 1) {
+      const state = await ownership.status(id);
+      if (state.marker?.source === 'contended' && state.marker.retryAfter > Date.now()) {
+        throw Error(`discard takeover for tab ${id} is cooling down after contention`);
+      }
+      if (!state.attemptId && state.marker?.state === 'owned' && state.marker.source === 'self') {
+        return true;
+      }
+      if (state.attemptId) {
+        try {
+          if (await waitForOwnership(id, token)) {
+            return true;
+          }
+        }
+        catch (e) {
+          lastError = e;
+          continue;
+        }
+      }
+      try {
+        if (await takeoverOnce(tab, token)) {
+          return true;
+        }
+      }
+      catch (e) {
+        lastError = e;
+      }
+    }
+    if (!token.cancelled) {
+      const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+      if (current?.discarded === true) {
+        const retryAfter = Date.now() + discard.takeoverCooldown;
+        await ownership.deferTakeover(id, retryAfter);
+        scheduleTakeoverRetry(id, retryAfter);
+      }
+    }
+    throw lastError || Error(`discard takeover cancelled for tab ${id}`);
+  };
+
+  const running = takeoverTail.then(execute, execute);
+  takeoverTail = running.then(() => undefined, () => undefined);
+  job.promise = running.finally(() => {
+    if (takeoverJobs.get(id) === job) {
+      takeoverJobs.delete(id);
+    }
+  });
+  takeoverJobs.set(id, job);
+  return job.promise;
+};
+
+discard.cancelTakeover = async (id, wasDiscarded = false) => {
+  const job = takeoverJobs.get(id);
+  if (job || wasDiscarded) {
+    const until = Date.now() + discard.releaseSuppression;
+    releaseSuppressions.set(id, until);
+  }
+  await clearTakeoverRetry(id);
+  if (!job) {
+    return false;
+  }
+  job.token.cancelled = true;
+  await ownership.invalidate(id);
+  // A queued job has not woken or touched the tab yet. Its cancellation token
+  // makes it safe to release immediately instead of waiting behind unrelated
+  // takeovers in the global serialization queue.
+  if (job.started === false) {
+    if (takeoverJobs.get(id) === job) {
+      takeoverJobs.delete(id);
+    }
+    return true;
+  }
+  await job.promise.catch(() => false);
+  return true;
+};
+
+discard.takeoverExisting = async () => {
+  const tabs = await query({
+    url: '*://*/*',
+    active: false
+  });
+  const targets = (await Promise.all(tabs.map(async tab => {
+    const state = await ownership.status(tab.id);
+    if (tab.discarded === true) {
+      const coolingDown = state.marker?.source === 'contended' && state.marker.retryAfter > Date.now();
+      if (coolingDown) {
+        scheduleTakeoverRetry(tab.id, state.marker.retryAfter);
+      }
+      return state.marker?.state === 'owned' && (state.marker.source === 'self' || coolingDown) ? undefined : tab;
+    }
+    return state.marker?.state === 'takeover-recovery' ? tab : undefined;
+  }))).filter(Boolean);
+  return Promise.all(targets.map(tab => discard.takeover(tab).catch(e => {
+    log('discard takeover failed', e);
+    return false;
+  })));
+};
+
+const requestTakeover = tab => {
+  const url = tab?.url || '';
+  if (tab?.discarded === true && tab.active !== true && (url.startsWith('http') || url.startsWith('ftp'))) {
+    const suppressedUntil = releaseSuppressions.get(tab.id) || 0;
+    if (suppressedUntil > Date.now()) {
+      reloadTab(tab.id).then(result => {
+        if (result.error) {
+          log('suppressed discard could not be released', result.error);
+        }
+      });
+      return;
+    }
+    releaseSuppressions.delete(tab.id);
+    discard.takeover(tab).catch(e => log('discard takeover failed', e));
+  }
+};
+
+chrome.alarms?.onAlarm?.addListener(alarm => {
+  if (!alarm?.name?.startsWith(TAKEOVER_RETRY_PREFIX)) {
+    return;
+  }
+  const id = Number(alarm.name.slice(TAKEOVER_RETRY_PREFIX.length));
+  if (!Number.isInteger(id)) {
+    return;
+  }
+  ownership.status(id).then(state => {
+    const retryAfter = state.marker?.source === 'contended' ? state.marker.retryAfter : 0;
+    if (retryAfter > Date.now()) {
+      scheduleTakeoverRetry(id, retryAfter);
+      return;
+    }
+    return withTimeout(getTab(id), discard.getTimeout, undefined).then(requestTakeover);
+  }).catch(e => log('discard takeover retry failed', e));
+});
+
+chrome.tabs.onUpdated?.addListener((id, changeInfo, tab) => {
+  if (tab?.discarded === true && (changeInfo.discarded === true || 'url' in changeInfo)) {
+    requestTakeover(tab);
+  }
+});
+chrome.tabs.onCreated?.addListener(requestTakeover);
+chrome.tabs.onAttached?.addListener(id => {
+  withTimeout(getTab(id), discard.getTimeout, undefined).then(requestTakeover);
+});
+chrome.tabs.onRemoved?.addListener(id => {
+  const job = takeoverJobs.get(id);
+  if (job) {
+    job.token.cancelled = true;
+  }
+});
+chrome.tabs.onReplaced?.addListener((addedId, removedId) => {
+  const job = takeoverJobs.get(removedId);
+  if (job) {
+    job.token.cancelled = true;
+  }
+  withTimeout(getTab(addedId), discard.getTimeout, undefined).then(requestTakeover);
+});
+
 discard.perform = async tab => {
   let attemptId;
   try {
@@ -233,5 +549,12 @@ discard.perform = async tab => {
 };
 discard.nativeTimeout = 5000;
 discard.getTimeout = 1000;
+discard.takeoverTimeout = 5000;
+discard.takeoverPoll = 50;
+discard.takeoverRetries = 2;
+discard.takeoverFenceTimeout = 10000;
+discard.takeoverCooldown = 30000;
+discard.releaseSuppression = 60000;
+discard.takeoverJobs = takeoverJobs;
 
 export {discard, inprogress};

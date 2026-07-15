@@ -8,7 +8,9 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
   let prepends = '';
   const sessionState = {};
   const pendingAtNativeCall = [];
-  const tabListeners = {};
+  const tabListeners = {
+    updated: []
+  };
 
   globalThis.chrome = {
     runtime: {
@@ -50,7 +52,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     tabs: {
       onUpdated: {
         addListener(listener) {
-          tabListeners.updated = listener;
+          tabListeners.updated.push(listener);
         }
       },
       discard(id, callback) {
@@ -100,12 +102,12 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     discard.nativeTimeout = 10;
     discard.getTimeout = 10;
     chrome.tabs.discard = id => {
-      tabListeners.updated(id, {discarded: true}, {
+      tabListeners.updated.forEach(listener => listener(id, {discarded: true}, {
         id,
         windowId: 1,
         url: 'https://timeout.example/',
         discarded: true
-      });
+      }));
     };
     chrome.tabs.get = () => {};
     assert.equal(await discard.perform({

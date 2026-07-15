@@ -62,9 +62,9 @@ const releaseAvailability = async (query, selected) => Object.fromEntries(await 
   })
 ));
 
-// A popup discard command owns both halves of its scope: tabs that are already
-// discarded are claimed in place, while loaded tabs continue to the normal
-// eligibility/discard pipeline and receive a pending/self tag there.
+// A popup discard command owns both halves of its scope: loaded tabs continue
+// to the normal pipeline, while external/legacy claimed discards are woken and
+// natively re-discarded. A confirmed self-owned discard needs no further work.
 const prepareDiscardTargets = async (command, tabs, resolveFresh) => {
   if (!DISCARD_COMMANDS.has(command)) {
     throw Error(`Unknown discard command: ${command}`);
@@ -84,9 +84,27 @@ const prepareDiscardTargets = async (command, tabs, resolveFresh) => {
     }
   }));
   const candidates = resolved.filter(result => result?.state === 'loaded').map(result => result.tab);
-  const claimed = resolved.filter(result => result?.state === 'discarded').map(result => result.tab);
+  const discarded = resolved.filter(result => result?.state === 'discarded');
+  const alreadyOwned = discarded
+    .filter(result => result.marker?.state === 'owned' && result.marker.source === 'self')
+    .map(result => result.tab);
+  const takeovers = discarded
+    .filter(result => result.marker?.state !== 'owned' || result.marker.source !== 'self')
+    .map(result => result.tab);
   const errors = resolved.filter(result => result?.error).map(result => result.error);
-  return {candidates, claimed, errors};
+  return {alreadyOwned, candidates, errors, takeovers};
+};
+
+const runTakeovers = async (tabs, takeover) => {
+  if (tabs.length === 0) {
+    return [];
+  }
+  const settled = await Promise.allSettled(tabs.map(takeover));
+  const failed = settled.filter(result => result.status === 'rejected' || result.value !== true);
+  if (failed.length) {
+    throw Error('one or more discard takeovers failed');
+  }
+  return settled.map(result => result.value);
 };
 
 // The selected-tab and tab-group rows need an active keeper before Chromium
@@ -101,6 +119,7 @@ const runDirectDiscardCommand = async ({
   notifyNoKeeper,
   resolveFresh,
   selected,
+  takeover,
   targets
 }) => {
   const result = await prepareDiscardTargets(command, targets, resolveFresh);
@@ -115,23 +134,38 @@ const runDirectDiscardCommand = async ({
 
     if (!keeper) {
       notifyNoKeeper();
+      await runTakeovers(result.takeovers, takeover);
       return {...result, blocked: true, keeper: null};
     }
     await activate(keeper);
     result.candidates.forEach(tab => tab.active = false);
   }
 
-  await Promise.all(result.candidates.map(discard));
+  await Promise.all([
+    ...result.candidates.map(discard),
+    runTakeovers(result.takeovers, takeover)
+  ]);
   return {...result, blocked: false, keeper};
 };
 
 // Chromium's discarded:false event is the authoritative ownership cleanup.
 // Clearing immediately after reload() could erase a newer concurrent discard.
-const releaseDiscardedTargets = async (command, tabs, reload, options = {}) => {
+const releaseDiscardedTargets = async (
+  command,
+  tabs,
+  reload,
+  options = {},
+  cancelTakeover = async () => {},
+  refresh = async tab => tab
+) => {
   if (!RELEASE_COMMANDS.has(command)) {
     throw Error(`Unknown release command: ${command}`);
   }
-  const targets = tabs.filter(tab => tab.discarded === true);
+  // A takeover's wake phase is discarded:false, so cancel every tab in the
+  // selected release scope before deciding which live tabs still need reload.
+  await Promise.all(tabs.map(cancelTakeover));
+  const live = await Promise.all(tabs.map(refresh));
+  const targets = live.filter(tab => tab?.discarded === true);
   await Promise.all(targets.map(tab => reload(tab, options)));
   return targets;
 };
@@ -139,33 +173,43 @@ const releaseDiscardedTargets = async (command, tabs, reload, options = {}) => {
 // This is the shared execution path for all five bulk rows and their X controls.
 // Tests exercise this same function, not a parallel reconstruction of menu.mjs.
 const runScopedCommand = async ({
+  cancelTakeover,
   check,
   command,
   discard,
   query,
+  refresh,
   reload,
   resolveFresh,
   selected,
-  shiftKey
+  shiftKey,
+  takeover
 }) => {
   const queried = await query(scopeQuery(command));
   const tabs = filterScopeTabs(command, queried, selected);
 
   if (DISCARD_COMMANDS.has(command)) {
     const result = await prepareDiscardTargets(command, tabs, resolveFresh);
+    const actions = [runTakeovers(result.takeovers, takeover)];
     if (shiftKey) {
-      await Promise.all(result.candidates.map(discard));
+      actions.push(...result.candidates.map(discard));
     }
     else if (result.candidates.length) {
-      await check(result.candidates);
+      actions.push(check(result.candidates));
     }
+    await Promise.all(actions);
     return result;
   }
   if (RELEASE_COMMANDS.has(command)) {
     return {
-      released: await releaseDiscardedTargets(command, tabs, reload, {
-        bypassCache: shiftKey === true
-      })
+      released: await releaseDiscardedTargets(
+        command,
+        tabs,
+        reload,
+        {bypassCache: shiftKey === true},
+        cancelTakeover,
+        refresh
+      )
     };
   }
   throw Error(`Unknown scoped command: ${command}`);

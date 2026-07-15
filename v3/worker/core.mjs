@@ -64,9 +64,12 @@ const popup = () => chrome.action.setPopup({
 starters.push(() => popup());
 storage.on('click', () => popup());
 
-// Adopt discarded tabs that predate this worker and prune stale ownership tags.
-// start() reports and retries transient API/storage failures itself.
-starters.push(() => ownership.start());
+// Reconcile persisted markers, then genuinely take over any external or legacy
+// claimed discards one at a time through reload -> native discard -> self.
+starters.push(async () => {
+  await ownership.start();
+  return discard.takeoverExisting();
+});
 
 // idle timeout
 starters.push(() => {

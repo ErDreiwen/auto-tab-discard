@@ -229,6 +229,7 @@ import {interrupts} from './plugins/loader.mjs';
         notifyNoKeeper: () => notify(chrome.i18n.getMessage('menu_msg3')),
         resolveFresh: ownership.resolveFresh,
         selected: tab,
+        takeover: discard.takeover,
         targets: htabs
       });
     }
@@ -270,6 +271,7 @@ import {interrupts} from './plugins/loader.mjs';
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
       await runScopedCommand({
+        cancelTakeover: tab => discard.cancelTakeover(tab.id, tab.discarded === true),
         command: menuItemId,
         selected: tab,
         shiftKey,
@@ -278,7 +280,12 @@ import {interrupts} from './plugins/loader.mjs';
         // Make sure normal clicks only discard eligible tabs; Shift remains forced.
         check: tabs => number.check(tabs, number.IGNORE, 'menu/2'),
         reload: (tab, options) => chrome.tabs.reload(tab.id, options),
-        resolveFresh: ownership.resolveFresh
+        refresh: tab => new Promise(resolve => chrome.tabs.get(tab.id, current => {
+          const error = chrome.runtime.lastError;
+          resolve(error ? undefined : current);
+        })),
+        resolveFresh: ownership.resolveFresh,
+        takeover: discard.takeover
       });
     }
   };
