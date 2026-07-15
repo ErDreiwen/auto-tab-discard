@@ -9,6 +9,8 @@ test('tags self discards, claims external discards, and rejects stale attempts',
   let failNextQuery = false;
   let holdNextWrite = false;
   let releaseWrite;
+  let holdNextGet = false;
+  let releaseGet;
 
   const write = (apply, callback) => {
     if (failWrites > 0) {
@@ -67,7 +69,16 @@ test('tags self discards, claims external discards, and rejects stale attempts',
         callback(liveTabs);
       },
       get(id, callback) {
-        callback(liveTabs.find(tab => tab.id === id));
+        if (holdNextGet) {
+          holdNextGet = false;
+          releaseGet = value => {
+            releaseGet = undefined;
+            callback(value);
+          };
+        }
+        else {
+          callback(liveTabs.find(tab => tab.id === id));
+        }
       },
       onUpdated: event('updated'),
       onCreated: event('created'),
@@ -90,6 +101,49 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     let state = await ownership.snapshot();
     assert.equal(state[external.id].state, 'owned');
     assert.equal(state[external.id].source, 'claimed');
+
+    const adoptable = {
+      id: 38,
+      windowId: 1,
+      url: 'https://adoptable.example/',
+      discarded: true
+    };
+    liveTabs = [adoptable];
+    await ownership.claim(adoptable);
+    assert.equal(await ownership.adopt(adoptable), true);
+    assert.equal(await ownership.adopt(adoptable), true);
+    state = await ownership.snapshot();
+    assert.equal(state[adoptable.id].source, 'adopted');
+    liveTabs = [{...adoptable, discarded: false}];
+    assert.equal((await ownership.adopt(adoptable)).state, 'loaded');
+    listeners.updated(adoptable.id, {discarded: false}, liveTabs[0]);
+    state = await ownership.snapshot();
+    assert.equal(state[adoptable.id], undefined);
+
+    const staleAdoption = {
+      id: 41,
+      windowId: 1,
+      url: 'https://stale-adoption.example/',
+      discarded: true
+    };
+    liveTabs = [staleAdoption];
+    holdNextWrite = true;
+    const adoptionInFlight = ownership.adopt(staleAdoption);
+    while (!releaseWrite) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    holdNextGet = true;
+    releaseWrite();
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    const newerAttempt = await ownership.begin({...staleAdoption, discarded: false});
+    assert.equal(await ownership.finish(staleAdoption, newerAttempt, 'self'), true);
+    releaseGet({...staleAdoption, discarded: false});
+    const staleOutcome = await adoptionInFlight;
+    assert.equal(staleOutcome.state, 'loaded');
+    state = await ownership.snapshot();
+    assert.equal(state[staleAdoption.id].source, 'self');
 
     listeners.updated(external.id, {discarded: false}, {...external, discarded: false});
     state = await ownership.snapshot();
@@ -171,6 +225,56 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     state = await ownership.snapshot();
     assert.equal(state[attachedDiscarded.id].source, 'claimed');
 
+    const attachedAdopted = {...attached, id: 40, discarded: true};
+    liveTabs = [attachedAdopted];
+    await ownership.claim(attachedAdopted);
+    assert.equal(await ownership.adopt(attachedAdopted), true);
+    const attachedAdoptedMarker = (await ownership.status(attachedAdopted.id)).marker;
+    listeners.attached(attachedAdopted.id);
+    await new Promise(resolve => setTimeout(resolve));
+    state = await ownership.snapshot();
+    assert.deepEqual(state[attachedAdopted.id], attachedAdoptedMarker);
+
+    // A stale loaded result from an attachment must not cancel a newer discard
+    // attempt that started while tabs.get was pending.
+    const attachedAttemptRace = {...attached, id: 42, discarded: true};
+    liveTabs = [attachedAttemptRace];
+    await ownership.claim(attachedAttemptRace);
+    assert.equal(await ownership.adopt(attachedAttemptRace), true);
+    holdNextGet = true;
+    listeners.attached(attachedAttemptRace.id);
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    const attachedAttemptAwake = {...attachedAttemptRace, discarded: false};
+    const newerAttachedAttempt = ownership.begin(attachedAttemptAwake);
+    releaseGet(attachedAttemptAwake);
+    const attachedAttemptId = await newerAttachedAttempt;
+    assert.equal(typeof attachedAttemptId, 'string');
+    const attachedAttemptDiscarded = {...attachedAttemptAwake, discarded: true};
+    liveTabs = [attachedAttemptDiscarded];
+    assert.equal(await ownership.finish(attachedAttemptDiscarded, attachedAttemptId, 'self'), true);
+    state = await ownership.snapshot();
+    assert.equal(state[attachedAttemptRace.id].source, 'self');
+    assert.equal(state[attachedAttemptRace.id].attemptId, attachedAttemptId);
+
+    // The same stale attachment read must run before, rather than erase, a
+    // newer external-discard claim queued in the read gap.
+    const attachedClaimRace = {...attached, id: 43, discarded: true};
+    liveTabs = [attachedClaimRace];
+    await ownership.claim(attachedClaimRace);
+    assert.equal(await ownership.adopt(attachedClaimRace), true);
+    holdNextGet = true;
+    listeners.attached(attachedClaimRace.id);
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    const newerAttachedClaim = ownership.claim(attachedClaimRace);
+    releaseGet({...attachedClaimRace, discarded: false});
+    assert.ok(await newerAttachedClaim);
+    state = await ownership.snapshot();
+    assert.equal(state[attachedClaimRace.id].source, 'claimed');
+
     const replacement = {...attached, id: 37, discarded: true};
     liveTabs = [replacement];
     listeners.replaced(replacement.id, attachedDiscarded.id);
@@ -203,6 +307,27 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     state = await ownership.snapshot();
     assert.equal(state[awake.id].state, 'owned');
     assert.equal(state[awake.id].source, 'self');
+
+    liveTabs = [selfDiscarded];
+    assert.equal(await ownership.adopt(selfDiscarded), true);
+    state = await ownership.snapshot();
+    assert.equal(state[awake.id].source, 'self');
+    listeners.attached(awake.id);
+    await new Promise(resolve => setTimeout(resolve));
+    state = await ownership.snapshot();
+    assert.equal(state[awake.id].source, 'self');
+
+    const busyAdoption = {
+      id: 39,
+      windowId: 1,
+      url: 'https://busy-adoption.example/',
+      discarded: true
+    };
+    liveTabs = [busyAdoption];
+    const busyAttempt = await ownership.begin(busyAdoption);
+    assert.equal(typeof busyAttempt, 'string');
+    assert.equal((await ownership.adopt(busyAdoption)).busy, true);
+    await ownership.invalidate(busyAdoption.id);
 
     const moved = {...selfDiscarded, windowId: 9};
     await ownership.claim(moved);

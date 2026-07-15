@@ -364,6 +364,10 @@ discard.takeover = (tab, {manual = false} = {}) => {
   return job.promise;
 };
 
+// Popup adoption commands can join the exact physical job instead of relying
+// on a duplicated timeout that cannot account for queue or storage latency.
+discard.waitForTakeover = id => takeoverJobs.get(id)?.promise;
+
 discard.cancelTakeover = async id => {
   const job = takeoverJobs.get(id);
   if (!job) {

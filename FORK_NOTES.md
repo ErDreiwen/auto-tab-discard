@@ -2,6 +2,13 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.10
+
+- Adopt already-discarded tabs in place on a normal command, recording `source: adopted` without calling `tabs.reload()` or allocating the page back into memory.
+- Make Shift the deliberate physical-upgrade path: one wake followed by one verified native discard changes `adopted` to `source: self`.
+- Reclassify tabs that wake during adoption back into the loaded discard pipeline, wait for overlapping ownership attempts, and preserve ownership when a discarded tab moves between windows.
+- Cover real Chromium group selection so normal group commands never touch, reload, or discard an out-of-group tab.
+
 ## Changes in 0.6.8.9
 
 - Make fresh ownership takeover explicit-command only. Background discard events are tagged but never wake a tab, and startup resumes only a takeover that an earlier worker had already woken.

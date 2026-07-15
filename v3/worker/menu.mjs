@@ -222,6 +222,7 @@ import {interrupts} from './plugins/loader.mjs';
       }
       await runDirectDiscardCommand({
         activate: keeper => chrome.tabs.update(keeper.id, {active: true}),
+        adopt: ownership.adopt,
         allTabs: tabs,
         command: menuItemId,
         discard,
@@ -229,8 +230,10 @@ import {interrupts} from './plugins/loader.mjs';
         notifyNoKeeper: () => notify(chrome.i18n.getMessage('menu_msg3')),
         resolveFresh: ownership.resolveFresh,
         selected: tab,
+        shiftKey,
         takeover: target => discard.takeover(target, {manual: true}),
-        targets: htabs
+        targets: htabs,
+        waitForTakeover: discard.waitForTakeover
       });
     }
     else if (menuItemId === 'open-tab-then-discard') {
@@ -271,6 +274,7 @@ import {interrupts} from './plugins/loader.mjs';
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
       await runScopedCommand({
+        adopt: ownership.adopt,
         cancelTakeover: tab => discard.cancelTakeover(tab.id),
         command: menuItemId,
         selected: tab,
@@ -285,7 +289,8 @@ import {interrupts} from './plugins/loader.mjs';
           resolve(error ? undefined : current);
         })),
         resolveFresh: ownership.resolveFresh,
-        takeover: target => discard.takeover(target, {manual: true})
+        takeover: target => discard.takeover(target, {manual: true}),
+        waitForTakeover: discard.waitForTakeover
       });
     }
   };

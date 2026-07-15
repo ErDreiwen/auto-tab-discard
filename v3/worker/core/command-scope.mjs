@@ -63,9 +63,9 @@ const releaseAvailability = async (query, selected) => Object.fromEntries(await 
 ));
 
 // A popup discard command owns both halves of its scope: loaded tabs continue
-// to the normal pipeline, while external/legacy claimed discards are woken and
-// natively re-discarded. A confirmed self-owned discard needs no further work.
-const prepareDiscardTargets = async (command, tabs, resolveFresh) => {
+// to the normal pipeline, while normal commands adopt existing discards in
+// place. Shift can physically upgrade adopted/claimed tabs through takeover.
+const prepareDiscardTargets = async (command, tabs, resolveFresh, {upgradeAdopted = false} = {}) => {
   if (!DISCARD_COMMANDS.has(command)) {
     throw Error(`Unknown discard command: ${command}`);
   }
@@ -86,10 +86,13 @@ const prepareDiscardTargets = async (command, tabs, resolveFresh) => {
   const candidates = resolved.filter(result => result?.state === 'loaded').map(result => result.tab);
   const discarded = resolved.filter(result => result?.state === 'discarded');
   const alreadyOwned = discarded
-    .filter(result => result.marker?.state === 'owned' && result.marker.source === 'self')
+    .filter(result => result.marker?.state === 'owned' &&
+      (result.marker.source === 'self' || (result.marker.source === 'adopted' && upgradeAdopted === false)))
     .map(result => result.tab);
   const takeovers = discarded
-    .filter(result => result.marker?.state !== 'owned' || result.marker.source !== 'self')
+    .filter(result => result.marker?.state !== 'owned' ||
+      (result.marker.source !== 'self' &&
+        (result.marker.source !== 'adopted' || upgradeAdopted === true)))
     .map(result => result.tab);
   const errors = resolved.filter(result => result?.error).map(result => result.error);
   return {alreadyOwned, candidates, errors, takeovers};
@@ -107,11 +110,91 @@ const runTakeovers = async (tabs, takeover) => {
   return settled.map(result => result.value);
 };
 
+// Adoption normally completes without touching the tab. If the tab woke in
+// the narrow gap after classification, return it to the loaded-tab pipeline
+// instead of reporting a false failure or leaving it awake.
+const runAdoptions = async (tabs, adopt, resolveFresh, waitForTakeover) => {
+  if (tabs.length === 0) {
+    return {adopted: [], loaded: []};
+  }
+  const settled = await Promise.allSettled(tabs.map(async tab => {
+    let fallbackDeadline;
+    const joinedJobs = new Set();
+    const joinTakeover = async () => {
+      const job = waitForTakeover?.(tab.id);
+      if (!job || joinedJobs.has(job)) {
+        return false;
+      }
+      joinedJobs.add(job);
+      try {
+        await job;
+      }
+      catch (e) {
+        // Re-read after a failed physical takeover. The tab may still be
+        // discarded and safe to adopt, or it may have woken and need the
+        // ordinary loaded-tab pipeline.
+      }
+      return true;
+    };
+
+    while (true) {
+      // A Shift takeover can be queued before its ownership attempt starts.
+      // Join the actual job instead of guessing how long its reload/native
+      // discard fences may take.
+      if (await joinTakeover()) {
+        continue;
+      }
+      const outcome = await adopt(tab);
+      if (outcome === true) {
+        return {state: 'adopted', tab};
+      }
+      if (outcome?.state === 'loaded') {
+        return {state: 'loaded', tab: outcome.tab};
+      }
+      if (outcome?.state === 'missing') {
+        throw Error(`discarded tab ${tab.id} disappeared during adoption`);
+      }
+      if (outcome?.busy === true || outcome?.retry === true) {
+        if (await joinTakeover()) {
+          continue;
+        }
+        // A non-takeover discard has a much shorter bounded native path. Keep
+        // a fallback so an abandoned ordinary attempt cannot hang the popup.
+        fallbackDeadline ||= Date.now() + 16000;
+        if (Date.now() >= fallbackDeadline) {
+          throw Error(`timed out waiting to adopt discarded tab ${tab.id}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+        continue;
+      }
+
+      const fresh = await resolveFresh(tab);
+      if (fresh?.state === 'loaded') {
+        return {state: 'loaded', tab: fresh.tab};
+      }
+      if (fresh?.state === 'discarded' && fresh.marker?.state === 'owned' &&
+          (fresh.marker.source === 'self' || fresh.marker.source === 'adopted')) {
+        return {state: 'adopted', tab: fresh.tab};
+      }
+      throw Error(`could not adopt discarded tab ${tab.id}`);
+    }
+  }));
+  if (settled.some(result => result.status === 'rejected')) {
+    throw Error('one or more discard adoptions failed');
+  }
+  const values = settled.map(result => result.value);
+  return {
+    adopted: values.filter(result => result.state === 'adopted').map(result => result.tab),
+    loaded: values.filter(result => result.state === 'loaded').map(result => result.tab)
+  };
+};
+
 // The selected-tab and tab-group rows need an active keeper before Chromium
 // permits their active target to be discarded. Keeping this path here makes
 // the first two popup commands exercise the same tested ownership preparation.
 const runDirectDiscardCommand = async ({
   activate,
+  adopt,
   allTabs,
   command,
   discard,
@@ -119,10 +202,22 @@ const runDirectDiscardCommand = async ({
   notifyNoKeeper,
   resolveFresh,
   selected,
+  shiftKey,
   takeover,
-  targets
+  targets,
+  waitForTakeover
 }) => {
-  const result = await prepareDiscardTargets(command, targets, resolveFresh);
+  const result = await prepareDiscardTargets(command, targets, resolveFresh, {
+    upgradeAdopted: shiftKey === true
+  });
+  if (shiftKey !== true) {
+    const adoption = await runAdoptions(result.takeovers, adopt, resolveFresh, waitForTakeover);
+    result.adopted = adoption.adopted;
+    result.candidates.push(...adoption.loaded);
+  }
+  else {
+    result.adopted = [];
+  }
   let keeper;
 
   if (result.candidates.some(tab => tab.active)) {
@@ -134,7 +229,9 @@ const runDirectDiscardCommand = async ({
 
     if (!keeper) {
       notifyNoKeeper();
-      await runTakeovers(result.takeovers, takeover);
+      if (shiftKey === true) {
+        await runTakeovers(result.takeovers, takeover);
+      }
       return {...result, blocked: true, keeper: null};
     }
     await activate(keeper);
@@ -143,7 +240,7 @@ const runDirectDiscardCommand = async ({
 
   await Promise.all([
     ...result.candidates.map(discard),
-    runTakeovers(result.takeovers, takeover)
+    shiftKey === true ? runTakeovers(result.takeovers, takeover) : Promise.resolve([])
   ]);
   return {...result, blocked: false, keeper};
 };
@@ -173,6 +270,7 @@ const releaseDiscardedTargets = async (
 // This is the shared execution path for all five bulk rows and their X controls.
 // Tests exercise this same function, not a parallel reconstruction of menu.mjs.
 const runScopedCommand = async ({
+  adopt,
   cancelTakeover,
   check,
   command,
@@ -183,21 +281,30 @@ const runScopedCommand = async ({
   resolveFresh,
   selected,
   shiftKey,
-  takeover
+  takeover,
+  waitForTakeover
 }) => {
   const queried = await query(scopeQuery(command));
   const tabs = filterScopeTabs(command, queried, selected);
 
   if (DISCARD_COMMANDS.has(command)) {
-    const result = await prepareDiscardTargets(command, tabs, resolveFresh);
-    const actions = [runTakeovers(result.takeovers, takeover)];
+    const result = await prepareDiscardTargets(command, tabs, resolveFresh, {
+      upgradeAdopted: shiftKey === true
+    });
     if (shiftKey) {
-      actions.push(...result.candidates.map(discard));
+      await Promise.all([
+        runTakeovers(result.takeovers, takeover),
+        ...result.candidates.map(discard)
+      ]);
     }
-    else if (result.candidates.length) {
-      actions.push(check(result.candidates));
+    else {
+      const adoption = await runAdoptions(result.takeovers, adopt, resolveFresh, waitForTakeover);
+      result.adopted = adoption.adopted;
+      result.candidates.push(...adoption.loaded);
+      if (result.candidates.length) {
+        await check(result.candidates);
+      }
     }
-    await Promise.all(actions);
     return result;
   }
   if (RELEASE_COMMANDS.has(command)) {

@@ -230,6 +230,110 @@ const deferTakeover = id => mutate(state => {
   return state[id];
 });
 
+// Chromium has no native discard-owner field. Adopt an already-discarded tab
+// into this extension's ownership model without waking or reloading its page.
+const adopt = async tab => {
+  const id = tab && tab.id;
+  if (!Number.isInteger(id)) {
+    return false;
+  }
+  if (attempts.has(id)) {
+    return {busy: true};
+  }
+  const generation = generations.get(id) || 0;
+  const current = await getTab(id);
+  if (attempts.has(id)) {
+    return {busy: true};
+  }
+  if (!current) {
+    return {state: 'missing'};
+  }
+  if (current.discarded !== true) {
+    return {state: 'loaded', tab: current};
+  }
+  if ((generations.get(id) || 0) !== generation) {
+    return {retry: true};
+  }
+
+  const adoptionId = `adopt-${Date.now().toString(36)}-${(++sequence).toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const result = await mutate(state => {
+    if (attempts.has(id)) {
+      return {busy: true};
+    }
+    if ((generations.get(id) || 0) !== generation) {
+      return {retry: true};
+    }
+    const existing = state[id];
+    if (existing?.state === 'owned' && (existing.source === 'self' || existing.source === 'adopted')) {
+      return {marker: existing};
+    }
+    state[id] = ownedMarker('adopted', adoptionId);
+    return {marker: state[id]};
+  });
+  if (result.busy || result.retry) {
+    return result;
+  }
+
+  const final = await getTab(id);
+  if (final?.discarded === true && (generations.get(id) || 0) === generation && !attempts.has(id)) {
+    return true;
+  }
+  if (result.marker?.source === 'adopted') {
+    const expected = result.marker;
+    await mutate(state => {
+      const marker = state[id];
+      if (marker?.state === expected.state && marker.source === expected.source &&
+          marker.attemptId === expected.attemptId && marker.updatedAt === expected.updatedAt) {
+        delete state[id];
+        return true;
+      }
+      return false;
+    });
+  }
+  if (attempts.has(id)) {
+    return {busy: true};
+  }
+  if (!final) {
+    return {state: 'missing'};
+  }
+  return final.discarded === false ? {state: 'loaded', tab: final} : {retry: true};
+};
+
+// Moving a tab between windows preserves its id, but Chromium can report the
+// attachment while another ownership transition is starting. Fence stale
+// pre-attachment reads immediately, then hold the serialized ownership queue
+// across the live tab read. Any newer attempt or lifecycle event wins without
+// this handler cancelling it or deleting its marker.
+const revalidateAttached = id => {
+  if (!Number.isInteger(id)) {
+    return Promise.resolve(false);
+  }
+
+  const generation = (generations.get(id) || 0) + 1;
+  generations.set(id, generation);
+
+  return mutate(async state => {
+    const current = await getTab(id);
+    if ((generations.get(id) || 0) !== generation || attempts.has(id)) {
+      return false;
+    }
+
+    observedDiscards.delete(id);
+    takeoverAttempts.delete(id);
+    if (!current || current.discarded !== true) {
+      delete state[id];
+      return false;
+    }
+
+    const marker = state[id];
+    if (marker?.state === 'owned') {
+      return marker;
+    }
+    state[id] = ownedMarker('claimed');
+    return state[id];
+  });
+};
+
 const claimAtGeneration = (tab, generation) => {
   const id = tab && tab.id;
   if (!Number.isInteger(id) || tab.discarded !== true) {
@@ -469,12 +573,7 @@ const bind = () => {
     }
   });
   chrome.tabs.onAttached?.addListener(id => {
-    if (attempts.has(id)) {
-      return;
-    }
-    // Clear any marker tied to the pre-attachment snapshot, then re-read and
-    // reclaim only if the moved tab is still discarded.
-    invalidate(id).then(() => claimFresh({id})).catch(report);
+    revalidateAttached(id).catch(report);
   });
   chrome.tabs.onRemoved?.addListener(id => {
     invalidate(id).catch(report);
@@ -491,6 +590,7 @@ const bind = () => {
 bind();
 
 const ownership = {
+  adopt,
   begin,
   beginTakeover,
   bind,

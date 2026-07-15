@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {releaseDiscardedTargets, runScopedCommand} from '../v3/worker/core/command-scope.mjs';
+import {
+  releaseDiscardedTargets,
+  runDirectDiscardCommand,
+  runScopedCommand
+} from '../v3/worker/core/command-scope.mjs';
+import {tabsForGroupCommand} from '../v3/worker/core/group.mjs';
 
 test('keeps genuine takeovers explicit, bounded, and free of reload feedback loops', async () => {
   const sessionState = {
@@ -149,11 +154,46 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     discard.takeoverPoll = 0;
     discard.takeoverRetries = 1;
 
-    let settled = false;
-    const command = runScopedCommand({
+    const adopted = await runScopedCommand({
+      adopt: ownership.adopt,
       command: 'discard-tabs',
       selected: {id: 99, index: 0},
       shiftKey: false,
+      query: async () => [clone(liveTabs.get(1))],
+      resolveFresh: ownership.resolveFresh,
+      check: async () => assert.fail('already-discarded adoption must not use the eligibility check'),
+      discard: async () => assert.fail('adoption must not use the normal discard pipeline'),
+      takeover: async () => assert.fail('normal command must not wake the discarded tab'),
+      reload: async () => assert.fail('discard command must not use the release path')
+    });
+    assert.deepEqual(adopted.takeovers.map(tab => tab.id), [1]);
+    assert.deepEqual(calls, []);
+    assert.equal(liveTabs.get(1).discarded, true);
+    let state = await ownership.status(1);
+    assert.equal(state.marker.state, 'owned');
+    assert.equal(state.marker.source, 'adopted');
+
+    const repeatedAdoption = await runScopedCommand({
+      adopt: async () => assert.fail('an adopted tab must be a no-op'),
+      command: 'discard-tabs',
+      selected: {id: 99, index: 0},
+      shiftKey: false,
+      query: async () => [clone(liveTabs.get(1))],
+      resolveFresh: ownership.resolveFresh,
+      check: async () => {},
+      discard: async () => true,
+      takeover: async () => assert.fail('repeat normal command must not wake the tab'),
+      reload: async () => {}
+    });
+    assert.deepEqual(repeatedAdoption.alreadyOwned.map(tab => tab.id), [1]);
+    assert.deepEqual(calls, []);
+
+    let settled = false;
+    const command = runScopedCommand({
+      adopt: async () => assert.fail('Shift must physically upgrade an adopted tab'),
+      command: 'discard-tabs',
+      selected: {id: 99, index: 0},
+      shiftKey: true,
       query: async () => [clone(liveTabs.get(1))],
       resolveFresh: ownership.resolveFresh,
       check: async () => assert.fail('already-discarded takeover must not use the eligibility check'),
@@ -169,21 +209,24 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       await new Promise(resolve => setTimeout(resolve));
     }
     assert.equal(settled, false);
+    assert.ok(discard.waitForTakeover(1));
     assert.deepEqual(calls, ['reload:1:false', 'discard:1']);
 
     finishNative();
     const result = await command;
+    assert.equal(discard.waitForTakeover(1), undefined);
     assert.deepEqual(result.takeovers.map(tab => tab.id), [1]);
     assert.equal(liveTabs.get(1).discarded, true);
-    let state = await ownership.status(1);
+    state = await ownership.status(1);
     assert.equal(state.marker.state, 'owned');
     assert.equal(state.marker.source, 'self');
 
     const callCount = calls.length;
     const repeat = await runScopedCommand({
+      adopt: async () => assert.fail('Shift repeat must not adopt a self-owned tab'),
       command: 'discard-tabs',
       selected: {id: 99, index: 0},
-      shiftKey: false,
+      shiftKey: true,
       query: async () => [clone(liveTabs.get(1))],
       resolveFresh: ownership.resolveFresh,
       check: async () => {},
@@ -193,6 +236,134 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     });
     assert.deepEqual(repeat.alreadyOwned.map(tab => tab.id), [1]);
     assert.equal(calls.length, callCount);
+
+    const groupTabs = [
+      {
+        id: 40,
+        windowId: 9,
+        index: 0,
+        groupId: 7,
+        active: false,
+        discarded: true,
+        highlighted: false,
+        url: 'https://group-root.example/'
+      },
+      {
+        id: 41,
+        windowId: 9,
+        index: 1,
+        groupId: 7,
+        active: false,
+        discarded: true,
+        highlighted: false,
+        url: 'https://group-child-one.example/'
+      },
+      {
+        id: 42,
+        windowId: 9,
+        index: 2,
+        groupId: 7,
+        active: false,
+        discarded: true,
+        highlighted: true,
+        url: 'https://group-child-two.example/'
+      },
+      {
+        id: 43,
+        windowId: 9,
+        index: 3,
+        groupId: 8,
+        active: true,
+        discarded: false,
+        highlighted: true,
+        url: 'https://outside-group.example/'
+      }
+    ];
+    groupTabs.forEach(tab => liveTabs.set(tab.id, tab));
+    await Promise.all(groupTabs.slice(0, 3).map(tab => ownership.claim(tab)));
+    const groupTargets = tabsForGroupCommand(groupTabs, groupTabs[0]);
+    assert.deepEqual(groupTargets.map(tab => tab.id), [40, 41, 42]);
+    const groupCallStart = calls.length;
+    const normalGroup = await runDirectDiscardCommand({
+      activate: async () => assert.fail('an all-discarded group does not need a keeper'),
+      adopt: ownership.adopt,
+      allTabs: groupTabs,
+      command: 'discard-tree',
+      discard: async () => assert.fail('already-discarded group members stay unloaded'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('an inactive discarded group is not blocked'),
+      resolveFresh: ownership.resolveFresh,
+      selected: groupTabs[0],
+      shiftKey: false,
+      takeover: async () => assert.fail('normal group command must not reload'),
+      targets: groupTargets
+    });
+    assert.deepEqual(normalGroup.adopted.map(tab => tab.id), [40, 41, 42]);
+    assert.equal(calls.length, groupCallStart);
+    for (const id of [40, 41, 42]) {
+      assert.equal((await ownership.status(id)).marker.source, 'adopted');
+      assert.equal(liveTabs.get(id).discarded, true);
+    }
+    assert.equal((await ownership.status(43)).marker, undefined);
+
+    await runDirectDiscardCommand({
+      activate: async () => assert.fail('repeat adoption does not need a keeper'),
+      adopt: async () => assert.fail('repeat adoption must be a no-op'),
+      allTabs: groupTabs,
+      command: 'discard-tree',
+      discard: async () => assert.fail('repeat adoption must be a no-op'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('repeat adoption is not blocked'),
+      resolveFresh: ownership.resolveFresh,
+      selected: groupTabs[0],
+      shiftKey: false,
+      takeover: async () => assert.fail('repeat adoption must not reload'),
+      targets: groupTargets
+    });
+    assert.equal(calls.length, groupCallStart);
+
+    const forcedGroup = runDirectDiscardCommand({
+      activate: async () => assert.fail('inactive group takeover does not need a keeper'),
+      adopt: async () => assert.fail('Shift must physically upgrade adopted group members'),
+      allTabs: groupTabs,
+      command: 'discard-tree',
+      discard: async () => assert.fail('adopted group members use the takeover path'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('inactive group takeover is not blocked'),
+      resolveFresh: ownership.resolveFresh,
+      selected: groupTabs[0],
+      shiftKey: true,
+      takeover: tab => discard.takeover(tab, {manual: true}),
+      targets: groupTargets
+    });
+    for (const id of [40, 41, 42]) {
+      while (!finishNative) {
+        await new Promise(resolve => setTimeout(resolve));
+      }
+      assert.deepEqual(calls.slice(-2), [`reload:${id}:false`, `discard:${id}`]);
+      finishNative();
+    }
+    await forcedGroup;
+    for (const id of [40, 41, 42]) {
+      assert.equal((await ownership.status(id)).marker.source, 'self');
+    }
+    assert.equal((await ownership.status(43)).marker, undefined);
+    const forcedGroupCallCount = calls.length;
+    await runDirectDiscardCommand({
+      activate: async () => assert.fail('repeat Shift does not need a keeper'),
+      adopt: async () => assert.fail('repeat Shift does not adopt'),
+      allTabs: groupTabs,
+      command: 'discard-tree',
+      discard: async () => assert.fail('repeat Shift is a no-op'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('repeat Shift is not blocked'),
+      resolveFresh: ownership.resolveFresh,
+      selected: groupTabs[0],
+      shiftKey: true,
+      takeover: async () => assert.fail('self-owned group members are skipped'),
+      targets: groupTargets
+    });
+    assert.equal(calls.length, forcedGroupCallCount);
 
     const automatic = {
       id: 3,
