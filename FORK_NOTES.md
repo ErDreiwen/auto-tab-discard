@@ -2,6 +2,14 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.4
+
+- Keep popup message channels open until each discard or release command actually finishes, including on current Edge and Chrome MV3 service workers.
+- Route clicks from nested popup elements to their command row, and keep the popup open with a visible error when a command fails.
+- Await bulk-discard, keyboard-command, navigation, and release work instead of reporting success before the browser APIs complete.
+- Bound favicon/title preparation so an unresponsive page cannot hold the discard queue forever.
+- Initialize popup state only after the active tab is known, avoiding a race in the left/right release controls.
+
 ## Changes in 0.6.8.3
 
 - Read the configured toolbar action from `chrome.storage` instead of `localStorage`, which is unavailable in a Manifest V3 service worker.

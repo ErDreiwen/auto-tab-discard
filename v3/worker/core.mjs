@@ -2,6 +2,7 @@ import {log, query} from './core/utils.mjs';
 import {prefs, storage} from './core/prefs.mjs';
 import {starters} from './core/startup.mjs';
 import {actionPopup} from './core/action.mjs';
+import {respondAsync} from './core/respond.mjs';
 import {discard} from './core/discard.mjs';
 import {navigate} from './core/navigate.mjs';
 import './modes/number.mjs';
@@ -22,12 +23,12 @@ chrome.runtime.onMessageExternal.addListener((request, sender, resposne) => {
   if (request.method === 'discard') {
     log('onMessageExternal request received', request);
 
-    query(request.query).then((tbs = []) => {
+    query(request.query).then(async (tbs = []) => {
       if (request.forced !== true) {
         tbs = tbs.filter(({url = '', discarded, active}) => (url.startsWith('http') ||
           url.startsWith('ftp')) && !discarded && !active);
       }
-      tbs.forEach(discard);
+      await Promise.all(tbs.map(discard));
 
       resposne(tbs.map(t => t.id));
     });
@@ -43,7 +44,7 @@ chrome.runtime.onMessage.addListener((request, sender, resposne) => {
   }
   // navigation
   else if (method.startsWith('move-') || method === 'close') {
-    navigate(method);
+    return respondAsync(() => navigate(method), resposne);
   }
   else if (method === 'storage') {
     Promise.all([

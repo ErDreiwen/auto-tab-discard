@@ -235,7 +235,7 @@ number.check = async (filterTabsFrom, ops = {}, reason) => {
       // is the tab using too much memory, discard instantly
       if (prefs['memory-enabled'] && meta.memory && meta.memory > prefs['memory-value'] * 1024 * 1024) {
         log('forced discarding', 'memory usage');
-        discard(tb);
+        await discard(tb);
         continue;
       }
       // is this tab loaded
@@ -322,9 +322,7 @@ number.check = async (filterTabsFrom, ops = {}, reason) => {
     .slice(0, Math.min(arr.length + exceptionCount - prefs.number, prefs['max.single.discard']));
 
   log('number check', 'discarding', tbds.length);
-  for (const tb of tbds) {
-    discard(tb);
-  }
+  await Promise.all(tbds.map(discard));
 };
 
 chrome.alarms.onAlarm.addListener(alarm => {

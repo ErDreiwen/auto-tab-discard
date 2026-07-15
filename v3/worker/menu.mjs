@@ -5,6 +5,7 @@ import {discard, inprogress} from './core/discard.mjs';
 import {query, notify, match} from './core/utils.mjs';
 import {starters} from './core/startup.mjs';
 import {actionCommand} from './core/action.mjs';
+import {dispatchPopup, respondAsync} from './core/respond.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
 // Context Menu
@@ -97,6 +98,16 @@ import {interrupts} from './plugins/loader.mjs';
   };
   starters.push(onStartup);
 
+  const setStorage = (area, values) => new Promise((resolve, reject) => area.set(values, () => {
+    const error = chrome.runtime.lastError;
+    if (error) {
+      reject(Error(error.message));
+    }
+    else {
+      resolve();
+    }
+  }));
+
   const onClicked = async (info, tab) => {
     if (typeof interrupts !== 'undefined') {
       // wait for plug-in to be ready
@@ -111,7 +122,7 @@ import {interrupts} from './plugins/loader.mjs';
     const {menuItemId, shiftKey, checked} = info;
 
     if (menuItemId === 'whitelist-domain' || menuItemId === 'whitelist-session') {
-      storage(prefs).then(async prefs => {
+      return storage(prefs).then(async prefs => {
         Object.assign(prefs, await storage({
           'whitelist.session': []
         }, 'session'));
@@ -159,13 +170,14 @@ import {interrupts} from './plugins/loader.mjs';
           }, 'menu/1');
 
           if (d) {
-            chrome.storage.local.set({whitelist}, check);
+            await setStorage(chrome.storage.local, {whitelist});
           }
           else {
-            chrome.storage.session.set({
+            await setStorage(chrome.storage.session, {
               'whitelist.session': whitelist
-            }, check);
+            });
           }
+          await check();
         }
         else {
           notify(`"${protocol}" ${chrome.i18n.getMessage('menu_msg2')}`);
@@ -224,51 +236,52 @@ import {interrupts} from './plugins/loader.mjs';
           .shift();
 
         if (otab) {
-          chrome.tabs.update(otab.id, {
+          await chrome.tabs.update(otab.id, {
             active: true
-          }, () => {
-            // at the time we record htabs, one tab was active. Let's mark it as inactive
-            htabs.forEach(t => t.active = false);
-            htabs.forEach(discard);
           });
+          // At the time we recorded htabs, one tab was active. Mark it inactive before discarding.
+          htabs.forEach(t => t.active = false);
+          await Promise.all(htabs.map(discard));
         }
         else {
           notify(chrome.i18n.getMessage('menu_msg3'));
         }
       }
       else {
-        htabs.forEach(discard);
+        await Promise.all(htabs.map(discard));
       }
     }
     else if (menuItemId === 'open-tab-then-discard') {
       if (/Firefox/.test(navigator.userAgent)) {
-        chrome.tabs.create({
+        await chrome.tabs.create({
           active: false,
           url: info.linkUrl,
           discarded: true
         });
       }
       else {
-        chrome.tabs.create({
+        const created = await chrome.tabs.create({
           active: false,
           url: info.linkUrl
-        }, tab => chrome.scripting.executeScript({
-          target: {tabId: tab.id},
+        });
+        await chrome.scripting.executeScript({
+          target: {tabId: created.id},
           func: () => window.stop()
-        }).then(() => chrome.scripting.executeScript({
-          target: {tabId: tab.id},
+        });
+        await chrome.scripting.executeScript({
+          target: {tabId: created.id},
           files: ['data/lazy.js']
-        })));
+        });
       }
     }
     else if (menuItemId === 'auto-discardable') {
       const autoDiscardable = info.value || false; // when called from page context menu, there is no value
-      chrome.tabs.update(tab.id, {
+      await chrome.tabs.update(tab.id, {
         autoDiscardable
       });
     }
     else if (menuItemId === 'toggle-allowed') {
-      chrome.tabs.update({
+      await chrome.tabs.update(tab.id, {
         autoDiscardable: tab.autoDiscardable === false
       });
     }
@@ -301,20 +314,18 @@ import {interrupts} from './plugins/loader.mjs';
       }
       if (menuItemId.startsWith('discard')) {
         if (shiftKey) {
-          tabs.forEach(discard);
+          await Promise.all(tabs.map(discard));
         }
         else {
           // make sure to only discard possible tabs not all of them
-          number.check(tabs, number.IGNORE, 'menu/2');
+          await number.check(tabs, number.IGNORE, 'menu/2');
         }
       }
       // release
       else {
-        for (const tab of tabs) {
-          chrome.tabs.reload(tab.id, {
+        await Promise.all(tabs.map(tab => chrome.tabs.reload(tab.id, {
             bypassCache: shiftKey ? true : false
-          });
-        }
+        })));
       }
     }
   };
@@ -334,7 +345,7 @@ import {interrupts} from './plugins/loader.mjs';
   // commands
   chrome.commands.onCommand.addListener(async command => {
     if (command.startsWith('move-') || command === 'close') {
-      navigate(command);
+      await navigate(command);
     }
     else {
       const tabs = await query({
@@ -342,42 +353,30 @@ import {interrupts} from './plugins/loader.mjs';
         currentWindow: true
       });
       if (tabs.length) {
-        onClicked({
+        await onClicked({
           menuItemId: command
         }, tabs[0]);
       }
     }
   });
-  chrome.runtime.onMessage.addListener((request, sender) => {
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.method === 'popup') {
-      query({
-        active: true,
-        currentWindow: true
-      }).then(tabs => {
-        if (tabs.length) {
-          onClicked({
-            menuItemId: request.cmd,
-            value: request.value,
-            checked: request.checked,
-            shiftKey: request.shiftKey
-          }, tabs[0]);
-        }
-      });
+      return respondAsync(() => dispatchPopup(request, query, onClicked), sendResponse);
     }
     else if (request.method === 'simulate') {
-      onClicked({
+      return respondAsync(() => onClicked({
         menuItemId: request.cmd
-      }, sender.tab);
+      }, sender.tab), sendResponse);
     }
     else if (request.method === 'build-context') {
-      onStartup();
+      return respondAsync(() => onStartup(), sendResponse);
     }
     else if (request.method === 'run-check-on-action') {
       const tabs = request.ids.map(id => ({id}));
-      number.check(tabs, {
+      return respondAsync(() => number.check(tabs, {
         'exclude-active': false,
         'icon-update': true
-      }, 'menu/3');
+      }, 'menu/3'), sendResponse);
     }
   });
 }

@@ -30,7 +30,14 @@ const discard = tab => {
     }
 
     discard.count += 1;
+    let started = false;
+    let prepareTimer;
     const next = () => {
+      if (started) {
+        return;
+      }
+      started = true;
+      clearTimeout(prepareTimer);
       discard.perform(tab).then(resolve).finally(() => {
         discard.count -= 1;
         inprogress.delete(tab.id);
@@ -41,6 +48,8 @@ const discard = tab => {
         }
       });
     };
+    // Favicon preparation relies on page messaging and must never hold the queue forever.
+    prepareTimer = setTimeout(next, discard.prepareTimeout);
       // change title or favicon
       if (prefs.prepends || prefs.favicon) {
         const href = tab.favIconUrl || '';
@@ -131,7 +140,10 @@ const discard = tab => {
           if (r.some(o => o.result === 'async')) {
             chrome.tabs.sendMessage(tab.id, {
               method: 'fix-favicon'
-            }, reason => setTimeout(next, prefs['favicon-delay'], reason));
+            }, reason => {
+              chrome.runtime.lastError;
+              setTimeout(next, prefs['favicon-delay'], reason);
+            });
           }
           else {
             next('one');
@@ -145,6 +157,7 @@ const discard = tab => {
 };
 discard.tabs = [];
 discard.count = 0;
+discard.prepareTimeout = 5000;
 discard.perform = tab => withTimeout(new Promise(resolve => {
   try {
     chrome.tabs.discard(tab.id, result => {

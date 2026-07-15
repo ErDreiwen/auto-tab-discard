@@ -5,6 +5,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
   let active = 0;
   let maximum = 0;
   const completed = [];
+  let prepends = '';
 
   globalThis.chrome = {
     runtime: {
@@ -20,7 +21,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
         get(defaults, callback) {
           callback({
             ...defaults,
-            prepends: '',
+            prepends,
             favicon: false,
             'simultaneous-jobs': 1
           });
@@ -65,6 +66,15 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     chrome.tabs.discard = (id, callback) => callback();
     chrome.tabs.get = (id, callback) => callback({id, discarded: true});
     assert.equal(await discard.perform({id: 3}), true);
+
+    prepends = 'sleep:';
+    discard.prepareTimeout = 10;
+    chrome.scripting = {
+      executeScript: async () => [{result: 'async'}]
+    };
+    chrome.tabs.sendMessage = () => {};
+    assert.equal(await discard({id: 4, active: false, discarded: false}), true);
+    assert.equal(inprogress.size, 0);
   }
   finally {
     delete globalThis.chrome;
