@@ -6,6 +6,9 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
   let maximum = 0;
   const completed = [];
   let prepends = '';
+  const sessionState = {};
+  const pendingAtNativeCall = [];
+  const tabListeners = {};
 
   globalThis.chrome = {
     runtime: {
@@ -29,7 +32,15 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
       },
       session: {
         get(defaults, callback) {
-          callback(defaults);
+          callback({...defaults, ...sessionState});
+        },
+        set(values, callback) {
+          Object.assign(sessionState, values);
+          callback();
+        },
+        remove(key, callback) {
+          delete sessionState[key];
+          callback();
         }
       },
       onChanged: {
@@ -37,7 +48,13 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
       }
     },
     tabs: {
+      onUpdated: {
+        addListener(listener) {
+          tabListeners.updated = listener;
+        }
+      },
       discard(id, callback) {
+        pendingAtNativeCall.push(sessionState.__discardOwnership?.[id]?.state);
         active += 1;
         maximum = Math.max(maximum, active);
         setTimeout(() => {
@@ -62,10 +79,14 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     assert.equal(maximum, 1);
     assert.equal(discard.count, 0);
     assert.equal(inprogress.size, 0);
+    assert.deepEqual(pendingAtNativeCall, ['pending', 'pending']);
+    assert.equal(sessionState.__discardOwnership[1].source, 'self');
+    assert.equal(sessionState.__discardOwnership[2].source, 'self');
 
     chrome.tabs.discard = (id, callback) => callback();
     chrome.tabs.get = (id, callback) => callback({id, discarded: true});
     assert.equal(await discard.perform({id: 3}), true);
+    assert.equal(sessionState.__discardOwnership[3].source, 'claimed');
 
     prepends = 'sleep:';
     discard.prepareTimeout = 10;
@@ -75,6 +96,25 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     chrome.tabs.sendMessage = () => {};
     assert.equal(await discard({id: 4, active: false, discarded: false}), true);
     assert.equal(inprogress.size, 0);
+
+    discard.nativeTimeout = 10;
+    discard.getTimeout = 10;
+    chrome.tabs.discard = id => {
+      tabListeners.updated(id, {discarded: true}, {
+        id,
+        windowId: 1,
+        url: 'https://timeout.example/',
+        discarded: true
+      });
+    };
+    chrome.tabs.get = () => {};
+    assert.equal(await discard.perform({
+      id: 5,
+      windowId: 1,
+      url: 'https://timeout.example/',
+      discarded: false
+    }), false);
+    assert.equal(sessionState.__discardOwnership[5].source, 'claimed');
   }
   finally {
     delete globalThis.chrome;

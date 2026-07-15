@@ -2,6 +2,14 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.6
+
+- Persist a per-tab ownership tag in `chrome.storage.session` before every native discard request.
+- Distinguish confirmed extension discards (`self`) from untagged browser/extension discards adopted by this fork (`claimed`).
+- Detect newly discarded, restored, and pre-existing discarded tabs and claim them without waking or reloading their pages.
+- Clear ownership on release, navigation, tab closure, and tab replacement, with attempt tokens preventing late callbacks from restoring stale ownership.
+- Serialize ownership writes so simultaneous bulk discards and tab lifecycle events cannot overwrite one another.
+
 ## Changes in 0.6.8.5
 
 - Make **Discard Tab Group** use Chromium's native `groupId`, including group ID `0`.

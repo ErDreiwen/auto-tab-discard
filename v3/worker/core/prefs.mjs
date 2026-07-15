@@ -44,12 +44,13 @@ const storage = (prefs, type = 'managed') => new Promise(resolve => {
     cache[name].push(callback);
   };
   chrome.storage.onChanged.addListener(ps => {
-    for (const k of Object.keys(ps)) {
+    const keys = Object.keys(ps).filter(k => k !== '__discardOwnership');
+    for (const k of keys) {
       prefs[k] = ps[k].newValue;
     }
 
     // only call callbacks if storage is not cleared
-    for (const k of Object.keys(ps)) {
+    for (const k of keys) {
       if (k in cache && 'newValue' in ps[k]) {
         cache[k].forEach(c => c());
       }

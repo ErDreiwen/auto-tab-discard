@@ -4,6 +4,7 @@ import {starters} from './core/startup.mjs';
 import {actionPopup} from './core/action.mjs';
 import {respondAsync} from './core/respond.mjs';
 import {discard} from './core/discard.mjs';
+import {ownership} from './core/ownership.mjs';
 import {navigate} from './core/navigate.mjs';
 import './modes/number.mjs';
 import './menu.mjs';
@@ -62,6 +63,10 @@ const popup = () => chrome.action.setPopup({
 });
 starters.push(() => popup());
 storage.on('click', () => popup());
+
+// Adopt discarded tabs that predate this worker and prune stale ownership tags.
+// start() reports and retries transient API/storage failures itself.
+starters.push(() => ownership.start());
 
 // idle timeout
 starters.push(() => {

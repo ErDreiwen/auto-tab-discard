@@ -1,6 +1,7 @@
 import {prefs, storage} from './prefs.mjs';
 import {log} from './utils.mjs';
 import {withTimeout} from './promise.mjs';
+import {ownership} from './ownership.mjs';
 
 // this list keeps ids of the tabs that are in progress of being discarded
 const inprogress = new Set();
@@ -158,30 +159,79 @@ const discard = tab => {
 discard.tabs = [];
 discard.count = 0;
 discard.prepareTimeout = 5000;
-discard.perform = tab => withTimeout(new Promise(resolve => {
+const getTab = id => new Promise(resolve => chrome.tabs.get(id, current => {
+  const error = chrome.runtime.lastError;
+  resolve(error ? undefined : current);
+}));
+const nativeDiscard = tab => new Promise(resolve => {
   try {
     chrome.tabs.discard(tab.id, result => {
       const error = chrome.runtime.lastError;
       if (error) {
-        log('discarding failed', error.message || error);
-        resolve(false);
+        resolve({error: error.message || String(error)});
       }
-      else if (result === undefined) {
-        // Firefox does not return a Tab; Chromium can also omit it for a skipped discard.
-        chrome.tabs.get(tab.id, current => {
-          const getError = chrome.runtime.lastError;
-          resolve(Boolean(!getError && current && current.discarded));
-        });
+      else if (result && result.discarded === true) {
+        resolve({result, source: 'self', success: true});
       }
       else {
-        resolve(Boolean(result.discarded));
+        resolve({ambiguous: result === undefined});
       }
     });
   }
   catch (e) {
-    log('discarding failed', e);
-    resolve(false);
+    resolve({error: e.message || String(e)});
   }
-}), 5000, false);
+});
+
+discard.perform = async tab => {
+  let attemptId;
+  try {
+    // The pending tag is persisted before Chromium receives the discard call.
+    attemptId = await ownership.begin(tab);
+  }
+  catch (e) {
+    log('discard ownership tagging failed', e);
+    return false;
+  }
+  if (!attemptId) {
+    return false;
+  }
+
+  const timeout = {};
+  const outcome = await withTimeout(nativeDiscard(tab), discard.nativeTimeout, timeout);
+  let current = outcome.result;
+  let source = outcome.source;
+  let success = outcome.success === true;
+
+  if (!current) {
+    current = await withTimeout(getTab(tab.id), discard.getTimeout, undefined);
+    if (current && current.discarded === true) {
+      // No strong native result means another discarder may have won the race.
+      // Claim the final state without falsely labeling it as a self-discard.
+      source = 'claimed';
+      success = outcome.ambiguous === true;
+    }
+  }
+  if (outcome.error) {
+    log('discarding failed', outcome.error);
+  }
+  else if (outcome === timeout) {
+    log('discarding failed', 'native discard timed out');
+  }
+
+  try {
+    const owned = await ownership.finish(current || tab, attemptId, source);
+    if (source && owned === false) {
+      return false;
+    }
+  }
+  catch (e) {
+    log('discard ownership finalization failed', e);
+    return false;
+  }
+  return success;
+};
+discard.nativeTimeout = 5000;
+discard.getTimeout = 1000;
 
 export {discard, inprogress};

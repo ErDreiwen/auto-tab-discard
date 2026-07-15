@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 test('keeps a popup command alive through native tab discard completion', async () => {
   let finishDiscard;
+  const sessionState = {};
 
   globalThis.chrome = {
     runtime: {
@@ -21,7 +22,15 @@ test('keeps a popup command alive through native tab discard completion', async 
       },
       session: {
         get(defaults, callback) {
-          callback(defaults);
+          callback({...defaults, ...sessionState});
+        },
+        set(values, callback) {
+          Object.assign(sessionState, values);
+          callback();
+        },
+        remove(key, callback) {
+          delete sessionState[key];
+          callback();
         }
       },
       onChanged: {
@@ -62,6 +71,7 @@ test('keeps a popup command alive through native tab discard completion', async 
 
     finishDiscard();
     assert.deepEqual(await response, {ok: true, value: true});
+    assert.equal(sessionState.__discardOwnership[2].source, 'self');
   }
   finally {
     delete globalThis.chrome;
