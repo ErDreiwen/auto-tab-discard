@@ -2,6 +2,13 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.9
+
+- Make fresh ownership takeover explicit-command only. Background discard events are tagged but never wake a tab, and startup resumes only a takeover that an earlier worker had already woken.
+- Limit a requested takeover to one reload and one native discard attempt. Contention is recorded without alarms, delayed retries, or a reload fight with another extension.
+- Remove the release feedback path that could reload a tab again when a competing extension re-discarded it.
+- Keep genuine reload -> native discard -> verified `source: self` behavior for all seven popup discard commands.
+
 ## Changes in 0.6.8.8
 
 - Replace bookkeeping-only `claimed` adoption with a genuine takeover: reload the external discard, wait for `discarded: false`, then issue a fresh native discard.

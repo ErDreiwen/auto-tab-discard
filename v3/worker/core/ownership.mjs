@@ -218,14 +218,13 @@ const invalidate = id => {
   });
 };
 
-const deferTakeover = (id, retryAfter) => mutate(state => {
+const deferTakeover = id => mutate(state => {
   if (!Number.isInteger(id)) {
     return false;
   }
   state[id] = {
     state: 'owned',
     source: 'contended',
-    retryAfter,
     updatedAt: Date.now()
   };
   return state[id];

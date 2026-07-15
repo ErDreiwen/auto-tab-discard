@@ -1,12 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-test('resumes an awake takeover after a Manifest V3 worker restart', async () => {
+test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 restart', async () => {
   const sessionState = {
     __discardOwnership: {
       1: {
         state: 'takeover-awake',
         attemptId: 'dead-worker-attempt',
+        updatedAt: 1
+      },
+      2: {
+        state: 'owned',
+        source: 'claimed',
+        attemptId: null,
         updatedAt: 1
       }
     }
@@ -19,6 +25,15 @@ test('resumes an awake takeover after a Manifest V3 worker restart', async () =>
     discarded: false,
     status: 'loading',
     url: 'https://restart-recovery.example/'
+  };
+  const claimedTab = {
+    id: 2,
+    windowId: 1,
+    index: 2,
+    active: false,
+    discarded: true,
+    status: 'unloaded',
+    url: 'https://ordinary-claimed.example/'
   };
   const updatedListeners = [];
   const calls = [];
@@ -58,15 +73,19 @@ test('resumes an awake takeover after a Manifest V3 worker restart', async () =>
     },
     tabs: {
       query(options, callback) {
-        callback(options.active === false || Object.keys(options).length === 0 ? [{...liveTab}] : []);
+        callback(options.active === false || Object.keys(options).length === 0 ? [
+          {...liveTab},
+          {...claimedTab}
+        ] : []);
       },
       get(id, callback) {
-        callback(id === liveTab.id ? {...liveTab} : undefined);
+        callback(id === liveTab.id ? {...liveTab} : id === claimedTab.id ? {...claimedTab} : undefined);
       },
       reload() {
         assert.fail('an already-awake takeover recovery must not reload again');
       },
       discard(id, callback) {
+        assert.equal(id, liveTab.id, 'startup must not discard an ordinary claimed tab');
         calls.push(`discard:${id}`);
         liveTab.discarded = true;
         liveTab.status = 'unloaded';
@@ -100,13 +119,16 @@ test('resumes an awake takeover after a Manifest V3 worker restart', async () =>
     assert.equal((await ownership.status(1)).marker.state, 'takeover-awake');
     await ownership.start(1, 0);
     assert.equal((await ownership.status(1)).marker.state, 'takeover-recovery');
+    assert.equal((await ownership.status(2)).marker.source, 'claimed');
 
-    assert.deepEqual(await discard.takeoverExisting(), [true]);
+    assert.deepEqual(await discard.recoverTakeovers(), [true]);
     assert.deepEqual(calls, ['discard:1']);
     assert.equal(liveTab.discarded, true);
     const finalState = await ownership.status(1);
     assert.equal(finalState.marker.state, 'owned');
     assert.equal(finalState.marker.source, 'self');
+    assert.equal(claimedTab.discarded, true);
+    assert.equal((await ownership.status(2)).marker.source, 'claimed');
   }
   finally {
     delete globalThis.chrome;

@@ -229,7 +229,7 @@ import {interrupts} from './plugins/loader.mjs';
         notifyNoKeeper: () => notify(chrome.i18n.getMessage('menu_msg3')),
         resolveFresh: ownership.resolveFresh,
         selected: tab,
-        takeover: discard.takeover,
+        takeover: target => discard.takeover(target, {manual: true}),
         targets: htabs
       });
     }
@@ -271,7 +271,7 @@ import {interrupts} from './plugins/loader.mjs';
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
       await runScopedCommand({
-        cancelTakeover: tab => discard.cancelTakeover(tab.id, tab.discarded === true),
+        cancelTakeover: tab => discard.cancelTakeover(tab.id),
         command: menuItemId,
         selected: tab,
         shiftKey,
@@ -285,7 +285,7 @@ import {interrupts} from './plugins/loader.mjs';
           resolve(error ? undefined : current);
         })),
         resolveFresh: ownership.resolveFresh,
-        takeover: discard.takeover
+        takeover: target => discard.takeover(target, {manual: true})
       });
     }
   };

@@ -64,11 +64,12 @@ const popup = () => chrome.action.setPopup({
 starters.push(() => popup());
 storage.on('click', () => popup());
 
-// Reconcile persisted markers, then genuinely take over any external or legacy
-// claimed discards one at a time through reload -> native discard -> self.
+// Reconcile persisted markers and finish only a takeover this worker had
+// already woken. Existing external discards are left asleep until an explicit
+// scoped command targets them, avoiding a reload sweep on every MV3 restart.
 starters.push(async () => {
   await ownership.start();
-  return discard.takeoverExisting();
+  return discard.recoverTakeovers();
 });
 
 // idle timeout

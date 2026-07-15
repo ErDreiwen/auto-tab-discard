@@ -299,37 +299,9 @@ const takeoverOnce = async (tab, token) => {
 };
 
 const takeoverJobs = new Map();
-const releaseSuppressions = new Map();
-const TAKEOVER_RETRY_PREFIX = 'discard.takeover.retry.';
 let takeoverTail = Promise.resolve();
 
-const retryAlarmName = id => `${TAKEOVER_RETRY_PREFIX}${id}`;
-const scheduleTakeoverRetry = (id, when) => {
-  try {
-    chrome.alarms?.create(retryAlarmName(id), {when});
-  }
-  catch (e) {
-    log('discard takeover retry could not be scheduled', e);
-  }
-};
-const clearTakeoverRetry = id => new Promise(resolve => {
-  if (!chrome.alarms?.clear) {
-    resolve(false);
-    return;
-  }
-  try {
-    chrome.alarms.clear(retryAlarmName(id), cleared => {
-      chrome.runtime.lastError;
-      resolve(cleared);
-    });
-  }
-  catch (e) {
-    log('discard takeover retry could not be cleared', e);
-    resolve(false);
-  }
-});
-
-discard.takeover = tab => {
+discard.takeover = (tab, {manual = false} = {}) => {
   const id = tab && tab.id;
   if (!Number.isInteger(id)) {
     return Promise.reject(Error('invalid tab for discard takeover'));
@@ -346,8 +318,8 @@ discard.takeover = tab => {
     let lastError;
     for (let pass = 0; pass < discard.takeoverRetries && token.cancelled === false; pass += 1) {
       const state = await ownership.status(id);
-      if (state.marker?.source === 'contended' && state.marker.retryAfter > Date.now()) {
-        throw Error(`discard takeover for tab ${id} is cooling down after contention`);
+      if (state.marker?.source === 'contended' && manual !== true) {
+        throw Error(`automatic discard takeover stopped after contention on tab ${id}`);
       }
       if (!state.attemptId && state.marker?.state === 'owned' && state.marker.source === 'self') {
         return true;
@@ -375,9 +347,7 @@ discard.takeover = tab => {
     if (!token.cancelled) {
       const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
       if (current?.discarded === true) {
-        const retryAfter = Date.now() + discard.takeoverCooldown;
-        await ownership.deferTakeover(id, retryAfter);
-        scheduleTakeoverRetry(id, retryAfter);
+        await ownership.deferTakeover(id);
       }
     }
     throw lastError || Error(`discard takeover cancelled for tab ${id}`);
@@ -394,13 +364,8 @@ discard.takeover = tab => {
   return job.promise;
 };
 
-discard.cancelTakeover = async (id, wasDiscarded = false) => {
+discard.cancelTakeover = async id => {
   const job = takeoverJobs.get(id);
-  if (job || wasDiscarded) {
-    const until = Date.now() + discard.releaseSuppression;
-    releaseSuppressions.set(id, until);
-  }
-  await clearTakeoverRetry(id);
   if (!job) {
     return false;
   }
@@ -419,21 +384,16 @@ discard.cancelTakeover = async (id, wasDiscarded = false) => {
   return true;
 };
 
-discard.takeoverExisting = async () => {
+// Only resume a takeover that this worker had already woken before MV3 stopped
+// it. Do not sweep and reload every pre-existing external discard at startup.
+discard.recoverTakeovers = async () => {
   const tabs = await query({
     url: '*://*/*',
     active: false
   });
   const targets = (await Promise.all(tabs.map(async tab => {
     const state = await ownership.status(tab.id);
-    if (tab.discarded === true) {
-      const coolingDown = state.marker?.source === 'contended' && state.marker.retryAfter > Date.now();
-      if (coolingDown) {
-        scheduleTakeoverRetry(tab.id, state.marker.retryAfter);
-      }
-      return state.marker?.state === 'owned' && (state.marker.source === 'self' || coolingDown) ? undefined : tab;
-    }
-    return state.marker?.state === 'takeover-recovery' ? tab : undefined;
+    return tab.discarded === false && state.marker?.state === 'takeover-recovery' ? tab : undefined;
   }))).filter(Boolean);
   return Promise.all(targets.map(tab => discard.takeover(tab).catch(e => {
     log('discard takeover failed', e);
@@ -441,50 +401,6 @@ discard.takeoverExisting = async () => {
   })));
 };
 
-const requestTakeover = tab => {
-  const url = tab?.url || '';
-  if (tab?.discarded === true && tab.active !== true && (url.startsWith('http') || url.startsWith('ftp'))) {
-    const suppressedUntil = releaseSuppressions.get(tab.id) || 0;
-    if (suppressedUntil > Date.now()) {
-      reloadTab(tab.id).then(result => {
-        if (result.error) {
-          log('suppressed discard could not be released', result.error);
-        }
-      });
-      return;
-    }
-    releaseSuppressions.delete(tab.id);
-    discard.takeover(tab).catch(e => log('discard takeover failed', e));
-  }
-};
-
-chrome.alarms?.onAlarm?.addListener(alarm => {
-  if (!alarm?.name?.startsWith(TAKEOVER_RETRY_PREFIX)) {
-    return;
-  }
-  const id = Number(alarm.name.slice(TAKEOVER_RETRY_PREFIX.length));
-  if (!Number.isInteger(id)) {
-    return;
-  }
-  ownership.status(id).then(state => {
-    const retryAfter = state.marker?.source === 'contended' ? state.marker.retryAfter : 0;
-    if (retryAfter > Date.now()) {
-      scheduleTakeoverRetry(id, retryAfter);
-      return;
-    }
-    return withTimeout(getTab(id), discard.getTimeout, undefined).then(requestTakeover);
-  }).catch(e => log('discard takeover retry failed', e));
-});
-
-chrome.tabs.onUpdated?.addListener((id, changeInfo, tab) => {
-  if (tab?.discarded === true && (changeInfo.discarded === true || 'url' in changeInfo)) {
-    requestTakeover(tab);
-  }
-});
-chrome.tabs.onCreated?.addListener(requestTakeover);
-chrome.tabs.onAttached?.addListener(id => {
-  withTimeout(getTab(id), discard.getTimeout, undefined).then(requestTakeover);
-});
 chrome.tabs.onRemoved?.addListener(id => {
   const job = takeoverJobs.get(id);
   if (job) {
@@ -496,7 +412,6 @@ chrome.tabs.onReplaced?.addListener((addedId, removedId) => {
   if (job) {
     job.token.cancelled = true;
   }
-  withTimeout(getTab(addedId), discard.getTimeout, undefined).then(requestTakeover);
 });
 
 discard.perform = async tab => {
@@ -551,10 +466,8 @@ discard.nativeTimeout = 5000;
 discard.getTimeout = 1000;
 discard.takeoverTimeout = 5000;
 discard.takeoverPoll = 50;
-discard.takeoverRetries = 2;
+discard.takeoverRetries = 1;
 discard.takeoverFenceTimeout = 10000;
-discard.takeoverCooldown = 30000;
-discard.releaseSuppression = 60000;
 discard.takeoverJobs = takeoverJobs;
 
 export {discard, inprogress};

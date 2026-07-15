@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {releaseDiscardedTargets, runScopedCommand} from '../v3/worker/core/command-scope.mjs';
 
-test('performs a real reload and native rediscard before recording self ownership', async () => {
+test('keeps genuine takeovers explicit, bounded, and free of reload feedback loops', async () => {
   const sessionState = {
     __discardOwnership: {
       1: {
@@ -148,7 +148,6 @@ test('performs a real reload and native rediscard before recording self ownershi
     discard.takeoverTimeout = 200;
     discard.takeoverPoll = 0;
     discard.takeoverRetries = 1;
-    discard.takeoverCooldown = 5;
 
     let settled = false;
     const command = runScopedCommand({
@@ -159,7 +158,7 @@ test('performs a real reload and native rediscard before recording self ownershi
       resolveFresh: ownership.resolveFresh,
       check: async () => assert.fail('already-discarded takeover must not use the eligibility check'),
       discard: async () => assert.fail('takeover must use its low-level native discard path'),
-      takeover: discard.takeover,
+      takeover: tab => discard.takeover(tab, {manual: true}),
       reload: async () => assert.fail('discard command must not use the release path')
     }).then(result => {
       settled = true;
@@ -189,7 +188,7 @@ test('performs a real reload and native rediscard before recording self ownershi
       resolveFresh: ownership.resolveFresh,
       check: async () => {},
       discard: async () => true,
-      takeover: discard.takeover,
+      takeover: tab => discard.takeover(tab, {manual: true}),
       reload: async () => {}
     });
     assert.deepEqual(repeat.alreadyOwned.map(tab => tab.id), [1]);
@@ -204,17 +203,12 @@ test('performs a real reload and native rediscard before recording self ownershi
       url: 'https://automatic.example/'
     };
     liveTabs.set(3, automatic);
+    const automaticCallCount = calls.length;
     emitUpdated(3, {discarded: true});
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
-    assert.deepEqual(calls.slice(-2), ['reload:3:false', 'discard:3']);
-    finishNative();
-    while (discard.takeoverJobs.has(3)) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
     state = await ownership.status(3);
-    assert.equal(state.marker.source, 'self');
+    assert.equal(calls.length, automaticCallCount);
+    assert.equal(discard.takeoverJobs.has(3), false);
+    assert.equal(state.marker.source, 'claimed');
 
     const legacyClaimed = {
       id: 4,
@@ -228,15 +222,12 @@ test('performs a real reload and native rediscard before recording self ownershi
     await ownership.claim(legacyClaimed);
     state = await ownership.status(4);
     assert.equal(state.marker.source, 'claimed');
-    const startupTakeover = discard.takeoverExisting();
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
-    assert.deepEqual(calls.slice(-2), ['reload:4:false', 'discard:4']);
-    finishNative();
-    assert.ok((await startupTakeover).every(Boolean));
+    const startupCallCount = calls.length;
+    assert.deepEqual(await discard.recoverTakeovers(), []);
+    assert.equal(calls.length, startupCallCount);
+    assert.equal(liveTabs.get(4).discarded, true);
     state = await ownership.status(4);
-    assert.equal(state.marker.source, 'self');
+    assert.equal(state.marker.source, 'claimed');
 
     const queueHead = {
       id: 7,
@@ -257,11 +248,11 @@ test('performs a real reload and native rediscard before recording self ownershi
     liveTabs.set(7, queueHead);
     liveTabs.set(8, queuedRelease);
     await Promise.all([ownership.claim(queueHead), ownership.claim(queuedRelease)]);
-    const headTakeover = discard.takeover(clone(queueHead));
+    const headTakeover = discard.takeover(clone(queueHead), {manual: true});
     while (!finishNative) {
       await new Promise(resolve => setTimeout(resolve));
     }
-    const cancelledQueuedTakeover = discard.takeover(clone(queuedRelease)).catch(() => false);
+    const cancelledQueuedTakeover = discard.takeover(clone(queuedRelease), {manual: true}).catch(() => false);
     let queuedReleaseSettled = false;
     const queuedReleaseCommand = releaseDiscardedTargets(
       'release-tabs',
@@ -296,7 +287,7 @@ test('performs a real reload and native rediscard before recording self ownershi
     await ownership.claim(releaseRace);
     discard.nativeTimeout = 5;
     discard.takeoverFenceTimeout = 100;
-    const racingTakeover = discard.takeover(clone(releaseRace));
+    const racingTakeover = discard.takeover(clone(releaseRace), {manual: true});
     while (!finishNative) {
       await new Promise(resolve => setTimeout(resolve));
     }
@@ -323,6 +314,14 @@ test('performs a real reload and native rediscard before recording self ownershi
     assert.equal(liveTabs.get(5).discarded, false);
     state = await ownership.status(5);
     assert.equal(state.marker, undefined);
+    const postReleaseCallCount = calls.length;
+    liveTabs.get(5).discarded = true;
+    liveTabs.get(5).status = 'unloaded';
+    emitUpdated(5, {discarded: true, status: 'unloaded'});
+    state = await ownership.status(5);
+    assert.equal(calls.length, postReleaseCallCount);
+    assert.equal(discard.takeoverJobs.has(5), false);
+    assert.equal(state.marker.source, 'claimed');
     discard.nativeTimeout = 200;
 
     const lateUrl = {
@@ -339,17 +338,12 @@ test('performs a real reload and native rediscard before recording self ownershi
     state = await ownership.status(6);
     assert.equal(state.marker.source, 'claimed');
     lateUrl.url = 'https://late-url.example/';
+    const lateUrlCallCount = calls.length;
     emitUpdated(6, {url: lateUrl.url});
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
-    assert.deepEqual(calls.slice(-2), ['reload:6:false', 'discard:6']);
-    finishNative();
-    while (discard.takeoverJobs.has(6)) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
     state = await ownership.status(6);
-    assert.equal(state.marker.source, 'self');
+    assert.equal(calls.length, lateUrlCallCount);
+    assert.equal(discard.takeoverJobs.has(6), false);
+    assert.equal(state.marker.source, 'claimed');
 
     const contestedTab = {
       id: 2,
@@ -368,30 +362,26 @@ test('performs a real reload and native rediscard before recording self ownershi
     };
     contested.add(2);
 
-    await assert.rejects(discard.takeover(clone(contestedTab)), /already discarded|takeover failed/);
+    await assert.rejects(discard.takeover(clone(contestedTab), {manual: true}), /already discarded|takeover failed/);
     state = await ownership.status(2);
     assert.equal(state.marker.source, 'contended');
-    assert.ok(state.marker.retryAfter > Date.now());
     assert.equal(liveTabs.get(2).discarded, true);
     assert.deepEqual(calls.slice(-2), ['reload:2:false', 'discard:2']);
+    assert.equal(alarmListeners.length, 0);
+    assert.equal(scheduledAlarms.size, 0);
+    const contendedCallCount = calls.length;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(calls.length, contendedCallCount);
+    assert.equal(discard.takeoverJobs.has(2), false);
 
-    scheduledAlarms.clear();
-    assert.deepEqual(await discard.takeoverExisting(), []);
-    const retryName = 'discard.takeover.retry.2';
-    assert.equal(scheduledAlarms.get(retryName).when, state.marker.retryAfter);
     contested.delete(2);
-    while (Date.now() < state.marker.retryAfter) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
-    alarmListeners.forEach(listener => listener({name: retryName}));
+    const manualRetry = discard.takeover(clone(contestedTab), {manual: true});
     while (!finishNative) {
       await new Promise(resolve => setTimeout(resolve));
     }
     assert.deepEqual(calls.slice(-2), ['reload:2:false', 'discard:2']);
     finishNative();
-    while (discard.takeoverJobs.has(2)) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
+    assert.equal(await manualRetry, true);
     state = await ownership.status(2);
     assert.equal(state.marker.source, 'self');
   }
