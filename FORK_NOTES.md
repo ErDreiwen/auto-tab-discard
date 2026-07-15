@@ -2,6 +2,11 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.5
+
+- Make **Discard Tab Group** use Chromium's native `groupId`, including group ID `0`.
+- Restrict the command to tabs in the selected tab's window and group; highlighted tabs outside the group are never included.
+
 ## Changes in 0.6.8.4
 
 - Keep popup message channels open until each discard or release command actually finishes, including on current Edge and Chrome MV3 service workers.

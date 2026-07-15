@@ -1,4 +1,5 @@
 import {overwrite, release} from '../loader.mjs';
+import {tabsOutsideSelectedGroup} from '../../core/group.mjs';
 import {log, query} from '../../core/utils.mjs';
 
 function enable() {
@@ -44,6 +45,9 @@ function enable() {
         currentWindow: true,
         discarded: false
       }).then(tbs => {
+        if (menuItemId === 'discard-tree') {
+          tbs = tabsOutsideSelectedGroup(tbs, tab);
+        }
         if (tbs.length === 0 && tab.url.startsWith('http')) {
           const args = new URLSearchParams();
           args.set('title', tab.title);

@@ -5,6 +5,7 @@ import {discard, inprogress} from './core/discard.mjs';
 import {query, notify, match} from './core/utils.mjs';
 import {starters} from './core/startup.mjs';
 import {actionCommand} from './core/action.mjs';
+import {tabsForGroupCommand} from './core/group.mjs';
 import {dispatchPopup, respondAsync} from './core/respond.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
@@ -206,18 +207,10 @@ import {interrupts} from './plugins/loader.mjs';
           resolve();
         }));
       }
-      // discard-tree for native
-      else if (tab.highlighted && menuItemId === 'discard-tree') { // if a single not-active tab is called
-        const tbs = tabs.filter(t => t.highlighted);
-        if (tbs.length > 1) {
-          htabs.push(...tbs);
-        }
-        else if (tab.groupId && tab.groupId > -1) {
-          htabs.push(...tabs.filter(t => t.groupId === tab.groupId));
-        }
-        else {
-          htabs.push(tab);
-        }
+      // Chromium/Edge native tab groups. Group membership is the only selector:
+      // highlighted tabs outside this group must never be included.
+      else if (menuItemId === 'discard-tree') {
+        htabs.push(...tabsForGroupCommand(tabs, tab));
       }
       else {
         htabs.push(tab);
