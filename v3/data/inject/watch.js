@@ -23,7 +23,8 @@ addEventListener('submit', () => {
 });
 
 addEventListener('keydown', e => {
-  const {keyCode, target, path} = e;
+  const {keyCode, target} = e;
+  const path = e.composedPath ? e.composedPath() : e.path;
   // check target
   if (keyCode >= 48 && keyCode <= 90 && target.tagName) {
     if (target.isContentEditable) {

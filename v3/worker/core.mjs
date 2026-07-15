@@ -1,6 +1,7 @@
 import {log, query} from './core/utils.mjs';
 import {prefs, storage} from './core/prefs.mjs';
 import {starters} from './core/startup.mjs';
+import {actionPopup} from './core/action.mjs';
 import {discard} from './core/discard.mjs';
 import {navigate} from './core/navigate.mjs';
 import './modes/number.mjs';
@@ -56,7 +57,7 @@ chrome.runtime.onMessage.addListener((request, sender, resposne) => {
 
 // left-click action
 const popup = () => chrome.action.setPopup({
-  popup: prefs.click === 'click.popup' ? 'data/popup/index.html' : ''
+  popup: actionPopup(prefs.click)
 });
 starters.push(() => popup());
 storage.on('click', () => popup());

@@ -2,10 +2,11 @@ import {storage} from '../core/prefs.mjs';
 import {log, query, match} from '../core/utils.mjs';
 import {discard} from '../core/discard.mjs';
 import {starters} from '../core/startup.mjs';
+import {withTimeout} from '../core/promise.mjs';
 import {interrupts} from '../plugins/loader.mjs';
 
 const number = {
-  IGNORE: { // ignore defaults
+  IGNORE: Object.freeze({ // ignore defaults
     'idle': false,
     'battery': false,
     'online': false,
@@ -13,23 +14,30 @@ const number = {
     'period': 0,
     'max.single.discard': Infinity,
     'ignore.meta.data': true
-  }
+  })
 };
 const pluginFilters = {}; // this object adds custom filters to the number-based discarding
 
-number.install = period => {
+number.install = async period => {
   // checking period is between 1 minute to 20 minutes
   period = Math.min(20 * 60, Math.max(60, period / 3));
+  const periodInMinutes = period / 60;
+  const alarm = await new Promise(resolve => chrome.alarms.get('number.check', resolve));
 
-  console.log('ss', period);
-
-  chrome.alarms.create('number.check', {
-    when: Date.now() + period * 1000,
-    periodInMinutes: period / 60
-  });
+  // Do not postpone the next check whenever an unrelated event wakes the worker.
+  if (
+    !alarm ||
+    typeof alarm.periodInMinutes !== 'number' ||
+    Math.abs(alarm.periodInMinutes - periodInMinutes) > 1e-6
+  ) {
+    chrome.alarms.create('number.check', {
+      when: Date.now() + period * 1000,
+      periodInMinutes
+    });
+  }
 };
 number.remove = () => {
-  chrome.alarms.clear('number.check');
+  return chrome.alarms.clear('number.check');
 };
 // filterTabsFrom is a list of tab that if provided, discarding only happens on them
 // ops is the preference object overwrite
@@ -196,13 +204,18 @@ number.check = async (filterTabsFrom, ops = {}, reason) => {
   const arr = [];
   for (const tb of tbs) {
     try {
-      const ms = tb.status === 'unloaded' ? [] : await chrome.scripting.executeScript({
-        target: {
-          tabId: tb.id,
-          allFrames: true
-        },
-        files: ['/data/inject/meta.js']
-      }).then(r => r.map(o => o.result), () => []);
+      // Script injection can stay pending on a frozen tab and used to block the entire batch.
+      const ms = tb.status === 'unloaded' || tb.frozen === true ? [] : await withTimeout(
+        chrome.scripting.executeScript({
+          target: {
+            tabId: tb.id,
+            allFrames: true
+          },
+          files: ['/data/inject/meta.js']
+        }).then(r => r.map(o => o.result)),
+        3000,
+        []
+      );
 
       // remove protected tabs (e.g. addons.mozilla.org)
       if (ms.length === 0) {
@@ -318,16 +331,6 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'number.check') {
     log('alarm fire', 'number.check', alarm.name);
 
-    console.log('m', alarm.periodInMinutes);
-
-    // make sure alarm is firing next time
-    if (alarm.periodInMinutes) {
-      chrome.alarms.create(alarm.name, {
-        when: Date.now() + alarm.periodInMinutes * 60 * 1000,
-        periodInMinutes: alarm.periodInMinutes
-      });
-    }
-
     number.check(undefined, undefined, 'number/1');
   }
 });
@@ -360,10 +363,10 @@ chrome.idle.onStateChanged.addListener(state => {
       (ps.mode === 'time-based' || ps.mode === 'url-based') &&
       ps['tmp_disable'] === 0
     ) {
-      number.install(ps.period);
+      return number.install(ps.period);
     }
     else {
-      number.remove();
+      return number.remove();
     }
   });
   starters.push(check);

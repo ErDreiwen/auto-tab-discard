@@ -30,6 +30,8 @@ const release = name => {
 };
 
 /* plug-in system */
+// Register browser-start behavior synchronously so the onStartup event cannot outrun it.
+startup.enable();
 const ready = storage({
   './plugins/focus/core.js': false,
   './plugins/trash/core.js': false,
@@ -41,8 +43,6 @@ const ready = storage({
   './plugins/unloaded/core.js': false,
   './plugins/youtube/core.js': false
 }).then(prefs => {
-  startup.enable();
-
   if (prefs['./plugins/focus/core.js']) {
     focus.enable();
   }

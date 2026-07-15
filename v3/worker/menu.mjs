@@ -4,6 +4,7 @@ import {navigate} from './core/navigate.mjs';
 import {discard, inprogress} from './core/discard.mjs';
 import {query, notify, match} from './core/utils.mjs';
 import {starters} from './core/startup.mjs';
+import {actionCommand} from './core/action.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
 // Context Menu
@@ -318,9 +319,18 @@ import {interrupts} from './plugins/loader.mjs';
     }
   };
   chrome.contextMenus.onClicked.addListener(onClicked);
-  chrome.action.onClicked.addListener(tab => onClicked({
-    menuItemId: localStorage.getItem('click')
-  }, tab));
+  chrome.action.onClicked.addListener(async tab => {
+    const menuItemId = await actionCommand(storage);
+    if (menuItemId === 'popup') {
+      await chrome.action.setPopup({popup: 'data/popup/index.html'});
+      if (chrome.action.openPopup) {
+        await chrome.action.openPopup();
+      }
+    }
+    else {
+      await onClicked({menuItemId}, tab);
+    }
+  });
   // commands
   chrome.commands.onCommand.addListener(async command => {
     if (command.startsWith('move-') || command === 'close') {

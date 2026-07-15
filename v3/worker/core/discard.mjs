@@ -1,50 +1,46 @@
 import {prefs, storage} from './prefs.mjs';
 import {log} from './utils.mjs';
+import {withTimeout} from './promise.mjs';
 
 // this list keeps ids of the tabs that are in progress of being discarded
 const inprogress = new Set();
 
 const discard = tab => {
   if (inprogress.has(tab.id)) {
-    return;
+    return Promise.resolve(false);
+  }
+  if (tab.active) {
+    log('tab is active', tab);
+    return Promise.resolve(false);
+  }
+  if (tab.discarded) {
+    log('already discarded', tab);
+    return Promise.resolve(false);
   }
 
   // https://github.com/rNeomy/auto-tab-discard/issues/248
   inprogress.add(tab.id);
-  setTimeout(() => inprogress.delete(tab.id), 2000);
 
-  if (tab.active) {
-    log('tab is active', tab);
-    return;
-  }
-  if (tab.discarded) {
-    log('already discarded', tab);
-    return;
-  }
-  return storage(prefs).then(prefs => {
-    if (discard.count > prefs['simultaneous-jobs'] && discard.time + 5000 < Date.now()) {
-      discard.count = 0;
-    }
-    if (discard.count > prefs['simultaneous-jobs']) {
+  return storage(prefs).then(prefs => new Promise(resolve => {
+    const limit = Math.max(1, Number(prefs['simultaneous-jobs']) || 1);
+    if (discard.count >= limit) {
       log('discarding queue for', tab);
-      discard.tabs.push(tab);
+      discard.tabs.push({tab, resolve});
       return;
     }
 
-    return new Promise(resolve => {
-      discard.count += 1;
-      discard.time = Date.now();
-      const next = () => {
-        discard.perform(tab);
-
+    discard.count += 1;
+    const next = () => {
+      discard.perform(tab).then(resolve).finally(() => {
         discard.count -= 1;
+        inprogress.delete(tab.id);
         if (discard.tabs.length) {
-          const tab = discard.tabs.shift();
-          inprogress.delete(tab.id);
-          discard(tab);
+          const queued = discard.tabs.shift();
+          inprogress.delete(queued.tab.id);
+          discard(queued.tab).then(queued.resolve);
         }
-        resolve();
-      };
+      });
+    };
       // change title or favicon
       if (prefs.prepends || prefs.favicon) {
         const href = tab.favIconUrl || '';
@@ -145,18 +141,34 @@ const discard = tab => {
       else {
         next('two');
       }
-    });
-  });
+  }));
 };
 discard.tabs = [];
 discard.count = 0;
-discard.perform = tab => {
+discard.perform = tab => withTimeout(new Promise(resolve => {
   try {
-    chrome.tabs.discard(tab.id, () => chrome.runtime.lastError);
+    chrome.tabs.discard(tab.id, result => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        log('discarding failed', error.message || error);
+        resolve(false);
+      }
+      else if (result === undefined) {
+        // Firefox does not return a Tab; Chromium can also omit it for a skipped discard.
+        chrome.tabs.get(tab.id, current => {
+          const getError = chrome.runtime.lastError;
+          resolve(Boolean(!getError && current && current.discarded));
+        });
+      }
+      else {
+        resolve(Boolean(result.discarded));
+      }
+    });
   }
   catch (e) {
     log('discarding failed', e);
+    resolve(false);
   }
-};
+}), 5000, false);
 
 export {discard, inprogress};

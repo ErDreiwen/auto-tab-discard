@@ -54,8 +54,8 @@
       "type": "string"
     },
     "click": {
-      "title": "Use \"click.popup\" to show browser action's popup menu",
-      "type": "boolean"
+      "title": "Toolbar left-click action (use \"click.popup\" to show the popup menu)",
+      "type": "string"
     },
     "faqs": {
       "title": "Open FAQs page on updates",

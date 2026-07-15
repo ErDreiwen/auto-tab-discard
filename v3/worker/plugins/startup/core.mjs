@@ -1,6 +1,6 @@
 import {log, query} from '../../core/utils.mjs';
 import {prefs} from '../../core/prefs.mjs';
-import {starters} from '../../core/startup.mjs';
+import {browserStarters} from '../../core/startup.mjs';
 import {number} from '../../modes/number.mjs';
 
 const observe = () => {
@@ -25,7 +25,7 @@ const observe = () => {
       // discard loaded tabs
       log('startup plug-in', 'number of tabs that can be discarded on startup', tbs.length);
 
-      const opts = number.IGNORE;
+      const opts = {...number.IGNORE};
       delete opts.number;
       // discard all loaded tabs immediately
       number.check(tbs.filter(t => t.status !== 'unloaded'), opts, 'startup-plugin/1');
@@ -67,7 +67,7 @@ const observe = () => {
 function enable() {
   log('startup.enable is called');
   // only run on start-up
-  starters.push(observe);
+  browserStarters.push(observe);
 }
 function disable() {
   log('startup.disable is called');

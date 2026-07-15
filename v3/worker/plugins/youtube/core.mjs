@@ -1,13 +1,14 @@
 import {log} from '../../core/utils.mjs';
 import {discard} from '../../core/discard.mjs';
+import {withTimeout} from '../../core/promise.mjs';
 
 const perform = discard.perform;
 
 function enable() {
   log('installing youtube/core.js');
   discard.perform = tab => {
-    if (tab.url && tab.url.startsWith('https://www.youtube.com/')) {
-      chrome.scripting.executeScript({
+    if (tab.url && tab.url.startsWith('https://www.youtube.com/') && tab.frozen !== true) {
+      return withTimeout(chrome.scripting.executeScript({
         target: {
           tabId: tab.id
         },
@@ -23,12 +24,10 @@ function enable() {
             }
           }
         }
-      }).catch(e => {
-        console.error('plugins/youtube -> error', e);
-      }).then(() => perform(tab));
+      }), 3000, []).then(() => perform(tab));
     }
     else {
-      perform(tab);
+      return perform(tab);
     }
   };
 }
