@@ -43,6 +43,16 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
     runtime: {
       lastError: null
     },
+    scripting: {
+      executeScript({target}) {
+        assert.equal(target.tabId, liveTab.id);
+        calls.push(`stop:${target.tabId}`);
+        liveTab.status = 'complete';
+        liveTab.title = '💤 test';
+        updatedListeners.forEach(listener => listener(target.tabId, {status: 'complete'}, {...liveTab}));
+        return Promise.resolve([{result: {stopped: true, title: '💤 test'}}]);
+      }
+    },
     storage: {
       managed: {
         get(defaults, callback) {
@@ -95,6 +105,12 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
       onUpdated: {
         addListener(listener) {
           updatedListeners.push(listener);
+        },
+        removeListener(listener) {
+          const index = updatedListeners.indexOf(listener);
+          if (index !== -1) {
+            updatedListeners.splice(index, 1);
+          }
         }
       },
       onCreated: event(),
@@ -115,6 +131,8 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
     discard.takeoverFenceTimeout = 100;
     discard.takeoverPoll = 0;
     discard.takeoverRetries = 1;
+    discard.quiesceDwell = 0;
+    discard.reloadStartGrace = 0;
 
     assert.equal((await ownership.status(1)).marker.state, 'takeover-awake');
     await ownership.start(1, 0);
@@ -122,7 +140,7 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
     assert.equal((await ownership.status(2)).marker.source, 'claimed');
 
     assert.deepEqual(await discard.recoverTakeovers(), [true]);
-    assert.deepEqual(calls, ['discard:1']);
+    assert.deepEqual(calls, ['stop:1', 'stop:1', 'discard:1']);
     assert.equal(liveTab.discarded, true);
     const finalState = await ownership.status(1);
     assert.equal(finalState.marker.state, 'owned');

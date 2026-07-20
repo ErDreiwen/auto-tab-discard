@@ -195,18 +195,276 @@ const reloadTab = id => new Promise(resolve => {
   }
 });
 
-const waitForAwake = async (id, token) => {
-  const deadline = Date.now() + discard.takeoverTimeout;
+const remainingTime = deadline => Math.max(0, deadline - Date.now());
+const waitBeforeDeadline = async (deadline, interval = discard.takeoverPoll) => {
+  const remaining = remainingTime(deadline);
+  if (remaining > 0) {
+    const delay = Math.min(Math.max(0, interval), remaining);
+    // setTimeout(0) is intentional in tests and yields to renderer/event timers;
+    // a microtask-only loop can starve a delayed loading transition.
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+};
+const getTabBeforeDeadline = (id, deadline) => {
+  const timeout = Math.min(discard.getTimeout, remainingTime(deadline));
+  return timeout > 0 ? withTimeout(getTab(id), timeout, undefined) : Promise.resolve(undefined);
+};
+
+const waitForAwake = async (id, token, deadline = Date.now() + discard.takeoverTimeout) => {
   while (Date.now() < deadline && token.cancelled === false) {
-    const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+    const current = await getTabBeforeDeadline(id, deadline);
     if (!current) {
       return undefined;
     }
     if (current.discarded === false) {
       return current;
     }
-    await new Promise(resolve => setTimeout(resolve, discard.takeoverPoll));
+    await waitBeforeDeadline(deadline);
   }
+};
+
+const observeReload = id => {
+  const state = {
+    sawLoading: false
+  };
+  const listener = (tabId, changeInfo, tab) => {
+    if (tabId !== id) {
+      return;
+    }
+    const status = changeInfo.status || tab?.status;
+    if (status === 'loading') {
+      state.sawLoading = true;
+    }
+  };
+  chrome.tabs.onUpdated?.addListener(listener);
+  return {
+    close: () => chrome.tabs.onUpdated?.removeListener?.(listener),
+    state
+  };
+};
+
+// A takeover has to wake a natively discarded tab before this extension can
+// become the physical discarder. Chromium reports discarded:false as soon as
+// that navigation starts, not when it is safe to discard again. Discarding the
+// still-loading tab can leave a stale tab-strip spinner and a short-lived
+// renderer behind, so stop the reload and wait for it to leave "loading" first.
+const stopLoadingTab = (id, prepend = '', requireTitle = false) => {
+  try {
+    return chrome.scripting.executeScript({
+      target: {tabId: id},
+      injectImmediately: true,
+      func: prefix => {
+        window.stop();
+        if (prefix) {
+          const title = document.title || location.href || '';
+          if (title.startsWith(prefix) === false) {
+            const next = prefix + ' ' + title;
+            let root = document.documentElement;
+            if (!root) {
+              root = document.appendChild(document.createElement('html'));
+            }
+            let head = document.head;
+            if (!head) {
+              head = document.createElement('head');
+              root.insertBefore(head, root.firstChild);
+            }
+            let titleElement = head.querySelector('title');
+            if (!titleElement) {
+              titleElement = head.appendChild(document.createElement('title'));
+            }
+            titleElement.textContent = next;
+            document.title = next;
+          }
+        }
+        return {stopped: true, title: document.title};
+      },
+      args: [prepend]
+    }).then(results => {
+      const prepared = results?.find(result => result.result?.stopped === true)?.result;
+      if (!prepared) {
+        return {error: 'reload stop script did not return a result'};
+      }
+      if (requireTitle && prepend && prepared.title?.startsWith(prepend) !== true) {
+        return {error: `sleep title prefix was not applied (title: ${prepared.title || ''})`};
+      }
+      return {success: true, title: prepared.title};
+    }, error => ({error: error?.message || String(error)}));
+  }
+  catch (error) {
+    return Promise.resolve({error: error?.message || String(error)});
+  }
+};
+
+const isTransientFrameError = error => /^(?:frame with id \d+ (?:was removed|is not ready)|no frame with id:? \d+(?: in tab(?: with id)? \d+)?)\.?$/i
+  .test(String(error || '').trim());
+
+const quiesceReload = async (
+  id,
+  token,
+  initial,
+  observation,
+  prepend,
+  deadline = Date.now() + discard.takeoverTimeout,
+  frameRetries = {count: 0}
+) => {
+  let current = initial || await getTabBeforeDeadline(id, deadline);
+  if (!current || current.discarded !== false) {
+    return current;
+  }
+
+  let completeSince;
+  while (Date.now() < deadline && token.cancelled === false) {
+    if (!current || current.discarded !== false || current.active === true) {
+      return current;
+    }
+    if (current.status === 'complete') {
+      completeSince ||= Date.now();
+      const stableFor = observation?.state.sawLoading ?
+        discard.quiesceDwell : discard.reloadStartGrace;
+      if (Date.now() - completeSince >= stableFor) {
+        return current;
+      }
+      await waitBeforeDeadline(deadline);
+      current = await getTabBeforeDeadline(id, deadline);
+      continue;
+    }
+
+    completeSince = undefined;
+    if (current.status !== 'loading') {
+      await waitBeforeDeadline(deadline);
+      current = await getTabBeforeDeadline(id, deadline);
+      continue;
+    }
+
+    // discarded:false can precede the new renderer/document commit. A single
+    // immediate injection can therefore stop the outgoing document and miss
+    // the new load. Retry only after the prior injection resolved successfully;
+    // a timed-out operation is left in flight, so fail the takeover and never
+    // queue a second stop behind it.
+    const stopTimeout = {};
+    const stopLimit = Math.min(discard.stopTimeout, remainingTime(deadline));
+    const stopped = stopLimit > 0 ?
+      await withTimeout(stopLoadingTab(id, prepend), stopLimit, stopTimeout) : stopTimeout;
+    if (stopped === stopTimeout) {
+      throw Error(`timed out stopping the reload on tab ${id}`);
+    }
+    if (stopped?.error) {
+      // During a renderer commit Chrome can reject an otherwise valid
+      // executeScript call because the outgoing main frame disappeared. The
+      // promise has settled, so it is safe to reread the tab and retry against
+      // the replacement frame. Keep permission and closed-tab errors fatal.
+      if (isTransientFrameError(stopped.error)) {
+        if (frameRetries.count >= discard.transientFrameRetries) {
+          throw Error(`cannot stop the reload on tab ${id}: transient frame retry limit reached`);
+        }
+        frameRetries.count += 1;
+        current = await getTabBeforeDeadline(id, deadline);
+        if (!current || current.discarded !== false || current.active === true) {
+          return current;
+        }
+        await waitBeforeDeadline(deadline);
+        current = await getTabBeforeDeadline(id, deadline);
+        continue;
+      }
+      throw Error(`cannot stop the reload on tab ${id}: ${stopped.error}`);
+    }
+    current = await getTabBeforeDeadline(id, deadline);
+    if (!current || current.discarded !== false || current.active === true) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+    current = await getTabBeforeDeadline(id, deadline);
+  }
+};
+
+const waitForUnloaded = async (id, token) => {
+  const deadline = Date.now() + discard.nativeSettleTimeout;
+  let current;
+  while (Date.now() < deadline && token.cancelled === false) {
+    // Never trust the tabs.discard() callback snapshot as the ownership
+    // boundary. A user activation can wake the live tab before finalization.
+    current = await getTabBeforeDeadline(id, deadline);
+    if (!current) {
+      return undefined;
+    }
+    if (current.discarded === true && current.active !== true && current.status === 'unloaded') {
+      return current;
+    }
+    if (current.discarded !== true || current.active === true) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+  }
+  return current;
+};
+
+const waitForPreparedTitle = async (
+  id,
+  token,
+  prepend,
+  initial,
+  deadline = Date.now() + discard.titleSettleTimeout
+) => {
+  if (!prepend) {
+    return initial;
+  }
+  let current = initial;
+  while (Date.now() < deadline && token.cancelled === false) {
+    if (!current || current.discarded !== false || current.active === true || current.status !== 'complete') {
+      return current;
+    }
+    if (current.title?.startsWith(prepend)) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+    current = await getTabBeforeDeadline(id, deadline);
+  }
+  return current;
+};
+
+const prepareAwakeTab = async (id, token, initial, observation, prepend, deadline) => {
+  const frameRetries = {count: 0};
+  let current = initial;
+  while (Date.now() < deadline && token.cancelled === false) {
+    current = await quiesceReload(
+      id, token, current, observation, prepend, deadline, frameRetries
+    );
+    if (!current || current.discarded !== false || current.active === true || current.status !== 'complete') {
+      return current;
+    }
+
+    // A final pass makes the physical takeover visually consistent with an
+    // ordinary extension discard. If Chrome swaps the main frame here, return
+    // through quiescence and retry against the replacement renderer.
+    const prepareTimeout = {};
+    const prepareLimit = Math.min(discard.stopTimeout, remainingTime(deadline));
+    const prepared = prepareLimit > 0 ?
+      await withTimeout(stopLoadingTab(id, prepend, true), prepareLimit, prepareTimeout) : prepareTimeout;
+    if (prepared === prepareTimeout) {
+      throw Error(`timed out preparing the awakened tab ${id}`);
+    }
+    if (prepared?.error) {
+      if (isTransientFrameError(prepared.error)) {
+        if (frameRetries.count >= discard.transientFrameRetries) {
+          throw Error(`cannot prepare the awakened tab ${id}: transient frame retry limit reached`);
+        }
+        frameRetries.count += 1;
+        current = await getTabBeforeDeadline(id, deadline);
+        if (!current || current.discarded !== false || current.active === true) {
+          return current;
+        }
+        await waitBeforeDeadline(deadline);
+        current = await getTabBeforeDeadline(id, deadline);
+        continue;
+      }
+      throw Error(`cannot prepare the awakened tab ${id}: ${prepared.error}`);
+    }
+
+    current = await getTabBeforeDeadline(id, deadline);
+    const titleDeadline = Math.min(deadline, Date.now() + discard.titleSettleTimeout);
+    return waitForPreparedTitle(id, token, prepend, current, titleDeadline);
+  }
+  return current;
 };
 
 const waitForOwnership = async (id, token) => {
@@ -239,21 +497,32 @@ const takeoverOnce = async (tab, token) => {
   }
 
   let finished = false;
+  let reloadObservation;
   try {
+    const takeoverPrefs = await storage({prepends: prefs.prepends});
+    const prepend = takeoverPrefs.prepends || '';
+    const takeoverDeadline = Date.now() + discard.takeoverTimeout;
     let awake = current;
     if (current.discarded === true) {
+      reloadObservation = observeReload(id);
       const reloadTimeout = {};
-      const reload = await withTimeout(reloadTab(id), discard.takeoverTimeout, reloadTimeout);
+      const reloadLimit = remainingTime(takeoverDeadline);
+      const reload = reloadLimit > 0 ?
+        await withTimeout(reloadTab(id), reloadLimit, reloadTimeout) : reloadTimeout;
       if (reload === reloadTimeout || reload.error) {
         throw Error(reload.error || `timed out waking tab ${id}`);
       }
-      awake = await waitForAwake(id, token);
+      awake = await waitForAwake(id, token, takeoverDeadline);
     }
+    awake = await prepareAwakeTab(id, token, awake, reloadObservation, prepend, takeoverDeadline);
     if (token.cancelled) {
       throw Error(`discard takeover cancelled for tab ${id}`);
     }
-    if (!awake || awake.discarded !== false || awake.active === true) {
-      throw Error(`tab ${id} did not wake as an inactive tab`);
+    if (!awake || awake.discarded !== false || awake.active === true || awake.status !== 'complete') {
+      throw Error(`tab ${id} did not wake as a quiescent inactive tab`);
+    }
+    if (prepend && awake.title?.startsWith(prepend) !== true) {
+      throw Error(`tab ${id} did not expose its prepared sleep title`);
     }
     if (!ownership.isCurrent(id, attemptId)) {
       throw Error(`discard takeover became stale for tab ${id}`);
@@ -269,19 +538,31 @@ const takeoverOnce = async (tab, token) => {
         outcome = nativeTimeout;
       }
     }
-    const strong = outcome !== nativeTimeout && outcome.success === true && outcome.source === 'self' &&
+    const nativeStrong = outcome !== nativeTimeout && outcome.success === true && outcome.source === 'self' &&
       outcome.result?.discarded === true;
-    const finalTab = outcome?.result || await withTimeout(getTab(id), discard.getTimeout, undefined) || awake;
-    const owned = await ownership.finish(finalTab, attemptId, strong ? 'self' : undefined, {
+    let finalTab = outcome?.result || await withTimeout(getTab(id), discard.getTimeout, undefined) || awake;
+    if (nativeStrong) {
+      // A missing/timed-out live read is a failed takeover, never permission to
+      // fall back to the callback's potentially stale discarded snapshot.
+      finalTab = await waitForUnloaded(id, token);
+    }
+    const strong = nativeStrong && finalTab?.discarded === true && finalTab.active !== true &&
+      finalTab.status === 'unloaded';
+    const owned = await ownership.finish(finalTab || {...awake, discarded: false}, attemptId,
+      strong ? 'self' : undefined, {
       allowClaimed: false
     });
     finished = true;
 
     if (strong && owned) {
-      return true;
+      if (await ownership.confirmSelf(id, attemptId)) {
+        return true;
+      }
+      throw Error(`discard takeover failed for tab ${id}: tab woke during ownership finalization`);
     }
-    const reason = outcome === nativeTimeout ? 'native discard timed out' :
-      outcome?.error || 'another discarder won before the native discard';
+    const reason = outcome === nativeTimeout ? 'native discard timed out' : outcome?.error ||
+      (nativeStrong ? 'native discard did not settle in the unloaded state' :
+        'another discarder won before the native discard');
     throw Error(`discard takeover failed for tab ${id}: ${reason}`);
   }
   catch (e) {
@@ -295,6 +576,9 @@ const takeoverOnce = async (tab, token) => {
       });
     }
     throw e;
+  }
+  finally {
+    reloadObservation?.close();
   }
 };
 
@@ -472,6 +756,12 @@ discard.takeoverTimeout = 5000;
 discard.takeoverPoll = 50;
 discard.takeoverRetries = 1;
 discard.takeoverFenceTimeout = 10000;
+discard.nativeSettleTimeout = 5000;
+discard.quiesceDwell = 100;
+discard.reloadStartGrace = 250;
+discard.stopTimeout = 1000;
+discard.titleSettleTimeout = 1000;
+discard.transientFrameRetries = 2;
 discard.takeoverJobs = takeoverJobs;
 
 export {discard, inprogress};

@@ -40,11 +40,33 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
   const alarmListeners = [];
   const scheduledAlarms = new Map();
   let finishNative;
+  let ignoredStops = 1;
+  let nativeFinalStatus = 'unloaded';
+  let nativeWakeBeforeCallback = false;
+  let missingPostDiscardGets = 0;
+  let wakeOnPostDiscardGet = 0;
+  let reloadMode = 'normal';
+  let stopMode = 'normal';
+  let finalFrameStopCalls = 0;
+  const delayedLoadingTimers = new Set();
 
   const clone = value => value && JSON.parse(JSON.stringify(value));
+  const waitForNative = async label => {
+    const deadline = Date.now() + 1000;
+    while (typeof finishNative !== 'function' && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal(typeof finishNative, 'function', `${label}: native discard boundary was not reached`);
+  };
   const event = name => ({
     addListener(listener) {
       listeners[name].push(listener);
+    },
+    removeListener(listener) {
+      const index = listeners[name].indexOf(listener);
+      if (index !== -1) {
+        listeners[name].splice(index, 1);
+      }
     }
   });
   const emitUpdated = (id, changeInfo) => {
@@ -69,6 +91,67 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     },
     runtime: {
       lastError: null
+    },
+    scripting: {
+      executeScript({target}) {
+        calls.push(`stop:${target.tabId}`);
+        const tab = liveTabs.get(target.tabId);
+        if (stopMode === 'pending') {
+          return new Promise(() => {});
+        }
+        if (stopMode === 'reject') {
+          return Promise.reject(Error('injection rejected'));
+        }
+        if (stopMode === 'frame-removed-once') {
+          stopMode = 'normal';
+          return Promise.reject(Error('Frame with ID 0 was removed.'));
+        }
+        if (stopMode === 'frame-not-ready-once') {
+          stopMode = 'normal';
+          return Promise.reject(Error('Frame with ID 0 is not ready.'));
+        }
+        if (stopMode === 'no-frame-colon-once') {
+          stopMode = 'normal';
+          return Promise.reject(Error('No frame with ID: 0'));
+        }
+        if (stopMode === 'no-frame-tab-once') {
+          stopMode = 'normal';
+          return Promise.reject(Error('No frame with id 0 in tab with id 123'));
+        }
+        if (stopMode === 'frame-removed-final') {
+          finalFrameStopCalls += 1;
+          if (finalFrameStopCalls === 2) {
+            stopMode = 'normal';
+            return Promise.reject(Error('Frame with ID 0 was removed.'));
+          }
+        }
+        if (stopMode === 'frame-removed-always') {
+          return Promise.reject(Error('Frame with ID 0 was removed.'));
+        }
+        if (stopMode === 'error-page') {
+          return Promise.reject(Error('Frame with ID 0 is showing error page.'));
+        }
+        if (stopMode === 'activate') {
+          tab.active = true;
+          return Promise.resolve([{result: {stopped: true, title: '💤 test'}}]);
+        }
+        if (stopMode === 'invalid-status') {
+          tab.status = 'unloaded';
+          emitUpdated(target.tabId, {status: 'unloaded'});
+          return Promise.resolve([{result: {stopped: true, title: '💤 test'}}]);
+        }
+        if (ignoredStops > 0) {
+          ignoredStops -= 1;
+        }
+        else if (tab) {
+          tab.status = 'complete';
+          emitUpdated(target.tabId, {status: 'complete'});
+        }
+        if (tab && tab.status === 'complete') {
+          tab.title = '💤 test';
+        }
+        return Promise.resolve([{result: {stopped: true, title: '💤 test'}}]);
+      }
     },
     storage: {
       managed: {
@@ -106,15 +189,41 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
         }).map(clone));
       },
       get(id, callback) {
-        callback(clone(liveTabs.get(id)));
+        const tab = liveTabs.get(id);
+        if (missingPostDiscardGets > 0 && tab?.discarded === true) {
+          missingPostDiscardGets -= 1;
+          callback(undefined);
+          return;
+        }
+        if (wakeOnPostDiscardGet > 0 && tab?.discarded === true) {
+          wakeOnPostDiscardGet -= 1;
+          if (wakeOnPostDiscardGet === 0) {
+            tab.active = true;
+            tab.discarded = false;
+            tab.status = 'complete';
+            emitUpdated(id, {discarded: false, status: 'complete'});
+          }
+        }
+        callback(clone(tab));
       },
       reload(id, options, callback) {
         calls.push(`reload:${id}:${options.bypassCache}`);
         const tab = liveTabs.get(id);
         tab.discarded = false;
-        tab.status = 'loading';
-        emitUpdated(id, {discarded: false, status: 'loading'});
+        tab.status = reloadMode === 'delayed-loading' ? 'complete' : 'loading';
+        emitUpdated(id, {
+          discarded: false,
+          ...(reloadMode === 'normal' && {status: 'loading'})
+        });
         callback();
+        if (reloadMode === 'delayed-loading') {
+          const timer = setTimeout(() => {
+            delayedLoadingTimers.delete(timer);
+            tab.status = 'loading';
+            emitUpdated(id, {status: 'loading'});
+          }, 5);
+          delayedLoadingTimers.add(timer);
+        }
       },
       discard(id, callback) {
         calls.push(`discard:${id}`);
@@ -130,9 +239,17 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
         finishNative = () => {
           finishNative = undefined;
           tab.discarded = true;
-          tab.status = 'unloaded';
-          emitUpdated(id, {discarded: true, status: 'unloaded'});
-          callback(clone(tab));
+          tab.status = nativeFinalStatus;
+          emitUpdated(id, {discarded: true, status: nativeFinalStatus});
+          const result = clone(tab);
+          if (nativeWakeBeforeCallback) {
+            nativeWakeBeforeCallback = false;
+            tab.active = true;
+            tab.discarded = false;
+            tab.status = 'complete';
+            emitUpdated(id, {discarded: false, status: 'complete'});
+          }
+          callback(result);
         };
       },
       onUpdated: event('updated'),
@@ -153,6 +270,8 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     discard.takeoverTimeout = 200;
     discard.takeoverPoll = 0;
     discard.takeoverRetries = 1;
+    discard.quiesceDwell = 0;
+    discard.reloadStartGrace = 0;
 
     const adopted = await runScopedCommand({
       adopt: ownership.adopt,
@@ -205,12 +324,10 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       return result;
     });
 
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
+    await waitForNative('initial Shift takeover');
     assert.equal(settled, false);
     assert.ok(discard.waitForTakeover(1));
-    assert.deepEqual(calls, ['reload:1:false', 'discard:1']);
+    assert.deepEqual(calls, ['reload:1:false', 'stop:1', 'stop:1', 'stop:1', 'discard:1']);
 
     finishNative();
     const result = await command;
@@ -337,10 +454,8 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       targets: groupTargets
     });
     for (const id of [40, 41, 42]) {
-      while (!finishNative) {
-        await new Promise(resolve => setTimeout(resolve));
-      }
-      assert.deepEqual(calls.slice(-2), [`reload:${id}:false`, `discard:${id}`]);
+      await waitForNative('queued takeover');
+      assert.deepEqual(calls.slice(-4), [`reload:${id}:false`, `stop:${id}`, `stop:${id}`, `discard:${id}`]);
       finishNative();
     }
     await forcedGroup;
@@ -420,9 +535,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     liveTabs.set(8, queuedRelease);
     await Promise.all([ownership.claim(queueHead), ownership.claim(queuedRelease)]);
     const headTakeover = discard.takeover(clone(queueHead), {manual: true});
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
+    await waitForNative('popup takeover');
     const cancelledQueuedTakeover = discard.takeover(clone(queuedRelease), {manual: true}).catch(() => false);
     let queuedReleaseSettled = false;
     const queuedReleaseCommand = releaseDiscardedTargets(
@@ -459,9 +572,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     discard.nativeTimeout = 5;
     discard.takeoverFenceTimeout = 100;
     const racingTakeover = discard.takeover(clone(releaseRace), {manual: true});
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
+    await waitForNative('joined takeover');
     await new Promise(resolve => setTimeout(resolve, 10));
     let releaseSettled = false;
     const release = releaseDiscardedTargets(
@@ -537,7 +648,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     state = await ownership.status(2);
     assert.equal(state.marker.source, 'contended');
     assert.equal(liveTabs.get(2).discarded, true);
-    assert.deepEqual(calls.slice(-2), ['reload:2:false', 'discard:2']);
+    assert.deepEqual(calls.slice(-4), ['reload:2:false', 'stop:2', 'stop:2', 'discard:2']);
     assert.equal(alarmListeners.length, 0);
     assert.equal(scheduledAlarms.size, 0);
     const contendedCallCount = calls.length;
@@ -547,16 +658,223 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
 
     contested.delete(2);
     const manualRetry = discard.takeover(clone(contestedTab), {manual: true});
-    while (!finishNative) {
-      await new Promise(resolve => setTimeout(resolve));
-    }
-    assert.deepEqual(calls.slice(-2), ['reload:2:false', 'discard:2']);
+    await waitForNative('manual retry');
+    assert.deepEqual(calls.slice(-4), ['reload:2:false', 'stop:2', 'stop:2', 'discard:2']);
     finishNative();
     assert.equal(await manualRetry, true);
     state = await ownership.status(2);
     assert.equal(state.marker.source, 'self');
+
+    const claimedTakeoverTab = async (id, url) => {
+      const tab = {
+        id,
+        windowId: 1,
+        index: id,
+        active: false,
+        discarded: true,
+        status: 'unloaded',
+        url
+      };
+      liveTabs.set(id, tab);
+      await ownership.claim(tab);
+      return tab;
+    };
+    const updatedListenerBaseline = listeners.updated.length;
+    const assertFailedTakeoverClean = async id => {
+      assert.equal(discard.waitForTakeover(id), undefined, `tab ${id} must not retain a takeover job`);
+      assert.equal((await ownership.status(id)).marker, undefined, `tab ${id} must not retain ownership`);
+      assert.equal(listeners.updated.length, updatedListenerBaseline,
+        `tab ${id} must remove its reload observer`);
+    };
+
+    // A renderer handoff can remove the outgoing frame between the tab status
+    // read and executeScript. Once that rejected promise settles, retrying on
+    // the replacement frame is safe and must still reach an unloaded discard.
+    const frameHandoff = await claimedTakeoverTab(19, 'https://frame-handoff.example/');
+    stopMode = 'frame-removed-once';
+    let callStart = calls.length;
+    const frameHandoffTakeover = discard.takeover(clone(frameHandoff), {manual: true});
+    await waitForNative('frame handoff takeover');
+    assert.deepEqual(calls.slice(callStart), [
+      'reload:19:false', 'stop:19', 'stop:19', 'stop:19', 'discard:19'
+    ]);
+    finishNative();
+    assert.equal(await frameHandoffTakeover, true);
+    assert.equal(listeners.updated.length, updatedListenerBaseline);
+
+    const notReady = await claimedTakeoverTab(26, 'https://frame-not-ready.example/');
+    stopMode = 'frame-not-ready-once';
+    callStart = calls.length;
+    const notReadyTakeover = discard.takeover(clone(notReady), {manual: true});
+    await waitForNative('not-ready frame handoff');
+    assert.deepEqual(calls.slice(callStart), [
+      'reload:26:false', 'stop:26', 'stop:26', 'stop:26', 'discard:26'
+    ]);
+    finishNative();
+    assert.equal(await notReadyTakeover, true);
+    assert.equal(listeners.updated.length, updatedListenerBaseline);
+
+    for (const [id, mode, label] of [
+      [32, 'no-frame-colon-once', 'colon no-frame handoff'],
+      [33, 'no-frame-tab-once', 'tab-id no-frame handoff']
+    ]) {
+      const noFrame = await claimedTakeoverTab(id, `https://no-frame-${id}.example/`);
+      stopMode = mode;
+      callStart = calls.length;
+      const noFrameTakeover = discard.takeover(clone(noFrame), {manual: true});
+      await waitForNative(label);
+      assert.deepEqual(calls.slice(callStart), [
+        `reload:${id}:false`, `stop:${id}`, `stop:${id}`, `stop:${id}`, `discard:${id}`
+      ]);
+      finishNative();
+      assert.equal(await noFrameTakeover, true);
+      assert.equal(listeners.updated.length, updatedListenerBaseline);
+    }
+
+    // A frame can also disappear during the final title pass. Re-enter
+    // quiescence and retry that settled rejection without waking twice.
+    const finalFrameHandoff = await claimedTakeoverTab(27, 'https://final-frame-handoff.example/');
+    stopMode = 'frame-removed-final';
+    finalFrameStopCalls = 0;
+    callStart = calls.length;
+    const finalFrameTakeover = discard.takeover(clone(finalFrameHandoff), {manual: true});
+    await waitForNative('final frame handoff');
+    assert.deepEqual(calls.slice(callStart), [
+      'reload:27:false', 'stop:27', 'stop:27', 'stop:27', 'discard:27'
+    ]);
+    finishNative();
+    assert.equal(await finalFrameTakeover, true);
+    assert.equal(listeners.updated.length, updatedListenerBaseline);
+
+    // Transient retries are capped, while an error-page injection failure is
+    // deliberately outside the whitelist and remains immediately fatal.
+    const repeatedFrameHandoff = await claimedTakeoverTab(28, 'https://repeated-frame-handoff.example/');
+    stopMode = 'frame-removed-always';
+    callStart = calls.length;
+    await assert.rejects(discard.takeover(clone(repeatedFrameHandoff), {manual: true}),
+      /transient frame retry limit/);
+    assert.deepEqual(calls.slice(callStart), ['reload:28:false', 'stop:28', 'stop:28', 'stop:28']);
+    await assertFailedTakeoverClean(28);
+
+    const errorPage = await claimedTakeoverTab(29, 'https://error-page.example/');
+    stopMode = 'error-page';
+    callStart = calls.length;
+    await assert.rejects(discard.takeover(clone(errorPage), {manual: true}), /showing error page/);
+    assert.deepEqual(calls.slice(callStart), ['reload:29:false', 'stop:29']);
+    await assertFailedTakeoverClean(29);
+
+    // A timed-out injection remains in flight, so takeover must fail after one
+    // stop attempt instead of queuing late injections or calling native discard.
+    const pendingStop = await claimedTakeoverTab(20, 'https://pending-stop.example/');
+    stopMode = 'pending';
+    discard.stopTimeout = 10;
+    discard.takeoverTimeout = 40;
+    callStart = calls.length;
+    await assert.rejects(discard.takeover(clone(pendingStop), {manual: true}), /timed out stopping/);
+    assert.deepEqual(calls.slice(callStart), ['reload:20:false', 'stop:20']);
+    await assertFailedTakeoverClean(20);
+
+    // Permanent injection failures and user activation both abort before the
+    // native discard boundary.
+    const rejectedStop = await claimedTakeoverTab(21, 'https://rejected-stop.example/');
+    stopMode = 'reject';
+    callStart = calls.length;
+    await assert.rejects(discard.takeover(clone(rejectedStop), {manual: true}), /cannot stop the reload/);
+    assert.deepEqual(calls.slice(callStart), ['reload:21:false', 'stop:21']);
+    await assertFailedTakeoverClean(21);
+
+    const activatedStop = await claimedTakeoverTab(22, 'https://activated-stop.example/');
+    stopMode = 'activate';
+    callStart = calls.length;
+    await assert.rejects(discard.takeover(clone(activatedStop), {manual: true}), /quiescent inactive/);
+    assert.deepEqual(calls.slice(callStart), ['reload:22:false', 'stop:22']);
+    await assertFailedTakeoverClean(22);
+    activatedStop.active = false;
+
+    // Non-loading is not enough: only status:complete can cross into native
+    // discard. A delayed loading transition must also be observed and stopped.
+    const invalidStatus = await claimedTakeoverTab(23, 'https://invalid-status.example/');
+    stopMode = 'invalid-status';
+    callStart = calls.length;
+    await assert.rejects(discard.takeover(clone(invalidStatus), {manual: true}), /quiescent inactive/);
+    assert.deepEqual(calls.slice(callStart), ['reload:23:false', 'stop:23']);
+    await assertFailedTakeoverClean(23);
+
+    const delayedLoading = await claimedTakeoverTab(24, 'https://delayed-loading.example/');
+    stopMode = 'normal';
+    reloadMode = 'delayed-loading';
+    discard.reloadStartGrace = 100;
+    discard.takeoverTimeout = 300;
+    callStart = calls.length;
+    const delayedTakeover = discard.takeover(clone(delayedLoading), {manual: true});
+    await waitForNative('delayed loading takeover');
+    assert.deepEqual(calls.slice(callStart), ['reload:24:false', 'stop:24', 'stop:24', 'discard:24']);
+    finishNative();
+    assert.equal(await delayedTakeover, true);
+
+    // A callback that says discarded:true while status is still loading is not
+    // strong self-ownership and must fail rather than producing a false tag.
+    const falseSuccess = await claimedTakeoverTab(25, 'https://false-success.example/');
+    reloadMode = 'normal';
+    nativeFinalStatus = 'loading';
+    discard.nativeSettleTimeout = 30;
+    discard.reloadStartGrace = 0;
+    callStart = calls.length;
+    const falseTakeover = discard.takeover(clone(falseSuccess), {manual: true});
+    await waitForNative('false native success takeover');
+    finishNative();
+    await assert.rejects(falseTakeover, /did not settle in the unloaded state/);
+    assert.deepEqual(calls.slice(callStart), ['reload:25:false', 'stop:25', 'stop:25', 'discard:25']);
+    assert.notEqual((await ownership.status(25)).marker?.source, 'self');
+    assert.equal(discard.waitForTakeover(25), undefined);
+    assert.equal(listeners.updated.length, updatedListenerBaseline);
+
+    // A missing mandatory live read must not restore the callback clone or
+    // persist a false self marker.
+    const missingFreshRead = await claimedTakeoverTab(34, 'https://missing-fresh-read.example/');
+    nativeFinalStatus = 'unloaded';
+    callStart = calls.length;
+    const missingFreshTakeover = discard.takeover(clone(missingFreshRead), {manual: true});
+    await waitForNative('missing fresh-read takeover');
+    missingPostDiscardGets = 1;
+    finishNative();
+    await assert.rejects(missingFreshTakeover, /did not settle in the unloaded state/);
+    assert.deepEqual(calls.slice(callStart), ['reload:34:false', 'stop:34', 'stop:34', 'discard:34']);
+    assert.notEqual((await ownership.status(34)).marker?.source, 'self');
+    assert.equal(discard.waitForTakeover(34), undefined);
+    assert.equal(listeners.updated.length, updatedListenerBaseline);
+
+    // The callback can carry a valid unloaded clone even though the live tab
+    // was activated before callback delivery. A mandatory fresh read rejects it.
+    const wakeBeforeCallback = await claimedTakeoverTab(30, 'https://wake-before-callback.example/');
+    nativeFinalStatus = 'unloaded';
+    nativeWakeBeforeCallback = true;
+    discard.nativeSettleTimeout = 100;
+    callStart = calls.length;
+    const staleCallbackTakeover = discard.takeover(clone(wakeBeforeCallback), {manual: true});
+    await waitForNative('stale callback takeover');
+    finishNative();
+    await assert.rejects(staleCallbackTakeover, /did not settle in the unloaded state/);
+    assert.deepEqual(calls.slice(callStart), ['reload:30:false', 'stop:30', 'stop:30', 'discard:30']);
+    assert.equal(liveTabs.get(30).active, true);
+    await assertFailedTakeoverClean(30);
+    liveTabs.get(30).active = false;
+
+    // A second fresh read, serialized after ownership finalization, closes the
+    // smaller wake race between the first live read and the marker write.
+    const wakeDuringFinalization = await claimedTakeoverTab(31, 'https://wake-during-finalization.example/');
+    callStart = calls.length;
+    const finalizationRace = discard.takeover(clone(wakeDuringFinalization), {manual: true});
+    await waitForNative('ownership-finalization race');
+    wakeOnPostDiscardGet = 2;
+    finishNative();
+    await assert.rejects(finalizationRace, /woke during ownership finalization/);
+    assert.deepEqual(calls.slice(callStart), ['reload:31:false', 'stop:31', 'stop:31', 'discard:31']);
+    assert.equal(liveTabs.get(31).active, true);
+    await assertFailedTakeoverClean(31);
   }
   finally {
+    delayedLoadingTimers.forEach(clearTimeout);
     delete globalThis.chrome;
   }
 });

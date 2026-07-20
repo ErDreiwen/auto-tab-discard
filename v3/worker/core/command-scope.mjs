@@ -105,7 +105,9 @@ const runTakeovers = async (tabs, takeover) => {
   const settled = await Promise.allSettled(tabs.map(tab => takeover(tab)));
   const failed = settled.filter(result => result.status === 'rejected' || result.value !== true);
   if (failed.length) {
-    throw Error('one or more discard takeovers failed');
+    const reasons = failed.map(result => result.status === 'rejected' ?
+      result.reason?.message || String(result.reason) : 'takeover returned false');
+    throw Error(`one or more discard takeovers failed: ${reasons.join('; ')}`);
   }
   return settled.map(result => result.value);
 };

@@ -2,6 +2,14 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.11
+
+- Quiesce the one-time Shift takeover reload before calling `tabs.discard()`, apply the configured sleep-title prefix, and prevent Chromium from discarding a live navigation with a stale loading spinner or renderer behind.
+- Retry the immediate `window.stop()` injection within a shared deadline and a small attempt cap while the awakened tab still reports `status: loading`; this covers renderer commits plus Chrome's known removed/not-ready/no-frame handoff errors without retrying permission or error-page failures.
+- Fail a takeover instead of issuing native discard if the reload cannot leave the loading state inside the bounded takeover window.
+- Require fresh inactive `discarded: true` / `status: unloaded` reads both before and after ownership finalization, so a callback clone cannot falsely tag a tab that the user woke concurrently.
+- Add an isolated real-Chromium popup matrix covering all seven discard rows, all five release controls, exact group/window/left/right scopes, adoption, Shift takeover, repeat no-ops, slow-response quiescence, memory snapshots, and browser crash dumps.
+
 ## Changes in 0.6.8.10
 
 - Adopt already-discarded tabs in place on a normal command, recording `source: adopted` without calling `tabs.reload()` or allocating the page back into memory.
@@ -63,4 +71,6 @@ This fork keeps the upstream extension's behavior and addresses Chromium failure
 
 ## Test
 
-Run `node --test "tests/*.test.mjs"` from the repository root. The `v3` directory has no build step and is the unpacked Chrome/Edge extension root.
+Run `node --test tests/*.test.mjs` from a POSIX shell, or `node --test (Get-ChildItem tests/*.test.mjs)` from PowerShell. The `v3` directory has no build step and is the unpacked Chrome/Edge extension root.
+
+See `e2e/README.md` for the isolated real-browser matrix.

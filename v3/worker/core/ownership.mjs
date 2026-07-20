@@ -206,6 +206,26 @@ const finish = async (tab, attemptId, source, {allowClaimed = true} = {}) => {
   throw lastError;
 };
 
+// Revalidate a freshly completed self-discard after its attempt token has been
+// cleared. Ownership events are serialized through the same queue, so a wake
+// racing finalization either fails this live check or is queued to invalidate
+// the marker immediately afterward. The attempt id prevents deleting a newer
+// owner's marker.
+const confirmSelf = (id, attemptId) => mutate(async state => {
+  const marker = state[id];
+  if (marker?.state !== 'owned' || marker.source !== 'self' || marker.attemptId !== attemptId) {
+    return false;
+  }
+  const current = await getTab(id);
+  if (current?.discarded === true && current.active !== true && current.status === 'unloaded') {
+    return true;
+  }
+  if (state[id]?.attemptId === attemptId) {
+    delete state[id];
+  }
+  return false;
+});
+
 const invalidate = id => {
   generations.set(id, (generations.get(id) || 0) + 1);
   attempts.delete(id);
@@ -596,6 +616,7 @@ const ownership = {
   bind,
   claim,
   claimFresh,
+  confirmSelf,
   deferTakeover,
   finish,
   invalidate,
