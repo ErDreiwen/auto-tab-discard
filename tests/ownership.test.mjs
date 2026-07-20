@@ -275,6 +275,166 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     state = await ownership.snapshot();
     assert.equal(state[attachedClaimRace.id].source, 'claimed');
 
+    // Edge replaces the tab id while tabs.discard() is in flight. Preserve the
+    // same pending nonce through a replacement chain so a callback carrying the
+    // original id can still finalize self-ownership on the live successor.
+    const edgeOriginal = {
+      id: 44,
+      windowId: 5,
+      url: 'https://edge-replacement.example/',
+      active: false,
+      discarded: false,
+      status: 'complete'
+    };
+    liveTabs = [edgeOriginal];
+    const edgeAttempt = await ownership.begin(edgeOriginal);
+    const edgeMiddle = {...edgeOriginal, id: 45, discarded: true, status: 'unloaded'};
+    liveTabs = [edgeMiddle];
+    listeners.replaced(edgeMiddle.id, edgeOriginal.id);
+    const edgeFinal = {...edgeMiddle, id: 46};
+    liveTabs = [edgeFinal];
+    listeners.replaced(edgeFinal.id, edgeMiddle.id);
+    let edgeStatus = await ownership.status(edgeOriginal.id);
+    assert.equal(edgeStatus.attemptId, edgeAttempt);
+    assert.equal((await ownership.status(edgeFinal.id)).attemptId, edgeAttempt);
+    listeners.updated(edgeFinal.id, {discarded: true, status: 'unloaded'}, edgeFinal);
+    assert.equal(await ownership.finish(
+      {...edgeOriginal, discarded: true, status: 'unloaded'}, edgeAttempt, 'self'
+    ), true);
+    assert.equal(await ownership.confirmSelf(edgeOriginal.id, edgeAttempt), true);
+    assert.equal(ownership.resolveId(edgeOriginal.id), edgeFinal.id);
+    state = await ownership.snapshot();
+    assert.equal(state[edgeOriginal.id], undefined);
+    assert.equal(state[edgeMiddle.id], undefined);
+    assert.equal(state[edgeFinal.id].source, 'self');
+    edgeStatus = await ownership.status(edgeOriginal.id);
+    assert.equal(edgeStatus.marker.source, 'self');
+
+    // Also tolerate a browser that resolves the API callback with the new tab
+    // before dispatching onReplaced. The globally unique nonce finds the old
+    // pending record, and the later event moves the completed marker.
+    const callbackFirstOriginal = {...edgeOriginal, id: 47};
+    liveTabs = [callbackFirstOriginal];
+    const callbackFirstAttempt = await ownership.begin(callbackFirstOriginal);
+    const callbackFirstSuccessor = {
+      ...callbackFirstOriginal,
+      id: 48,
+      discarded: true,
+      status: 'unloaded'
+    };
+    liveTabs = [callbackFirstSuccessor];
+    assert.equal(await ownership.finish(
+      callbackFirstSuccessor, callbackFirstAttempt, 'self'
+    ), true);
+    assert.equal(await ownership.confirmSelf(callbackFirstSuccessor.id, callbackFirstAttempt), true);
+    listeners.replaced(callbackFirstSuccessor.id, callbackFirstOriginal.id);
+    state = await ownership.snapshot();
+    assert.equal(state[callbackFirstOriginal.id], undefined);
+    assert.equal(state[callbackFirstSuccessor.id].source, 'self');
+
+    // Replacement revalidation holds a live tabs.get read. A new attempt that
+    // starts in that gap must win and retain its pending marker.
+    const replacementAttemptOriginal = {
+      ...external,
+      id: 49,
+      status: 'unloaded',
+      url: 'https://replacement-attempt-race.example/'
+    };
+    liveTabs = [replacementAttemptOriginal];
+    await ownership.claim(replacementAttemptOriginal);
+    const replacementAttemptSuccessor = {
+      ...replacementAttemptOriginal,
+      id: 50,
+      discarded: false,
+      status: 'complete'
+    };
+    liveTabs = [replacementAttemptSuccessor];
+    holdNextGet = true;
+    listeners.replaced(replacementAttemptSuccessor.id, replacementAttemptOriginal.id);
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    const replacementNewAttempt = ownership.begin(replacementAttemptSuccessor);
+    releaseGet(replacementAttemptSuccessor);
+    const replacementNewAttemptId = await replacementNewAttempt;
+    assert.equal(typeof replacementNewAttemptId, 'string');
+    state = await ownership.snapshot();
+    assert.equal(state[replacementAttemptSuccessor.id].state, 'pending');
+    const replacementAttemptDiscarded = {
+      ...replacementAttemptSuccessor,
+      discarded: true,
+      status: 'unloaded'
+    };
+    liveTabs = [replacementAttemptDiscarded];
+    assert.equal(await ownership.finish(
+      replacementAttemptDiscarded, replacementNewAttemptId, 'self'
+    ), true);
+
+    // A lifecycle generation change during the same read must fence its stale
+    // loaded result. The newer attachment owns the final live classification.
+    const generationRaceOriginal = {
+      ...replacementAttemptSuccessor,
+      id: 51,
+      discarded: false,
+      url: 'https://replacement-generation-race.example/'
+    };
+    liveTabs = [generationRaceOriginal];
+    const generationRaceAttempt = await ownership.begin(generationRaceOriginal);
+    const generationRaceDiscarded = {...generationRaceOriginal, discarded: true, status: 'unloaded'};
+    liveTabs = [generationRaceDiscarded];
+    assert.equal(await ownership.finish(generationRaceDiscarded, generationRaceAttempt, 'self'), true);
+    const generationRaceSuccessor = {
+      ...generationRaceOriginal,
+      id: 52,
+      discarded: false,
+      status: 'complete'
+    };
+    liveTabs = [generationRaceSuccessor];
+    holdNextGet = true;
+    listeners.replaced(generationRaceSuccessor.id, generationRaceOriginal.id);
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    const generationRaceFinal = {...generationRaceSuccessor, discarded: true, status: 'unloaded'};
+    liveTabs = [generationRaceFinal];
+    listeners.attached(generationRaceSuccessor.id);
+    releaseGet(generationRaceSuccessor);
+    state = await ownership.snapshot();
+    assert.equal(state[generationRaceSuccessor.id].source, 'self');
+
+    // A second replacement while the first successor read is pending likewise
+    // prevents that obsolete identity from deleting or downgrading ownership.
+    const identityRaceOriginal = {
+      ...generationRaceOriginal,
+      id: 53,
+      url: 'https://replacement-identity-race.example/'
+    };
+    liveTabs = [identityRaceOriginal];
+    const identityRaceAttempt = await ownership.begin(identityRaceOriginal);
+    const identityRaceDiscarded = {...identityRaceOriginal, discarded: true, status: 'unloaded'};
+    liveTabs = [identityRaceDiscarded];
+    assert.equal(await ownership.finish(identityRaceDiscarded, identityRaceAttempt, 'self'), true);
+    const identityRaceMiddle = {
+      ...identityRaceOriginal,
+      id: 54,
+      discarded: false,
+      status: 'complete'
+    };
+    liveTabs = [identityRaceMiddle];
+    holdNextGet = true;
+    listeners.replaced(identityRaceMiddle.id, identityRaceOriginal.id);
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    const identityRaceFinal = {...identityRaceDiscarded, id: 55};
+    liveTabs = [identityRaceFinal];
+    listeners.replaced(identityRaceFinal.id, identityRaceMiddle.id);
+    releaseGet(identityRaceMiddle);
+    state = await ownership.snapshot();
+    assert.equal(state[identityRaceOriginal.id], undefined);
+    assert.equal(state[identityRaceMiddle.id], undefined);
+    assert.equal(state[identityRaceFinal.id].source, 'self');
+
     const replacement = {...attached, id: 37, discarded: true};
     liveTabs = [replacement];
     listeners.replaced(replacement.id, attachedDiscarded.id);

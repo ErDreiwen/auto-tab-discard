@@ -269,7 +269,11 @@ const startFixtureServer = async () => {
   };
 };
 
-const launchOverCDP = async ({executablePath, extensionPath, profile}) => {
+const launchOverCDP = async ({edgePrivacy, executablePath, extensionPath, profile}) => {
+  const disabledFeatures = ['OptimizationHints', 'MediaRouter'];
+  if (edgePrivacy) {
+    disabledFeatures.push('msImplicitSignin', 'msM365LinksImplicitSignin');
+  }
   const args = [
     '--remote-debugging-port=0',
     `--user-data-dir=${profile}`,
@@ -280,10 +284,13 @@ const launchOverCDP = async ({executablePath, extensionPath, profile}) => {
     '--disable-sync',
     '--disable-component-update',
     '--disable-background-mode',
-    '--disable-features=OptimizationHints,MediaRouter',
+    `--disable-features=${disabledFeatures.join(',')}`,
     '--window-position=20,20',
     'about:blank'
   ];
+  if (edgePrivacy) {
+    args.splice(-2, 0, '--disable-background-networking');
+  }
   const browserProcess = spawn(executablePath, args, {
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: false
@@ -302,7 +309,8 @@ const launchOverCDP = async ({executablePath, extensionPath, profile}) => {
         throw spawnError;
       }
       if (browserProcess.exitCode !== null) {
-        throw Error(`browser exited before CDP was ready (${browserProcess.exitCode}): ${stderr}`);
+        const details = edgePrivacy ? 'Edge stderr suppressed for identity privacy' : stderr;
+        throw Error(`browser exited before CDP was ready (${browserProcess.exitCode}): ${details}`);
       }
       if (!fs.existsSync(portFile)) {
         return false;
@@ -445,8 +453,10 @@ const main = async () => {
     throw Error('Pass --executable <isolated Chrome-for-Testing executable>; this harness never defaults to Edge');
   }
   const executablePath = path.resolve(executableArg);
+  const allowEdge = process.argv.includes('--allow-edge');
+  const retainProfile = process.argv.includes('--retain-profile');
   if (path.basename(executablePath).toLowerCase() === 'msedge.exe' &&
-      process.argv.includes('--allow-edge') === false) {
+      allowEdge === false) {
     throw Error('Refusing to launch Edge without the explicit --allow-edge safety flag');
   }
   const extensionPath = path.resolve(arg('extension', path.join(__dirname, '..', 'v3')));
@@ -462,14 +472,44 @@ const main = async () => {
   }
   fs.mkdirSync(profile, {recursive: true});
   fs.mkdirSync(resultsRoot, {recursive: true});
+  const removeIsolatedProfile = () => {
+    fs.rmSync(profile, {force: true, maxRetries: 3, recursive: true, retryDelay: 250});
+    if (fs.existsSync(profile)) {
+      throw Error('profile directory still exists after removal');
+    }
+  };
+  const cleanupEarlyFailure = error => {
+    if (retainProfile) {
+      return;
+    }
+    try {
+      removeIsolatedProfile();
+    }
+    catch (cleanupError) {
+      error.message += `\nIsolated profile cleanup also failed: ${cleanupError.message}`;
+    }
+  };
 
-  const fixture = await startFixtureServer();
+  let fixture;
+  try {
+    fixture = await startFixtureServer();
+  }
+  catch (error) {
+    cleanupEarlyFailure(error);
+    throw error;
+  }
   let launched;
   try {
-    launched = await launchOverCDP({executablePath, extensionPath, profile});
+    launched = await launchOverCDP({
+      edgePrivacy: allowEdge,
+      executablePath,
+      extensionPath,
+      profile
+    });
   }
   catch (error) {
     await fixture.stop().catch(() => {});
+    cleanupEarlyFailure(error);
     throw error;
   }
   const {browser, browserProcess, context} = launched;
@@ -481,6 +521,7 @@ const main = async () => {
     await settleWithin(browser.close(), 5000);
     await terminateBrowserProcess(browserProcess);
     await fixture.stop().catch(() => {});
+    cleanupEarlyFailure(error);
     throw error;
   }
   const timeline = [];
@@ -495,6 +536,71 @@ const main = async () => {
   let scenarioSequence = 0;
   let runError;
   const telemetryToken = `${runId}-${crypto.randomUUID()}`;
+  const replacementIds = new Map();
+  const lineageById = new Map();
+  const trackedLayouts = new Set();
+
+  const resolveTabId = id => {
+    const visited = [];
+    const seen = new Set();
+    let current = id;
+    while (replacementIds.has(current) && !seen.has(current)) {
+      seen.add(current);
+      visited.push(current);
+      current = replacementIds.get(current);
+    }
+    for (const previous of visited) {
+      replacementIds.set(previous, current);
+    }
+    return current;
+  };
+  const lineageFor = id => lineageById.get(id) || new Set([id]);
+  const syncLayoutLineage = layout => {
+    for (const tab of Object.values(layout.tabs)) {
+      const current = resolveTabId(tab.id);
+      tab.idHistory ||= [tab.id];
+      if (!tab.idHistory.includes(current)) {
+        tab.idHistory.push(current);
+      }
+      tab.id = current;
+    }
+    layout.selectedId = resolveTabId(layout.selectedId);
+    return layout;
+  };
+  const trackLayout = layout => {
+    syncLayoutLineage(layout);
+    trackedLayouts.add(layout);
+    return layout;
+  };
+  const recordTabReplacement = (addedId, removedId) => {
+    const lineage = new Set([
+      ...lineageFor(removedId),
+      ...lineageFor(addedId),
+      removedId,
+      addedId
+    ]);
+    replacementIds.set(removedId, addedId);
+    for (const id of lineage) {
+      lineageById.set(id, lineage);
+    }
+    for (const layout of trackedLayouts) {
+      for (const tab of Object.values(layout.tabs)) {
+        if (tab.id === removedId) {
+          tab.idHistory ||= [removedId];
+          if (!tab.idHistory.includes(addedId)) {
+            tab.idHistory.push(addedId);
+          }
+          tab.id = addedId;
+        }
+      }
+      if (layout.selectedId === removedId) {
+        layout.selectedId = addedId;
+      }
+    }
+    if (driverTabId === removedId) {
+      driverTabId = addedId;
+    }
+  };
 
   const writeReport = (ok, error) => {
     report = {
@@ -513,7 +619,8 @@ const main = async () => {
       profile,
       runId,
       scenarios,
-      stderr: launched.stderr(),
+      stderr: allowEdge ? undefined : launched.stderr(),
+      stderrSuppressed: allowEdge,
       timeline
     };
     fs.writeFileSync(resultPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -527,6 +634,9 @@ const main = async () => {
     driver = await context.newPage();
     await driver.goto(`chrome-extension://${extensionId}/data/options/index.html`);
     await context.exposeBinding('__atdEmit', (source, event) => {
+      if (event?.event === 'tabs.onReplaced') {
+        recordTabReplacement(event.addedId, event.removedId);
+      }
       timeline.push({...event, receivedAt: Date.now()});
     });
     await driver.evaluate(async token => {
@@ -794,6 +904,7 @@ const main = async () => {
 
     const reset = async () => {
       driver = await ensureDriver();
+      driverTabId = resolveTabId(driverTabId);
       const state = await driver.evaluate(async ({keepTabId, keepWindowId}) => {
         const windows = await chrome.windows.getAll({populate: true});
         for (const window of windows) {
@@ -814,6 +925,7 @@ const main = async () => {
         const snapshot = await readSnapshot([]);
         return Object.keys(snapshot.ownership).length === 0;
       }, `ownership cleanup after removing ${state.removable.length} tabs`, 15000);
+      trackedLayouts.clear();
     };
 
     const fixtureUrl = (prefix, key, {holdReload = 0, mb = 4} = {}) => {
@@ -853,6 +965,7 @@ const main = async () => {
       for (const entry of entries) {
         layout.tabs[entry.key] = {
           ...window.tabs[entry.key],
+          idHistory: [window.tabs[entry.key].id],
           key: entry.key,
           label: entry.label,
           url: entry.url
@@ -861,6 +974,7 @@ const main = async () => {
     };
 
     const focusSelected = async layout => {
+      syncLayoutLineage(layout);
       await driver.evaluate(async ({id, windowId}) => {
         await chrome.tabs.update(id, {active: true});
         await chrome.windows.update(windowId, {focused: true});
@@ -888,6 +1002,7 @@ const main = async () => {
       mergeWindow(layout, primary, entries);
       layout.primaryWindowId = primary.windowId;
       layout.selectedId = layout.tabs['d-selected'].id;
+      trackLayout(layout);
       await focusSelected(layout);
       return layout;
     };
@@ -907,6 +1022,7 @@ const main = async () => {
       mergeWindow(layout, primary, entries);
       layout.primaryWindowId = primary.windowId;
       layout.selectedId = layout.tabs['g-selected'].id;
+      trackLayout(layout);
       const groups = await driver.evaluate(async ({inside, outside, windowId}) => ({
         inside: await chrome.tabs.group({tabIds: inside, createProperties: {windowId}}),
         outside: await chrome.tabs.group({tabIds: outside, createProperties: {windowId}})
@@ -964,19 +1080,28 @@ const main = async () => {
       mergeWindow(layout, b, bEntries);
       layout.primaryWindowId = primary.windowId;
       layout.selectedId = layout.tabs['p-selected'].id;
+      trackLayout(layout);
       await focusSelected(layout);
       return layout;
     };
 
     function tabIds(layout, keys = Object.keys(layout.tabs)) {
+      syncLayoutLineage(layout);
       return keys.map(key => layout.tabs[key].id);
     }
     const counts = (layout, keys = Object.keys(layout.tabs)) => Object.fromEntries(
       keys.map(key => [key, fixture.count(layout.tabs[key].label)])
     );
     const compactSnapshot = async layout => {
+      await flushTelemetry();
+      syncLayoutLineage(layout);
       const keys = Object.keys(layout.tabs);
-      const snapshot = await readSnapshot(tabIds(layout, keys));
+      let snapshot = await readSnapshot(tabIds(layout, keys));
+      if (snapshot.tabs.some(tab => tab.missing === true)) {
+        await flushTelemetry();
+        syncLayoutLineage(layout);
+        snapshot = await readSnapshot(tabIds(layout, keys));
+      }
       return {
         ownership: snapshot.ownership,
         tabs: Object.fromEntries(keys.map((key, index) => [key, snapshot.tabs[index]]))
@@ -1185,7 +1310,8 @@ const main = async () => {
 
     const assertTakeoverApiOrder = async (checkpoint, id, label) => {
       const events = await telemetrySince(checkpoint);
-      const api = events.filter(event => event.token === telemetryToken && event.id === id &&
+      const lineage = lineageFor(id);
+      const api = events.filter(event => event.token === telemetryToken && lineage.has(event.id) &&
         Number.isInteger(event.apiSequence)).sort((a, b) => a.apiSequence - b.apiSequence);
       const discardCalls = api.filter(event => event.event === 'api.tabs.discard-call');
       assert.equal(discardCalls.length, 1, `${label}: native tabs.discard must be invoked exactly once`);
@@ -1220,9 +1346,9 @@ const main = async () => {
       const before = await compactSnapshot(layout);
       const requestBefore = counts(layout);
       const telemetryStart = await telemetryCheckpoint();
-      const sleeperIds = new Set(Object.entries(before.tabs)
+      const sleeperRoots = Object.entries(before.tabs)
         .filter(([, tab]) => tab.discarded === true)
-        .map(([, tab]) => tab.id));
+        .map(([, tab]) => tab.id);
       await sleep(duration);
       const after = await compactSnapshot(layout);
       const requestAfter = counts(layout);
@@ -1238,6 +1364,7 @@ const main = async () => {
         }, `${key} must remain stable during the quiescence dwell`);
       }
       assert.deepEqual(requestAfter, requestBefore, 'quiescence dwell must not issue delayed document requests');
+      const sleeperIds = new Set(sleeperRoots.flatMap(id => [...lineageFor(id)]));
       const wakeEvents = (await telemetrySince(telemetryStart)).filter(event =>
         event.event === 'tabs.onUpdated' && sleeperIds.has(event.id) &&
         (event.tab?.discarded === false || event.tab?.status === 'loading'));
@@ -1298,10 +1425,11 @@ const main = async () => {
       scenarios.push({name, ok: true, targets: ['d-selected']});
     }
 
-    // Native Chromium/Edge group row: normal adoption never wakes an existing
-    // discard, while Shift physically takes it over only after quiescing reload.
+    // Native Chromium/Edge group row: a normal click physically takes over an
+    // existing external discard, applies the portable sleep marker, and then
+    // owns it exactly like the group's loaded members. Shift is not required.
     {
-      const name = 'discard-tree-normal';
+      const name = 'discard-tree-normal-takeover';
       const layout = await buildGroup(nextPrefix(name));
       const baseline = counts(layout);
       const start = await telemetryCheckpoint();
@@ -1309,22 +1437,16 @@ const main = async () => {
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
         return ['g-selected', 'g-loaded', 'g-external'].every(key =>
-          snapshot.tabs[key].discarded === true && snapshot.tabs[key].status === 'unloaded') &&
-          snapshot.ownership[layout.tabs['g-selected'].id]?.source === 'self' &&
-          snapshot.ownership[layout.tabs['g-loaded'].id]?.source === 'self' &&
-          snapshot.ownership[layout.tabs['g-external'].id]?.source === 'adopted';
+          snapshot.tabs[key].discarded === true && snapshot.tabs[key].status === 'unloaded' &&
+          snapshot.ownership[layout.tabs[key].id]?.source === 'self');
       }, `${name} final state`, 20000);
       const after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout,
         ['g-selected', 'g-loaded', 'g-external', 'g-out-external'], name);
-      for (const key of ['g-selected', 'g-loaded']) {
+      for (const key of ['g-selected', 'g-loaded', 'g-external']) {
         assert.equal(after.tabs[key].groupId, layout.groupIds.inside, `${key} must retain the selected group ID`);
         assert.match(after.tabs[key].title, /^💤\s/, `${key} must show the extension sleep title prefix`);
       }
-      assert.equal(after.tabs['g-external'].groupId, layout.groupIds.inside,
-        'adopted group member must retain the selected group ID');
-      assert.equal(after.tabs['g-external'].title.startsWith('💤 '), false,
-        'in-place adoption must not wake the page merely to rewrite its title');
       for (const key of ['g-out-loaded', 'g-out-external']) {
         assert.equal(after.tabs[key].groupId, layout.groupIds.outside, `${key} must retain the outsider group ID`);
       }
@@ -1333,14 +1455,23 @@ const main = async () => {
       assert.equal(after.tabs['g-out-loaded'].discarded, false, 'other group loaded member must be untouched');
       assert.equal(after.tabs['g-out-external'].discarded, true, 'other group sleeper must stay asleep');
       assert.equal(after.ownership[layout.tabs['g-out-external'].id]?.source, 'claimed');
-      assert.deepEqual(counts(layout), baseline, 'normal group adoption must issue no document requests');
+      const requestAfter = counts(layout);
+      assert.equal(requestAfter['g-external'], baseline['g-external'] + 1,
+        'normal group takeover must wake the external member exactly once');
+      for (const key of Object.keys(layout.tabs).filter(key => key !== 'g-external')) {
+        assert.equal(requestAfter[key], baseline[key], `${key} must not be reloaded by normal group takeover`);
+      }
       const externalId = layout.tabs['g-external'].id;
+      await assertTakeoverApiOrder(start, externalId, name);
+      const externalLineage = lineageFor(externalId);
       assert.equal((await telemetrySince(start)).some(event => event.event === 'tabs.onUpdated' &&
-        event.id === externalId && event.tab?.discarded === false), false,
-      'normal group adoption must never wake the existing discard');
+        externalLineage.has(event.id) && event.tab?.discarded === false), true,
+      'normal group takeover must wake the existing discard');
+      assert.equal(fixture.entries(layout.tabs['g-external'].label).length, 2,
+        'normal group takeover must never enter a reload loop');
       await assertStable(layout);
       assertNoCrashes(name);
-      scenarios.push({name, ok: true, sources: {external: 'adopted', loaded: 'self'}});
+      scenarios.push({name, ok: true, sources: {external: 'self', loaded: 'self'}, wakeCount: 1});
     }
 
     {
@@ -1383,8 +1514,9 @@ const main = async () => {
         assert.equal(groupAfter.tabs[key].groupId, layout.groupIds.outside, `${key} outsider group must remain intact`);
       }
       const apiOrder = await assertTakeoverApiOrder(start, id, name);
+      const idLineage = lineageFor(id);
       const events = (await telemetrySince(start))
-        .filter(event => event.event === 'tabs.onUpdated' && event.id === id);
+        .filter(event => event.event === 'tabs.onUpdated' && idLineage.has(event.id));
       const loading = events.findIndex(event => event.tab?.discarded === false && event.tab?.status === 'loading');
       const complete = events.findIndex((event, index) => index > loading &&
         event.tab?.discarded === false && event.tab?.status === 'complete');
@@ -1411,9 +1543,10 @@ const main = async () => {
       });
     }
 
-    // All five scoped discard rows. Each real popup click must discard loaded
-    // targets, adopt already-discarded targets in place, preserve outsiders,
-    // and then let Shift upgrade only the adopted targets physically.
+    // All five scoped discard rows. A normal real popup click must physically
+    // take over every in-scope external sleeper exactly once, discard eligible
+    // loaded targets, apply the portable marker, and preserve outsiders. Shift
+    // remains only the eligibility override for a loaded protected target.
     for (const [command, targets] of Object.entries(DISCARD_SPECS)) {
       const name = `${command}-normal-and-shift`;
       const inScope = new Set(targets);
@@ -1428,20 +1561,23 @@ const main = async () => {
       const normalStart = await telemetryCheckpoint();
       await clickPopup(layout, command, false);
       const normalTargets = targets.filter(key => key !== protectedKey);
+      const normalTakeovers = normalTargets.filter(key => SETUP_EXTERNAL.has(key));
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
         return normalTargets.every(key => snapshot.tabs[key].discarded === true &&
           snapshot.tabs[key].status === 'unloaded' &&
-          snapshot.ownership[layout.tabs[key].id]?.source ===
-            (SETUP_EXTERNAL.has(key) ? 'adopted' : 'self'));
+          snapshot.ownership[layout.tabs[key].id]?.source === 'self');
       }, `${command} normal final state`, 25000);
       let after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout, [...normalTargets, ...SETUP_EXTERNAL], `${command} normal`);
+      for (const key of normalTargets) {
+        assert.match(after.tabs[key].title, /^💤\s/, `${command} must visibly mark ${key} as extension-discarded`);
+      }
       for (const key of ALL_BACKGROUND.filter(key => !inScope.has(key))) {
         if (SETUP_EXTERNAL.has(key)) {
           assert.equal(after.tabs[key].discarded, true, `${command} must keep ${key} asleep`);
           assert.equal(after.ownership[layout.tabs[key].id]?.source, 'claimed',
-            `${command} must not adopt out-of-scope ${key}`);
+            `${command} must not take over out-of-scope ${key}`);
         }
         else {
           assert.equal(after.tabs[key].discarded, false, `${command} must keep ${key} loaded`);
@@ -1458,12 +1594,31 @@ const main = async () => {
         assert.equal(after.ownership[layout.tabs[protectedKey].id], undefined,
           `${command} normal path must not own the protected tab`);
       }
-      assert.deepEqual(counts(layout), baseline, `${command} normal path must issue zero document requests`);
-      for (const key of targets.filter(key => SETUP_EXTERNAL.has(key))) {
+      const normalAfter = counts(layout);
+      for (const key of Object.keys(layout.tabs)) {
+        const expectedDelta = normalTakeovers.includes(key) ? 1 : 0;
+        assert.equal(normalAfter[key], baseline[key] + expectedDelta,
+          `${command} normal request delta for ${key}`);
+      }
+      for (const key of normalTakeovers) {
         const id = layout.tabs[key].id;
-        assert.equal((await telemetrySince(normalStart)).some(event => event.event === 'tabs.onUpdated' &&
-          event.id === id && event.tab?.discarded === false), false,
-        `${command} normal path must not wake ${key}`);
+        await assertTakeoverApiOrder(normalStart, id, `${command} normal ${key}`);
+        const idLineage = lineageFor(id);
+        const events = (await telemetrySince(normalStart))
+          .filter(event => event.event === 'tabs.onUpdated' && idLineage.has(event.id));
+        const loading = events.findIndex(event => event.tab?.discarded === false && event.tab?.status === 'loading');
+        const complete = events.findIndex((event, index) => index > loading &&
+          event.tab?.discarded === false && event.tab?.status === 'complete');
+        const unloaded = events.findIndex((event, index) => index > complete &&
+          event.tab?.discarded === true && event.tab?.status === 'unloaded');
+        assert.ok(loading >= 0 && complete > loading && unloaded > complete,
+          `${command} normal takeover must quiesce ${key} in loading -> complete -> unloaded order`);
+        const secondRequest = fixture.entries(layout.tabs[key].label)[1];
+        await waitFor(() => secondRequest?.closedAt, `${command} normal stopped response for ${key}`, 5000);
+        assert.equal(secondRequest.aborted, true);
+        assert.equal(secondRequest.writableFinished, false);
+        assert.equal(fixture.entries(layout.tabs[key].label).length, 2,
+          `${command} normal takeover must wake ${key} exactly once`);
       }
 
       const normalRepeatBaseline = counts(layout);
@@ -1472,13 +1627,13 @@ const main = async () => {
       assert.deepEqual(counts(layout), normalRepeatBaseline, `${command} repeat normal command must be a no-op`);
       for (const key of targets.filter(key => SETUP_EXTERNAL.has(key))) {
         const id = layout.tabs[key].id;
+        const idLineage = lineageFor(id);
         assert.equal((await telemetrySince(normalRepeatStart)).some(event => event.event === 'tabs.onUpdated' &&
-          event.id === id && (event.tab?.discarded === false || event.tab?.status === 'loading')), false,
-        `${command} repeat normal command must not wake adopted ${key}`);
+          idLineage.has(event.id) && (event.tab?.discarded === false || event.tab?.status === 'loading')), false,
+        `${command} repeat normal command must not wake self-owned ${key}`);
       }
 
       const shiftBaseline = counts(layout);
-      const shiftStart = await telemetryCheckpoint();
       await clickPopup(layout, command, true);
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
@@ -1490,36 +1645,16 @@ const main = async () => {
       assertOwnershipKeys(after, layout, [...targets, ...SETUP_EXTERNAL], `${command} Shift`);
       const shiftAfter = counts(layout);
       for (const key of targets) {
-        const expectedDelta = SETUP_EXTERNAL.has(key) ? 1 : 0;
-        assert.equal(shiftAfter[key], shiftBaseline[key] + expectedDelta,
-          `${command} Shift request delta for ${key}`);
+        assert.equal(shiftAfter[key], shiftBaseline[key], `${command} Shift must not reload ${key}`);
         assert.equal(after.ownership[layout.tabs[key].id]?.source, 'self');
+        assert.match(after.tabs[key].title, /^💤\s/, `${command} Shift must visibly mark ${key}`);
       }
       for (const key of ALL_BACKGROUND.filter(key => !inScope.has(key))) {
         assert.equal(shiftAfter[key], shiftBaseline[key], `${command} Shift must not reload ${key}`);
         if (SETUP_EXTERNAL.has(key)) {
           assert.equal(after.ownership[layout.tabs[key].id]?.source, 'claimed',
-            `${command} Shift must not take over out-of-scope ${key}`);
+          `${command} Shift must not take over out-of-scope ${key}`);
         }
-      }
-      for (const key of targets.filter(key => SETUP_EXTERNAL.has(key))) {
-        const id = layout.tabs[key].id;
-        await assertTakeoverApiOrder(shiftStart, id, `${command} ${key}`);
-        const events = (await telemetrySince(shiftStart))
-          .filter(event => event.event === 'tabs.onUpdated' && event.id === id);
-        const loading = events.findIndex(event => event.tab?.discarded === false && event.tab?.status === 'loading');
-        const complete = events.findIndex((event, index) => index > loading &&
-          event.tab?.discarded === false && event.tab?.status === 'complete');
-        const unloaded = events.findIndex((event, index) => index > complete &&
-          event.tab?.discarded === true && event.tab?.status === 'unloaded');
-        assert.ok(loading >= 0 && complete > loading && unloaded > complete,
-          `${command} must quiesce ${key} in loading -> complete -> unloaded order`);
-        const secondRequest = fixture.entries(layout.tabs[key].label)[1];
-        await waitFor(() => secondRequest?.closedAt, `${command} stopped response for ${key}`, 5000);
-        assert.equal(secondRequest.aborted, true);
-        assert.equal(secondRequest.writableFinished, false);
-        assert.equal(fixture.entries(layout.tabs[key].label).length, 2,
-          `${command} must wake ${key} exactly once`);
       }
 
       const repeatBaseline = counts(layout);
@@ -1531,16 +1666,17 @@ const main = async () => {
         name,
         normalTargets,
         ok: true,
+        normalTakeovers,
         protectedShiftOverride: protectedKey,
-        shiftTakeovers: targets.filter(key => SETUP_EXTERNAL.has(key))
+        shiftTakeovers: []
       });
     }
 
     // All five X controls. Every in-scope sleeper loads exactly once, every
     // out-of-scope sleeper stays unloaded, and a repeat release is a no-op.
     // release-tabs additionally uses the real Shift-click path on a deliberate
-    // self/adopted/claimed ownership mix, covering the popup's bypass-cache
-    // modifier without replacing any of the ordinary per-scope release cases.
+    // self/claimed ownership mix, covering the popup's bypass-cache modifier
+    // without replacing any of the ordinary per-scope release cases.
     for (const [command, targets] of Object.entries(RELEASE_SPECS)) {
       const name = command;
       const inScope = new Set(targets);
@@ -1559,17 +1695,16 @@ const main = async () => {
             snapshot.ownership[layout.tabs[key].id]?.source === 'self');
         }, `${command}: self-owned release fixtures`, 20000);
 
-        // Adopt one external sleeper while physically discarding the other
+        // Physically take over one external sleeper while discarding the other
         // right-side tabs, then leave every other-window sleeper merely claimed.
         await externalDiscard(layout, ['p-right-mid']);
         await clickPopup(layout, 'discard-rights', false);
         await waitFor(async () => {
           const snapshot = await compactSnapshot(layout);
-          return snapshot.ownership[layout.tabs['p-right-mid'].id]?.source === 'adopted' &&
-            ['p-right-near', 'p-right-far'].every(key =>
+          return ['p-right-near', 'p-right-mid', 'p-right-far'].every(key =>
               snapshot.tabs[key].discarded === true && snapshot.tabs[key].status === 'unloaded' &&
               snapshot.ownership[layout.tabs[key].id]?.source === 'self');
-        }, `${command}: adopted and self-owned release fixtures`, 20000);
+        }, `${command}: self-owned release fixtures`, 20000);
         await externalDiscard(layout, OTHER_BACKGROUND);
 
         const prepared = await compactSnapshot(layout);
@@ -1580,15 +1715,18 @@ const main = async () => {
           'p-left-far': 'self',
           'p-left-near': 'self',
           'p-right-near': 'self',
-          'p-right-mid': 'adopted',
+          'p-right-mid': 'self',
           'p-right-far': 'self',
           'a-bg-1': 'claimed',
           'a-bg-2': 'claimed',
           'b-bg-1': 'claimed',
           'b-bg-2': 'claimed'
-        }, `${command}: release fixture must contain every ownership source`);
-        assert.deepEqual(counts(layout), setupBaseline,
-          `${command}: mixed-source preparation must not reload any document`);
+        }, `${command}: release fixture must contain the expected ownership sources`);
+        const setupAfter = counts(layout);
+        for (const key of Object.keys(layout.tabs)) {
+          assert.equal(setupAfter[key], setupBaseline[key] + (key === 'p-right-mid' ? 1 : 0),
+            `${command}: mixed-source preparation request delta for ${key}`);
+        }
       }
       else {
         await externalDiscard(layout, ALL_BACKGROUND);
@@ -1665,7 +1803,8 @@ const main = async () => {
     }
     report.cleanup = cleanup;
     report.crashes = crashes;
-    report.stderr = launched.stderr();
+    report.stderr = allowEdge ? undefined : launched.stderr();
+    report.stderrSuppressed = allowEdge;
     if (crashes.length && !runError) {
       runError = Error(`browser produced ${crashes.length} crash dump(s)`);
       report.error = {message: runError.message, stack: runError.stack};
@@ -1676,12 +1815,9 @@ const main = async () => {
       report.error = {message: runError.message, stack: runError.stack};
       report.ok = false;
     }
-    if (!runError && report.ok === true) {
+    if (!retainProfile) {
       try {
-        fs.rmSync(profile, {force: true, maxRetries: 3, recursive: true, retryDelay: 250});
-        if (fs.existsSync(profile)) {
-          throw Error('profile directory still exists after removal');
-        }
+        removeIsolatedProfile();
         cleanup.profile = {path: profile, removed: true, retained: false};
       }
       catch (error) {
@@ -1691,13 +1827,14 @@ const main = async () => {
           removed: false,
           retained: fs.existsSync(profile)
         };
-        runError = Error(`isolated browser profile cleanup failed: ${cleanup.profile.error}`);
-        report.error = {message: runError.message, stack: runError.stack};
+        const cleanupError = Error(`isolated browser profile cleanup failed: ${cleanup.profile.error}`);
+        runError ||= cleanupError;
+        report.error ||= {message: cleanupError.message, stack: cleanupError.stack};
         report.ok = false;
       }
     }
     else {
-      cleanup.profile = {path: profile, removed: false, retained: true};
+      cleanup.profile = {explicit: true, path: profile, removed: false, retained: true};
     }
     fs.writeFileSync(resultPath, `${JSON.stringify(report, null, 2)}\n`);
   }

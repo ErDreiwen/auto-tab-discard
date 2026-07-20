@@ -5,9 +5,11 @@ import {ownership} from './ownership.mjs';
 
 // this list keeps ids of the tabs that are in progress of being discarded
 const inprogress = new Set();
+const currentId = id => ownership.resolveId(id);
 
 const discard = tab => {
-  if (inprogress.has(tab.id)) {
+  const id = currentId(tab.id);
+  if (inprogress.has(id)) {
     return Promise.resolve(false);
   }
   if (tab.active) {
@@ -20,7 +22,7 @@ const discard = tab => {
   }
 
   // https://github.com/rNeomy/auto-tab-discard/issues/248
-  inprogress.add(tab.id);
+  inprogress.add(id);
 
   return storage(prefs).then(prefs => new Promise(resolve => {
     const limit = Math.max(1, Number(prefs['simultaneous-jobs']) || 1);
@@ -42,6 +44,7 @@ const discard = tab => {
       discard.perform(tab).then(resolve).finally(() => {
         discard.count -= 1;
         inprogress.delete(tab.id);
+        inprogress.delete(currentId(tab.id));
         if (discard.tabs.length) {
           const queued = discard.tabs.shift();
           inprogress.delete(queued.tab.id);
@@ -159,13 +162,13 @@ const discard = tab => {
 discard.tabs = [];
 discard.count = 0;
 discard.prepareTimeout = 5000;
-const getTab = id => new Promise(resolve => chrome.tabs.get(id, current => {
+const getTab = id => new Promise(resolve => chrome.tabs.get(currentId(id), current => {
   const error = chrome.runtime.lastError;
   resolve(error ? undefined : current);
 }));
 const nativeDiscard = tab => new Promise(resolve => {
   try {
-    chrome.tabs.discard(tab.id, result => {
+    chrome.tabs.discard(currentId(tab.id), result => {
       const error = chrome.runtime.lastError;
       if (error) {
         resolve({error: error.message || String(error)});
@@ -185,7 +188,7 @@ const nativeDiscard = tab => new Promise(resolve => {
 
 const reloadTab = id => new Promise(resolve => {
   try {
-    chrome.tabs.reload(id, {bypassCache: false}, () => {
+    chrome.tabs.reload(currentId(id), {bypassCache: false}, () => {
       const error = chrome.runtime.lastError;
       resolve(error ? {error: error.message || String(error)} : {success: true});
     });
@@ -194,6 +197,75 @@ const reloadTab = id => new Promise(resolve => {
     resolve({error: e.message || String(e)});
   }
 });
+
+const activateTab = id => new Promise(resolve => {
+  try {
+    chrome.tabs.update(currentId(id), {active: true}, tab => {
+      const error = chrome.runtime.lastError;
+      resolve(error ? {error: error.message || String(error)} : {success: true, tab});
+    });
+  }
+  catch (e) {
+    resolve({error: e.message || String(e)});
+  }
+});
+
+// Waking an Edge Sleeping Tab requires a brief activation pulse. Observe the
+// whole pulse so an activation from the user (or another extension) cannot
+// make us restore an obsolete tab selection or continue toward native discard.
+const observeActivationPulse = windowId => {
+  const event = chrome.tabs.onActivated;
+  if (!event?.addListener || !event?.removeListener) {
+    return undefined;
+  }
+
+  const state = {
+    expected: undefined,
+    interference: undefined,
+    observed: undefined
+  };
+  const listener = info => {
+    if (info.windowId !== windowId) {
+      return;
+    }
+    const activatedId = currentId(info.tabId);
+    if (state.expected !== undefined && activatedId === currentId(state.expected)) {
+      state.observed = activatedId;
+      state.expected = undefined;
+    }
+    else if (!state.interference) {
+      state.interference = {tabId: activatedId};
+    }
+  };
+
+  try {
+    event.addListener(listener);
+  }
+  catch (e) {
+    return undefined;
+  }
+
+  return {
+    arm(id) {
+      if (state.interference || state.expected !== undefined) {
+        return false;
+      }
+      state.observed = undefined;
+      state.expected = currentId(id);
+      return true;
+    },
+    cancelExpected() {
+      state.expected = undefined;
+      state.observed = undefined;
+    },
+    close() {
+      event.removeListener(listener);
+    },
+    interference: () => state.interference,
+    observed: id => state.interference === undefined && state.expected === undefined &&
+      state.observed === currentId(id)
+  };
+};
 
 const remainingTime = deadline => Math.max(0, deadline - Date.now());
 const waitBeforeDeadline = async (deadline, interval = discard.takeoverPoll) => {
@@ -210,13 +282,50 @@ const getTabBeforeDeadline = (id, deadline) => {
   return timeout > 0 ? withTimeout(getTab(id), timeout, undefined) : Promise.resolve(undefined);
 };
 
+const getActiveTabBeforeDeadline = async (windowId, deadline) => {
+  const timeout = Math.min(discard.getTimeout, remainingTime(deadline));
+  const tabs = timeout > 0 ?
+    await withTimeout(query({windowId, active: true}), timeout, undefined) : undefined;
+  return Array.isArray(tabs) && tabs.length === 1 ? tabs[0] : undefined;
+};
+
+const waitForExpectedActivation = async (pulse, id, token, deadline) => {
+  while (Date.now() < deadline && token.cancelled === false && !pulse.interference()) {
+    if (pulse.observed(id)) {
+      return true;
+    }
+    await waitBeforeDeadline(deadline);
+  }
+  return false;
+};
+
+const assertActivationPulseSafe = (pulse, id) => {
+  const interference = pulse?.interference();
+  if (interference) {
+    throw Error(`tab activation changed unexpectedly to ${interference.tabId} while waking frozen tab ${id}`);
+  }
+};
+
 const waitForAwake = async (id, token, deadline = Date.now() + discard.takeoverTimeout) => {
   while (Date.now() < deadline && token.cancelled === false) {
     const current = await getTabBeforeDeadline(id, deadline);
     if (!current) {
       return undefined;
     }
-    if (current.discarded === false) {
+    if (current.discarded === false && current.frozen !== true) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+  }
+};
+
+const waitForInactiveAwake = async (id, token, deadline = Date.now() + discard.takeoverTimeout) => {
+  while (Date.now() < deadline && token.cancelled === false) {
+    const current = await getTabBeforeDeadline(id, deadline);
+    if (!current || current.discarded === true) {
+      return current;
+    }
+    if (current.frozen !== true && current.active !== true) {
       return current;
     }
     await waitBeforeDeadline(deadline);
@@ -228,7 +337,7 @@ const observeReload = id => {
     sawLoading: false
   };
   const listener = (tabId, changeInfo, tab) => {
-    if (tabId !== id) {
+    if (currentId(tabId) !== currentId(id)) {
       return;
     }
     const status = changeInfo.status || tab?.status;
@@ -251,7 +360,7 @@ const observeReload = id => {
 const stopLoadingTab = (id, prepend = '', requireTitle = false) => {
   try {
     return chrome.scripting.executeScript({
-      target: {tabId: id},
+      target: {tabId: currentId(id)},
       injectImmediately: true,
       func: prefix => {
         window.stop();
@@ -308,13 +417,13 @@ const quiesceReload = async (
   frameRetries = {count: 0}
 ) => {
   let current = initial || await getTabBeforeDeadline(id, deadline);
-  if (!current || current.discarded !== false) {
+  if (!current || current.discarded !== false || current.frozen === true) {
     return current;
   }
 
   let completeSince;
   while (Date.now() < deadline && token.cancelled === false) {
-    if (!current || current.discarded !== false || current.active === true) {
+    if (!current || current.discarded !== false || current.frozen === true || current.active === true) {
       return current;
     }
     if (current.status === 'complete') {
@@ -359,7 +468,7 @@ const quiesceReload = async (
         }
         frameRetries.count += 1;
         current = await getTabBeforeDeadline(id, deadline);
-        if (!current || current.discarded !== false || current.active === true) {
+        if (!current || current.discarded !== false || current.frozen === true || current.active === true) {
           return current;
         }
         await waitBeforeDeadline(deadline);
@@ -369,7 +478,7 @@ const quiesceReload = async (
       throw Error(`cannot stop the reload on tab ${id}: ${stopped.error}`);
     }
     current = await getTabBeforeDeadline(id, deadline);
-    if (!current || current.discarded !== false || current.active === true) {
+    if (!current || current.discarded !== false || current.frozen === true || current.active === true) {
       return current;
     }
     await waitBeforeDeadline(deadline);
@@ -410,7 +519,8 @@ const waitForPreparedTitle = async (
   }
   let current = initial;
   while (Date.now() < deadline && token.cancelled === false) {
-    if (!current || current.discarded !== false || current.active === true || current.status !== 'complete') {
+    if (!current || current.discarded !== false || current.frozen === true ||
+        current.active === true || current.status !== 'complete') {
       return current;
     }
     if (current.title?.startsWith(prepend)) {
@@ -429,7 +539,8 @@ const prepareAwakeTab = async (id, token, initial, observation, prepend, deadlin
     current = await quiesceReload(
       id, token, current, observation, prepend, deadline, frameRetries
     );
-    if (!current || current.discarded !== false || current.active === true || current.status !== 'complete') {
+    if (!current || current.discarded !== false || current.frozen === true ||
+        current.active === true || current.status !== 'complete') {
       return current;
     }
 
@@ -450,7 +561,7 @@ const prepareAwakeTab = async (id, token, initial, observation, prepend, deadlin
         }
         frameRetries.count += 1;
         current = await getTabBeforeDeadline(id, deadline);
-        if (!current || current.discarded !== false || current.active === true) {
+        if (!current || current.discarded !== false || current.frozen === true || current.active === true) {
           return current;
         }
         await waitBeforeDeadline(deadline);
@@ -484,7 +595,8 @@ const takeoverOnce = async (tab, token) => {
   const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
   const initialState = await ownership.status(id);
   const recovering = current?.discarded === false && initialState.marker?.state === 'takeover-recovery';
-  if (!current || current.active === true || (current.discarded !== true && recovering === false)) {
+  const suspended = current?.discarded === true || current?.frozen === true;
+  if (!current || current.active === true || (suspended === false && recovering === false)) {
     throw Error(`tab ${id} is no longer an inactive takeover target`);
   }
 
@@ -497,6 +609,8 @@ const takeoverOnce = async (tab, token) => {
   }
 
   let finished = false;
+  let activationPulse;
+  let pulseKeeperId;
   let reloadObservation;
   try {
     const takeoverPrefs = await storage({prepends: prefs.prepends});
@@ -514,11 +628,108 @@ const takeoverOnce = async (tab, token) => {
       }
       awake = await waitForAwake(id, token, takeoverDeadline);
     }
+    else if (current.frozen === true) {
+      // Edge Sleeping Tabs keep their document in memory and officially
+      // unfreeze on activation. A background reload can leave `frozen: true`,
+      // so briefly select the tab, then restore the window's previous active
+      // tab. This exposes the existing renderer for title preparation without
+      // allocating a new navigation or document request.
+      activationPulse = observeActivationPulse(current.windowId);
+      if (!activationPulse) {
+        throw Error(`cannot safely wake frozen tab ${id} without an activation observer`);
+      }
+
+      let keeper = await getActiveTabBeforeDeadline(current.windowId, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (keeper?.id === currentId(id)) {
+        keeper = undefined;
+      }
+      if (!keeper) {
+        throw Error(`cannot wake frozen tab ${id} without an active keeper`);
+      }
+
+      keeper = await getTabBeforeDeadline(keeper.id, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (!keeper || keeper.windowId !== current.windowId || keeper.active !== true ||
+          keeper.discarded !== false || keeper.frozen === true) {
+        throw Error(`active keeper changed before waking frozen tab ${id}`);
+      }
+      pulseKeeperId = keeper.id;
+
+      if (!activationPulse.arm(id)) {
+        assertActivationPulseSafe(activationPulse, id);
+        throw Error(`cannot arm activation of frozen tab ${id}`);
+      }
+      const activated = await activateTab(id);
+      if (activated.error) {
+        activationPulse.cancelExpected();
+        throw Error(`cannot activate frozen tab ${id}: ${activated.error}`);
+      }
+      if (!await waitForExpectedActivation(activationPulse, id, token, takeoverDeadline)) {
+        assertActivationPulseSafe(activationPulse, id);
+        throw Error(`did not observe activation of frozen tab ${id}`);
+      }
+      const activeTarget = await getActiveTabBeforeDeadline(current.windowId, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (!activeTarget || currentId(activeTarget.id) !== currentId(id)) {
+        throw Error(`active tab changed while waking frozen tab ${id}`);
+      }
+
+      awake = await waitForAwake(id, token, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      const activeAfterWake = await getActiveTabBeforeDeadline(current.windowId, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (!activeAfterWake || currentId(activeAfterWake.id) !== currentId(id)) {
+        throw Error(`active tab changed while waking frozen tab ${id}`);
+      }
+
+      keeper = await getTabBeforeDeadline(pulseKeeperId, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (!keeper || keeper.windowId !== current.windowId || keeper.active === true ||
+          keeper.discarded !== false || keeper.frozen === true) {
+        throw Error(`keeper ${pulseKeeperId} became stale while waking frozen tab ${id}`);
+      }
+      if (!activationPulse.arm(pulseKeeperId)) {
+        assertActivationPulseSafe(activationPulse, id);
+        throw Error(`cannot arm restoration of keeper ${pulseKeeperId} after waking frozen tab ${id}`);
+      }
+      const restored = await activateTab(pulseKeeperId);
+      if (restored.error) {
+        activationPulse.cancelExpected();
+        throw Error(`cannot restore keeper ${pulseKeeperId} after waking frozen tab ${id}: ${restored.error}`);
+      }
+      if (!await waitForExpectedActivation(activationPulse, pulseKeeperId, token, takeoverDeadline)) {
+        assertActivationPulseSafe(activationPulse, id);
+        throw Error(`did not observe restoration of keeper ${pulseKeeperId} after waking frozen tab ${id}`);
+      }
+      const activeAfterRestore = await getActiveTabBeforeDeadline(current.windowId, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (!activeAfterRestore || currentId(activeAfterRestore.id) !== currentId(pulseKeeperId)) {
+        throw Error(`keeper ${pulseKeeperId} was not restored after waking frozen tab ${id}`);
+      }
+      awake = await waitForInactiveAwake(id, token, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+    }
     awake = await prepareAwakeTab(id, token, awake, reloadObservation, prepend, takeoverDeadline);
+    assertActivationPulseSafe(activationPulse, id);
     if (token.cancelled) {
       throw Error(`discard takeover cancelled for tab ${id}`);
     }
-    if (!awake || awake.discarded !== false || awake.active === true || awake.status !== 'complete') {
+
+    if (activationPulse) {
+      const activeBeforeDiscard = await getActiveTabBeforeDeadline(current.windowId, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+      if (!activeBeforeDiscard || currentId(activeBeforeDiscard.id) !== currentId(pulseKeeperId)) {
+        throw Error(`active tab changed before discarding awakened frozen tab ${id}`);
+      }
+      // Replace preparation's snapshot with a mandatory live read. Together
+      // with the activation observer this prevents a selected target from
+      // crossing the native-discard boundary on a stale inactive value.
+      awake = await getTabBeforeDeadline(id, takeoverDeadline);
+      assertActivationPulseSafe(activationPulse, id);
+    }
+    if (!awake || awake.discarded !== false || awake.frozen === true ||
+        awake.active === true || awake.status !== 'complete') {
       throw Error(`tab ${id} did not wake as a quiescent inactive tab`);
     }
     if (prepend && awake.title?.startsWith(prepend) !== true) {
@@ -555,7 +766,7 @@ const takeoverOnce = async (tab, token) => {
     finished = true;
 
     if (strong && owned) {
-      if (await ownership.confirmSelf(id, attemptId)) {
+      if (await ownership.confirmSelf(finalTab.id, attemptId)) {
         return true;
       }
       throw Error(`discard takeover failed for tab ${id}: tab woke during ownership finalization`);
@@ -578,39 +789,41 @@ const takeoverOnce = async (tab, token) => {
     throw e;
   }
   finally {
+    activationPulse?.close();
     reloadObservation?.close();
   }
 };
 
 const takeoverJobs = new Map();
 let takeoverTail = Promise.resolve();
+const takeoverJob = id => takeoverJobs.get(id) || takeoverJobs.get(currentId(id));
 
 discard.takeover = (tab, {manual = false} = {}) => {
-  const id = tab && tab.id;
+  const id = currentId(tab && tab.id);
   if (!Number.isInteger(id)) {
     return Promise.reject(Error('invalid tab for discard takeover'));
   }
-  const existing = takeoverJobs.get(id);
+  const existing = takeoverJob(id);
   if (existing) {
     return existing.promise;
   }
 
   const token = {cancelled: false};
-  const job = {started: false, token};
+  const job = {id, started: false, token};
   const execute = async () => {
     job.started = true;
     let lastError;
     for (let pass = 0; pass < discard.takeoverRetries && token.cancelled === false; pass += 1) {
-      const state = await ownership.status(id);
+      const state = await ownership.status(job.id);
       if (state.marker?.source === 'contended' && manual !== true) {
-        throw Error(`automatic discard takeover stopped after contention on tab ${id}`);
+        throw Error(`automatic discard takeover stopped after contention on tab ${job.id}`);
       }
       if (!state.attemptId && state.marker?.state === 'owned' && state.marker.source === 'self') {
         return true;
       }
       if (state.attemptId) {
         try {
-          if (await waitForOwnership(id, token)) {
+          if (await waitForOwnership(job.id, token)) {
             return true;
           }
         }
@@ -620,7 +833,7 @@ discard.takeover = (tab, {manual = false} = {}) => {
         }
       }
       try {
-        if (await takeoverOnce(tab, token)) {
+        if (await takeoverOnce({...tab, id: job.id}, token)) {
           return true;
         }
       }
@@ -629,19 +842,19 @@ discard.takeover = (tab, {manual = false} = {}) => {
       }
     }
     if (!token.cancelled) {
-      const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+      const current = await withTimeout(getTab(job.id), discard.getTimeout, undefined);
       if (current?.discarded === true) {
-        await ownership.deferTakeover(id);
+        await ownership.deferTakeover(job.id);
       }
     }
-    throw lastError || Error(`discard takeover cancelled for tab ${id}`);
+    throw lastError || Error(`discard takeover cancelled for tab ${job.id}`);
   };
 
   const running = takeoverTail.then(execute, execute);
   takeoverTail = running.then(() => undefined, () => undefined);
   job.promise = running.finally(() => {
-    if (takeoverJobs.get(id) === job) {
-      takeoverJobs.delete(id);
+    if (takeoverJobs.get(job.id) === job) {
+      takeoverJobs.delete(job.id);
     }
   });
   takeoverJobs.set(id, job);
@@ -650,21 +863,21 @@ discard.takeover = (tab, {manual = false} = {}) => {
 
 // Popup adoption commands can join the exact physical job instead of relying
 // on a duplicated timeout that cannot account for queue or storage latency.
-discard.waitForTakeover = id => takeoverJobs.get(id)?.promise;
+discard.waitForTakeover = id => takeoverJob(id)?.promise;
 
 discard.cancelTakeover = async id => {
-  const job = takeoverJobs.get(id);
+  const job = takeoverJob(id);
   if (!job) {
     return false;
   }
   job.token.cancelled = true;
-  await ownership.invalidate(id);
+  await ownership.invalidate(job.id);
   // A queued job has not woken or touched the tab yet. Its cancellation token
   // makes it safe to release immediately instead of waiting behind unrelated
   // takeovers in the global serialization queue.
   if (job.started === false) {
-    if (takeoverJobs.get(id) === job) {
-      takeoverJobs.delete(id);
+    if (takeoverJobs.get(job.id) === job) {
+      takeoverJobs.delete(job.id);
     }
     return true;
   }
@@ -690,7 +903,10 @@ discard.recoverTakeovers = async () => {
 };
 
 chrome.tabs.onRemoved?.addListener(id => {
-  const job = takeoverJobs.get(id);
+  if (currentId(id) !== id) {
+    return;
+  }
+  const job = takeoverJob(id);
   if (job) {
     job.token.cancelled = true;
   }
@@ -698,7 +914,12 @@ chrome.tabs.onRemoved?.addListener(id => {
 chrome.tabs.onReplaced?.addListener((addedId, removedId) => {
   const job = takeoverJobs.get(removedId);
   if (job) {
-    job.token.cancelled = true;
+    takeoverJobs.delete(removedId);
+    job.id = currentId(addedId);
+    takeoverJobs.set(job.id, job);
+  }
+  if (inprogress.delete(removedId)) {
+    inprogress.add(currentId(addedId));
   }
 });
 

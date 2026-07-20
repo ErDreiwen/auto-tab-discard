@@ -30,6 +30,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     }]
   ]);
   const listeners = {
+    activated: [],
     created: [],
     removed: [],
     replaced: [],
@@ -42,12 +43,16 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
   let finishNative;
   let ignoredStops = 1;
   let nativeFinalStatus = 'unloaded';
+  let nativeReplacementId;
   let nativeWakeBeforeCallback = false;
   let missingPostDiscardGets = 0;
   let wakeOnPostDiscardGet = 0;
   let reloadMode = 'normal';
   let stopMode = 'normal';
   let finalFrameStopCalls = 0;
+  let activateOnStopId;
+  let afterActiveQuerySnapshot;
+  let afterExtensionActivation;
   const delayedLoadingTimers = new Set();
 
   const clone = value => value && JSON.parse(JSON.stringify(value));
@@ -73,6 +78,21 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     const tab = clone(liveTabs.get(id));
     listeners.updated.forEach(listener => listener(id, changeInfo, tab));
   };
+  const activateLiveTab = id => {
+    const tab = liveTabs.get(id);
+    assert.ok(tab, `cannot activate missing test tab ${id}`);
+    for (const candidate of liveTabs.values()) {
+      if (candidate.windowId === tab.windowId) {
+        candidate.active = false;
+      }
+    }
+    tab.active = true;
+    if (tab.frozen === true) {
+      tab.frozen = false;
+      emitUpdated(id, {frozen: false});
+    }
+    listeners.activated.forEach(listener => listener({tabId: id, windowId: tab.windowId}));
+  };
 
   globalThis.chrome = {
     alarms: {
@@ -96,6 +116,10 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       executeScript({target}) {
         calls.push(`stop:${target.tabId}`);
         const tab = liveTabs.get(target.tabId);
+        if (activateOnStopId === target.tabId) {
+          activateOnStopId = undefined;
+          activateLiveTab(target.tabId);
+        }
         if (stopMode === 'pending') {
           return new Promise(() => {});
         }
@@ -183,10 +207,17 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     },
     tabs: {
       query(options, callback) {
-        callback([...liveTabs.values()].filter(tab => {
+        const result = [...liveTabs.values()].filter(tab => {
           return (!('discarded' in options) || tab.discarded === options.discarded) &&
-            (!('active' in options) || tab.active === options.active);
-        }).map(clone));
+            (!('active' in options) || tab.active === options.active) &&
+            (!('windowId' in options) || tab.windowId === options.windowId);
+        }).map(clone);
+        if (options.active === true && afterActiveQuerySnapshot) {
+          const hook = afterActiveQuerySnapshot;
+          afterActiveQuerySnapshot = undefined;
+          hook(options, result);
+        }
+        callback(result);
       },
       get(id, callback) {
         const tab = liveTabs.get(id);
@@ -206,10 +237,24 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
         }
         callback(clone(tab));
       },
+      update(id, changes, callback) {
+        const tab = liveTabs.get(id);
+        if (changes.active === true) {
+          calls.push(`activate:${id}`);
+          activateLiveTab(id);
+          if (afterExtensionActivation) {
+            const hook = afterExtensionActivation;
+            afterExtensionActivation = undefined;
+            hook(id);
+          }
+        }
+        callback(clone(tab));
+      },
       reload(id, options, callback) {
         calls.push(`reload:${id}:${options.bypassCache}`);
         const tab = liveTabs.get(id);
         tab.discarded = false;
+        tab.frozen = false;
         tab.status = reloadMode === 'delayed-loading' ? 'complete' : 'loading';
         emitUpdated(id, {
           discarded: false,
@@ -240,18 +285,31 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
           finishNative = undefined;
           tab.discarded = true;
           tab.status = nativeFinalStatus;
-          emitUpdated(id, {discarded: true, status: nativeFinalStatus});
-          const result = clone(tab);
+          let resultTab = tab;
+          if (Number.isInteger(nativeReplacementId)) {
+            const replacementId = nativeReplacementId;
+            nativeReplacementId = undefined;
+            resultTab = {...tab, id: replacementId};
+            liveTabs.delete(id);
+            liveTabs.set(replacementId, resultTab);
+            listeners.replaced.forEach(listener => listener(replacementId, id));
+            emitUpdated(replacementId, {discarded: true, status: nativeFinalStatus});
+          }
+          else {
+            emitUpdated(id, {discarded: true, status: nativeFinalStatus});
+          }
+          const result = clone(resultTab);
           if (nativeWakeBeforeCallback) {
             nativeWakeBeforeCallback = false;
-            tab.active = true;
-            tab.discarded = false;
-            tab.status = 'complete';
-            emitUpdated(id, {discarded: false, status: 'complete'});
+            resultTab.active = true;
+            resultTab.discarded = false;
+            resultTab.status = 'complete';
+            emitUpdated(resultTab.id, {discarded: false, status: 'complete'});
           }
           callback(result);
         };
       },
+      onActivated: event('activated'),
       onUpdated: event('updated'),
       onCreated: event('created'),
       onAttached: event('created'),
@@ -273,46 +331,17 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     discard.quiesceDwell = 0;
     discard.reloadStartGrace = 0;
 
-    const adopted = await runScopedCommand({
-      adopt: ownership.adopt,
-      command: 'discard-tabs',
-      selected: {id: 99, index: 0},
-      shiftKey: false,
-      query: async () => [clone(liveTabs.get(1))],
-      resolveFresh: ownership.resolveFresh,
-      check: async () => assert.fail('already-discarded adoption must not use the eligibility check'),
-      discard: async () => assert.fail('adoption must not use the normal discard pipeline'),
-      takeover: async () => assert.fail('normal command must not wake the discarded tab'),
-      reload: async () => assert.fail('discard command must not use the release path')
-    });
-    assert.deepEqual(adopted.takeovers.map(tab => tab.id), [1]);
-    assert.deepEqual(calls, []);
-    assert.equal(liveTabs.get(1).discarded, true);
+    // Legacy builds may already have bookkeeping-only adopted markers. A
+    // normal manual command must upgrade those just like fresh external claims.
+    await ownership.adopt(clone(liveTabs.get(1)));
     let state = await ownership.status(1);
-    assert.equal(state.marker.state, 'owned');
     assert.equal(state.marker.source, 'adopted');
-
-    const repeatedAdoption = await runScopedCommand({
-      adopt: async () => assert.fail('an adopted tab must be a no-op'),
-      command: 'discard-tabs',
-      selected: {id: 99, index: 0},
-      shiftKey: false,
-      query: async () => [clone(liveTabs.get(1))],
-      resolveFresh: ownership.resolveFresh,
-      check: async () => {},
-      discard: async () => true,
-      takeover: async () => assert.fail('repeat normal command must not wake the tab'),
-      reload: async () => {}
-    });
-    assert.deepEqual(repeatedAdoption.alreadyOwned.map(tab => tab.id), [1]);
-    assert.deepEqual(calls, []);
 
     let settled = false;
     const command = runScopedCommand({
-      adopt: async () => assert.fail('Shift must physically upgrade an adopted tab'),
       command: 'discard-tabs',
       selected: {id: 99, index: 0},
-      shiftKey: true,
+      shiftKey: false,
       query: async () => [clone(liveTabs.get(1))],
       resolveFresh: ownership.resolveFresh,
       check: async () => assert.fail('already-discarded takeover must not use the eligibility check'),
@@ -324,7 +353,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       return result;
     });
 
-    await waitForNative('initial Shift takeover');
+    await waitForNative('initial normal takeover');
     assert.equal(settled, false);
     assert.ok(discard.waitForTakeover(1));
     assert.deepEqual(calls, ['reload:1:false', 'stop:1', 'stop:1', 'stop:1', 'discard:1']);
@@ -334,25 +363,183 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     assert.equal(discard.waitForTakeover(1), undefined);
     assert.deepEqual(result.takeovers.map(tab => tab.id), [1]);
     assert.equal(liveTabs.get(1).discarded, true);
+    assert.equal(liveTabs.get(1).title, '💤 test');
     state = await ownership.status(1);
     assert.equal(state.marker.state, 'owned');
     assert.equal(state.marker.source, 'self');
 
     const callCount = calls.length;
     const repeat = await runScopedCommand({
-      adopt: async () => assert.fail('Shift repeat must not adopt a self-owned tab'),
       command: 'discard-tabs',
       selected: {id: 99, index: 0},
-      shiftKey: true,
+      shiftKey: false,
       query: async () => [clone(liveTabs.get(1))],
       resolveFresh: ownership.resolveFresh,
       check: async () => {},
       discard: async () => true,
-      takeover: tab => discard.takeover(tab, {manual: true}),
+      takeover: async () => assert.fail('repeat normal command must not wake a self-owned tab'),
       reload: async () => {}
     });
     assert.deepEqual(repeat.alreadyOwned.map(tab => tab.id), [1]);
     assert.equal(calls.length, callCount);
+
+    // Edge can replace the tab id at the successful native-discard boundary.
+    // The running job, pending nonce, final verification, and stale-id callers
+    // must all follow the successor instead of cancelling or becoming claimed.
+    const edgeOriginal = {
+      id: 60,
+      windowId: 1,
+      index: 10,
+      active: false,
+      discarded: true,
+      status: 'unloaded',
+      url: 'https://edge-takeover.example/'
+    };
+    liveTabs.set(edgeOriginal.id, edgeOriginal);
+    await ownership.claim(edgeOriginal);
+    const edgeCallStart = calls.length;
+    const edgeTakeover = discard.takeover(clone(edgeOriginal), {manual: true});
+    await waitForNative('Edge replacement takeover');
+    assert.ok(discard.waitForTakeover(edgeOriginal.id));
+    nativeReplacementId = 61;
+    finishNative();
+    assert.ok(discard.waitForTakeover(edgeOriginal.id));
+    assert.equal(await edgeTakeover, true);
+    assert.deepEqual(calls.slice(edgeCallStart), [
+      'reload:60:false', 'stop:60', 'stop:60', 'discard:60'
+    ]);
+    assert.equal(ownership.resolveId(edgeOriginal.id), 61);
+    assert.equal(discard.waitForTakeover(edgeOriginal.id), undefined);
+    assert.equal(discard.waitForTakeover(61), undefined);
+    assert.equal(liveTabs.has(edgeOriginal.id), false);
+    assert.equal(liveTabs.get(61).discarded, true);
+    assert.equal(liveTabs.get(61).title.startsWith('\u{1F4A4}'), true);
+    assert.equal((await ownership.status(edgeOriginal.id)).marker.source, 'self');
+    const edgeOwnership = await ownership.snapshot();
+    assert.equal(edgeOwnership[edgeOriginal.id], undefined);
+    assert.equal(edgeOwnership[61].source, 'self');
+
+    // Edge Sleeping Tabs are frozen rather than discarded. An explicit
+    // takeover must wake/unfreeze once, prepare the title, then truly discard.
+    const frozen = {
+      id: 62,
+      windowId: 1,
+      index: 11,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://edge-frozen.example/'
+    };
+    const frozenKeeper = {
+      id: 63,
+      windowId: 1,
+      index: 12,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: 'https://edge-frozen-keeper.example/'
+    };
+    liveTabs.set(frozenKeeper.id, frozenKeeper);
+    liveTabs.set(frozen.id, frozen);
+    const frozenCallStart = calls.length;
+    const frozenTakeover = discard.takeover(clone(frozen), {manual: true});
+    await waitForNative('Edge frozen takeover');
+    assert.deepEqual(calls.slice(frozenCallStart), [
+      'activate:62', 'activate:63', 'stop:62', 'discard:62'
+    ]);
+    finishNative();
+    assert.equal(await frozenTakeover, true);
+    assert.equal(liveTabs.get(frozen.id).frozen, false);
+    assert.equal(liveTabs.get(frozen.id).discarded, true);
+    assert.equal(liveTabs.get(frozenKeeper.id).active, true);
+    assert.equal(liveTabs.get(frozen.id).title.startsWith('\u{1F4A4}'), true);
+    assert.equal((await ownership.status(frozen.id)).marker.source, 'self');
+    assert.equal(listeners.activated.length, 0);
+
+    const addFrozenRaceWindow = (id, windowId) => {
+      const target = {
+        id,
+        windowId,
+        index: 0,
+        active: false,
+        discarded: false,
+        frozen: true,
+        status: 'complete',
+        url: `https://edge-frozen-race-${id}.example/`
+      };
+      const keeper = {
+        id: id + 1,
+        windowId,
+        index: 1,
+        active: true,
+        discarded: false,
+        frozen: false,
+        status: 'complete',
+        url: `https://edge-frozen-keeper-${id}.example/`
+      };
+      const userChoice = {
+        id: id + 2,
+        windowId,
+        index: 2,
+        active: false,
+        discarded: false,
+        frozen: false,
+        status: 'complete',
+        url: `https://edge-frozen-user-choice-${id}.example/`
+      };
+      [target, keeper, userChoice].forEach(tab => liveTabs.set(tab.id, tab));
+      return {keeper, target, userChoice};
+    };
+
+    // A focus change after the active-tab snapshot makes that keeper stale.
+    // Abort before activating the frozen target; never overwrite the user's
+    // newer selection with either side of the extension's pulse.
+    const beforePulse = addFrozenRaceWindow(64, 20);
+    afterActiveQuerySnapshot = options => {
+      assert.equal(options.windowId, beforePulse.target.windowId);
+      activateLiveTab(beforePulse.userChoice.id);
+    };
+    let raceCallStart = calls.length;
+    await assert.rejects(discard.takeover(clone(beforePulse.target), {manual: true}),
+      /activation changed unexpectedly to 66/);
+    assert.deepEqual(calls.slice(raceCallStart), []);
+    assert.equal(liveTabs.get(beforePulse.target.id).frozen, true);
+    assert.equal(liveTabs.get(beforePulse.target.id).discarded, false);
+    assert.equal(liveTabs.get(beforePulse.keeper.id).active, false);
+    assert.equal(liveTabs.get(beforePulse.userChoice.id).active, true);
+    assert.equal(listeners.activated.length, 0);
+
+    // If the user moves away while the target is temporarily active, do not
+    // restore the older keeper and do not proceed to native discard.
+    const duringPulse = addFrozenRaceWindow(67, 21);
+    afterExtensionActivation = id => {
+      assert.equal(id, duringPulse.target.id);
+      activateLiveTab(duringPulse.userChoice.id);
+    };
+    raceCallStart = calls.length;
+    await assert.rejects(discard.takeover(clone(duringPulse.target), {manual: true}),
+      /activation changed unexpectedly to 69/);
+    assert.deepEqual(calls.slice(raceCallStart), ['activate:67']);
+    assert.equal(liveTabs.get(duringPulse.target.id).discarded, false);
+    assert.equal(liveTabs.get(duringPulse.keeper.id).active, false);
+    assert.equal(liveTabs.get(duringPulse.userChoice.id).active, true);
+    assert.equal(listeners.activated.length, 0);
+
+    // The target can also be selected after the keeper is restored but before
+    // native discard. The live activation fence must keep that selected tab
+    // awake and stop before tabs.discard().
+    const beforeDiscard = addFrozenRaceWindow(70, 22);
+    activateOnStopId = beforeDiscard.target.id;
+    raceCallStart = calls.length;
+    await assert.rejects(discard.takeover(clone(beforeDiscard.target), {manual: true}),
+      /activation changed unexpectedly to 70/);
+    assert.deepEqual(calls.slice(raceCallStart), ['activate:70', 'activate:71', 'stop:70']);
+    assert.equal(liveTabs.get(beforeDiscard.target.id).active, true);
+    assert.equal(liveTabs.get(beforeDiscard.target.id).discarded, false);
+    assert.equal(liveTabs.get(beforeDiscard.keeper.id).active, false);
+    assert.equal(listeners.activated.length, 0);
 
     const groupTabs = [
       {
@@ -401,9 +588,8 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     const groupTargets = tabsForGroupCommand(groupTabs, groupTabs[0]);
     assert.deepEqual(groupTargets.map(tab => tab.id), [40, 41, 42]);
     const groupCallStart = calls.length;
-    const normalGroup = await runDirectDiscardCommand({
+    const normalGroup = runDirectDiscardCommand({
       activate: async () => assert.fail('an all-discarded group does not need a keeper'),
-      adopt: ownership.adopt,
       allTabs: groupTabs,
       command: 'discard-tree',
       discard: async () => assert.fail('already-discarded group members stay unloaded'),
@@ -412,61 +598,43 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       resolveFresh: ownership.resolveFresh,
       selected: groupTabs[0],
       shiftKey: false,
-      takeover: async () => assert.fail('normal group command must not reload'),
-      targets: groupTargets
-    });
-    assert.deepEqual(normalGroup.adopted.map(tab => tab.id), [40, 41, 42]);
-    assert.equal(calls.length, groupCallStart);
-    for (const id of [40, 41, 42]) {
-      assert.equal((await ownership.status(id)).marker.source, 'adopted');
-      assert.equal(liveTabs.get(id).discarded, true);
-    }
-    assert.equal((await ownership.status(43)).marker, undefined);
-
-    await runDirectDiscardCommand({
-      activate: async () => assert.fail('repeat adoption does not need a keeper'),
-      adopt: async () => assert.fail('repeat adoption must be a no-op'),
-      allTabs: groupTabs,
-      command: 'discard-tree',
-      discard: async () => assert.fail('repeat adoption must be a no-op'),
-      inProgress: () => false,
-      notifyNoKeeper: () => assert.fail('repeat adoption is not blocked'),
-      resolveFresh: ownership.resolveFresh,
-      selected: groupTabs[0],
-      shiftKey: false,
-      takeover: async () => assert.fail('repeat adoption must not reload'),
-      targets: groupTargets
-    });
-    assert.equal(calls.length, groupCallStart);
-
-    const forcedGroup = runDirectDiscardCommand({
-      activate: async () => assert.fail('inactive group takeover does not need a keeper'),
-      adopt: async () => assert.fail('Shift must physically upgrade adopted group members'),
-      allTabs: groupTabs,
-      command: 'discard-tree',
-      discard: async () => assert.fail('adopted group members use the takeover path'),
-      inProgress: () => false,
-      notifyNoKeeper: () => assert.fail('inactive group takeover is not blocked'),
-      resolveFresh: ownership.resolveFresh,
-      selected: groupTabs[0],
-      shiftKey: true,
       takeover: tab => discard.takeover(tab, {manual: true}),
       targets: groupTargets
     });
     for (const id of [40, 41, 42]) {
-      await waitForNative('queued takeover');
+      await waitForNative('normal queued takeover');
       assert.deepEqual(calls.slice(-4), [`reload:${id}:false`, `stop:${id}`, `stop:${id}`, `discard:${id}`]);
       finishNative();
     }
-    await forcedGroup;
+    const normalGroupResult = await normalGroup;
+    assert.deepEqual(normalGroupResult.takeovers.map(tab => tab.id), [40, 41, 42]);
+    assert.equal(calls.length, groupCallStart + 12);
     for (const id of [40, 41, 42]) {
       assert.equal((await ownership.status(id)).marker.source, 'self');
+      assert.equal(liveTabs.get(id).discarded, true);
+      assert.equal(liveTabs.get(id).title, '💤 test');
+      assert.equal(calls.filter(call => call === `reload:${id}:false`).length, 1);
     }
     assert.equal((await ownership.status(43)).marker, undefined);
-    const forcedGroupCallCount = calls.length;
+
+    await runDirectDiscardCommand({
+      activate: async () => assert.fail('repeat normal discard does not need a keeper'),
+      allTabs: groupTabs,
+      command: 'discard-tree',
+      discard: async () => assert.fail('repeat normal discard must be a no-op'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('repeat normal discard is not blocked'),
+      resolveFresh: ownership.resolveFresh,
+      selected: groupTabs[0],
+      shiftKey: false,
+      takeover: async () => assert.fail('repeat normal discard must not reload'),
+      targets: groupTargets
+    });
+    assert.equal(calls.length, groupCallStart + 12);
+
+    const groupCallCount = calls.length;
     await runDirectDiscardCommand({
       activate: async () => assert.fail('repeat Shift does not need a keeper'),
-      adopt: async () => assert.fail('repeat Shift does not adopt'),
       allTabs: groupTabs,
       command: 'discard-tree',
       discard: async () => assert.fail('repeat Shift is a no-op'),
@@ -478,7 +646,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       takeover: async () => assert.fail('self-owned group members are skipped'),
       targets: groupTargets
     });
-    assert.equal(calls.length, forcedGroupCallCount);
+    assert.equal(calls.length, groupCallCount);
 
     const automatic = {
       id: 3,

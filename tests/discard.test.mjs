@@ -9,6 +9,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
   const sessionState = {};
   const pendingAtNativeCall = [];
   const tabListeners = {
+    replaced: [],
     updated: []
   };
 
@@ -55,6 +56,11 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
           tabListeners.updated.push(listener);
         }
       },
+      onReplaced: {
+        addListener(listener) {
+          tabListeners.replaced.push(listener);
+        }
+      },
       discard(id, callback) {
         pendingAtNativeCall.push(sessionState.__discardOwnership?.[id]?.state);
         active += 1;
@@ -69,7 +75,10 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
   };
 
   try {
-    const {discard, inprogress} = await import('../v3/worker/core/discard.mjs');
+    const [{discard, inprogress}, {ownership}] = await Promise.all([
+      import('../v3/worker/core/discard.mjs'),
+      import('../v3/worker/core/ownership.mjs')
+    ]);
 
     const results = await Promise.all([
       discard({id: 1, active: false, discarded: false}),
@@ -117,6 +126,37 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
       discarded: false
     }), false);
     assert.equal(sessionState.__discardOwnership[5].source, 'claimed');
+
+    const edgeOriginal = {
+      id: 6,
+      windowId: 2,
+      active: false,
+      discarded: false,
+      status: 'complete',
+      url: 'https://edge-perform.example/'
+    };
+    const edgeSuccessor = {...edgeOriginal, id: 60, discarded: true, status: 'unloaded'};
+    const edgeTabs = new Map([[edgeOriginal.id, edgeOriginal]]);
+    chrome.tabs.get = (id, callback) => callback(edgeTabs.get(id));
+    chrome.tabs.discard = (id, callback) => {
+      assert.equal(id, edgeOriginal.id);
+      edgeTabs.delete(edgeOriginal.id);
+      edgeTabs.set(edgeSuccessor.id, edgeSuccessor);
+      tabListeners.replaced.forEach(listener => listener(edgeSuccessor.id, edgeOriginal.id));
+      tabListeners.updated.forEach(listener => listener(
+        edgeSuccessor.id,
+        {discarded: true, status: 'unloaded'},
+        edgeSuccessor
+      ));
+      callback(edgeSuccessor);
+    };
+    discard.nativeTimeout = 100;
+    discard.getTimeout = 100;
+    assert.equal(await discard.perform(edgeOriginal), true);
+    assert.equal(ownership.resolveId(edgeOriginal.id), edgeSuccessor.id);
+    assert.equal((await ownership.status(edgeOriginal.id)).marker.source, 'self');
+    assert.equal(sessionState.__discardOwnership[edgeOriginal.id], undefined);
+    assert.equal(sessionState.__discardOwnership[edgeSuccessor.id].source, 'self');
   }
   finally {
     delete globalThis.chrome;

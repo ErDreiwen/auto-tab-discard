@@ -63,14 +63,15 @@ test('keeps left and right ownership scopes on the selected side', () => {
   }
 });
 
-test('classifies every discard command into loaded, external takeover, and self-owned targets', async () => {
+test('classifies every discard command into loaded, suspended takeover, and self-owned targets', async () => {
   for (const command of ALL_DISCARD_COMMANDS) {
     const tabs = [
       {id: 1, discarded: false},
       {id: 2, discarded: true},
       {id: 3, discarded: false},
       {id: 4, discarded: true},
-      {id: 5, discarded: true}
+      {id: 5, discarded: true},
+      {id: 6, discarded: false, frozen: true}
     ];
     const resolved = [];
     const result = await prepareDiscardTargets(command, tabs, async tab => {
@@ -86,20 +87,9 @@ test('classifies every discard command into loaded, external takeover, and self-
     });
 
     assert.deepEqual(resolved, [2, 4, 5], command);
-    assert.deepEqual(result.takeovers.map(tab => tab.id), [2], command);
-    assert.deepEqual(result.alreadyOwned.map(tab => tab.id), [4, 5], command);
+    assert.deepEqual(result.takeovers.map(tab => tab.id), [6, 2, 5], command);
+    assert.deepEqual(result.alreadyOwned.map(tab => tab.id), [4], command);
     assert.deepEqual(result.candidates.map(tab => tab.id), [1, 3], command);
-
-    const forced = await prepareDiscardTargets(command, tabs, async tab => ({
-      marker: {
-        state: 'owned',
-        source: tab.id === 4 ? 'self' : tab.id === 5 ? 'adopted' : 'claimed'
-      },
-      state: 'discarded',
-      tab
-    }), {upgradeAdopted: true});
-    assert.deepEqual(forced.takeovers.map(tab => tab.id), [2, 5], command);
-    assert.deepEqual(forced.alreadyOwned.map(tab => tab.id), [4], command);
   }
 });
 
@@ -156,7 +146,10 @@ test('runs the selected-tab and tab-group rows through their real keeper executo
       },
       selected: active,
       shiftKey: false,
-      takeover: async () => assert.fail('normal direct commands must not physically take over'),
+      takeover: async tab => {
+        calls.push(`takeover:${tab.id}`);
+        return true;
+      },
       targets
     });
 
@@ -169,10 +162,10 @@ test('runs the selected-tab and tab-group rows through their real keeper executo
       assert.deepEqual(calls, [
         'claim:2',
         'claim:5',
-        'adopt:2',
         'activate:4',
         'discard:1:false',
-        'discard:3:false'
+        'discard:3:false',
+        'takeover:2'
       ], command);
     }
   }
@@ -223,15 +216,18 @@ test('still takes over discarded group children when the active root has no keep
     },
     selected: active,
     shiftKey: false,
-    takeover: async () => assert.fail('normal group command must not physically take over'),
+    takeover: async tab => {
+      calls.push(`takeover:${tab.id}`);
+      return true;
+    },
     targets: [active, external]
   });
 
   assert.equal(result.blocked, true);
-  assert.deepEqual(calls, ['claim:2', 'adopt:2', 'notify']);
+  assert.deepEqual(calls, ['claim:2', 'notify', 'takeover:2']);
 });
 
-test('Shift physically upgrades an adopted group child without touching normal adoption', async () => {
+test('a normal command physically upgrades an adopted group child', async () => {
   const active = {id: 1, index: 0, active: true, discarded: false, highlighted: true};
   const adopted = {id: 2, index: 1, active: false, discarded: true, highlighted: false};
   const calls = [];
@@ -248,7 +244,7 @@ test('Shift physically upgrades an adopted group child without touching normal a
       return {marker: {state: 'owned', source: 'adopted'}, state: 'discarded', tab};
     },
     selected: active,
-    shiftKey: true,
+    shiftKey: false,
     takeover: async tab => {
       calls.push(`takeover:${tab.id}`);
       return true;
@@ -340,6 +336,45 @@ test('release waits for an in-flight takeover to cancel before reloading', async
   assert.deepEqual(calls, ['cancel:1', 'reload:1']);
 });
 
+test('release re-queries its live scope after Edge replaces an id during cancellation', async () => {
+  const predecessor = {id: 10, index: 2, discarded: true};
+  const successor = {id: 11, index: 2, discarded: true};
+  let live = [predecessor];
+  let finishCancel;
+  let queryCount = 0;
+  const calls = [];
+
+  const command = runScopedCommand({
+    cancelTakeover: tab => new Promise(resolve => {
+      calls.push(`cancel:${tab.id}`);
+      finishCancel = () => {
+        live = [successor];
+        resolve();
+      };
+    }),
+    command: 'release-tabs',
+    query: async () => {
+      queryCount += 1;
+      return live;
+    },
+    reload: async tab => calls.push(`reload:${tab.id}`),
+    selected: {id: 99, index: 5},
+    shiftKey: false
+  });
+
+  while (!finishCancel) {
+    await new Promise(resolve => setTimeout(resolve));
+  }
+  assert.equal(queryCount, 1);
+  assert.deepEqual(calls, ['cancel:10']);
+  finishCancel();
+
+  const result = await command;
+  assert.equal(queryCount, 2);
+  assert.deepEqual(result.released.map(tab => tab.id), [11]);
+  assert.deepEqual(calls, ['cancel:10', 'reload:11']);
+});
+
 test('the shared menu executor routes every bulk popup command through ownership', async () => {
   for (const command of [...DISCARD_COMMANDS, ...RELEASE_COMMANDS]) {
     const left = command.endsWith('lefts');
@@ -371,14 +406,17 @@ test('the shared menu executor routes every bulk popup command through ownership
       },
       check: async candidates => calls.push(`check:${candidates.map(tab => tab.id).join(',')}`),
       discard: async tab => calls.push(`discard:${tab.id}`),
-      takeover: async () => assert.fail('normal bulk commands must not physically take over'),
+      takeover: async tab => {
+        calls.push(`takeover:${tab.id}`);
+        return true;
+      },
       cancelTakeover: async tab => calls.push(`cancel:${tab.id}`),
       reload: async (tab, options) => calls.push(`reload:${tab.id}:${options.bypassCache}`)
     });
 
     assert.deepEqual(queryOptions, scopeQuery(command), command);
     if (command.startsWith('discard')) {
-      assert.deepEqual(calls, ['claim:2', 'adopt:2', 'check:1'], command);
+      assert.deepEqual(calls, ['claim:2', 'takeover:2', 'check:1'], command);
     }
     else {
       assert.deepEqual(calls, ['cancel:1', 'cancel:2', 'reload:2:false'], command);
@@ -405,12 +443,240 @@ test('never turns an empty scoped discard into an unfiltered global check', asyn
         },
         check: async () => calls.push('check'),
         discard: async () => calls.push('discard'),
-        takeover: async () => assert.fail('normal scoped command must not physically take over'),
+        takeover: async tab => {
+          calls.push(`takeover:${tab.id}`);
+          return true;
+        },
         reload: async () => calls.push('reload')
       });
 
-      assert.deepEqual(calls, tabs.length ? ['claim:2', 'adopt:2'] : [], command);
+      assert.deepEqual(calls, tabs.length ? ['claim:2', 'takeover:2'] : [], command);
     }
+  }
+});
+
+test('normal bulk commands physically take over Edge-style frozen tabs', async () => {
+  for (const command of DISCARD_COMMANDS) {
+    const calls = [];
+    const result = await runScopedCommand({
+      command,
+      selected: {id: 99, index: 5},
+      shiftKey: false,
+      query: async () => [{
+        id: 2,
+        index: command.endsWith('lefts') ? 3 : 7,
+        active: false,
+        discarded: false,
+        frozen: true
+      }],
+      resolveFresh: async () => assert.fail('a frozen tab is not an unloaded ownership claim'),
+      check: async () => assert.fail('a frozen tab must not enter the loaded metadata pipeline'),
+      discard: async () => assert.fail('a frozen tab must use the controlled takeover path'),
+      takeover: async tab => {
+        calls.push(`takeover:${tab.id}`);
+        return true;
+      },
+      reload: async () => assert.fail('discard commands do not use the release path')
+    });
+
+    assert.deepEqual(calls, ['takeover:2'], command);
+    assert.deepEqual(result.takeovers.map(tab => tab.id), [2], command);
+  }
+});
+
+test('reclassifies a takeover target that wakes before execution into the loaded command path', async () => {
+  for (const shiftKey of [false, true]) {
+    const calls = [];
+    const result = await runScopedCommand({
+      command: 'discard-tabs',
+      selected: {id: 99, index: 5},
+      shiftKey,
+      query: async () => [{id: 2, index: 3, active: false, discarded: true}],
+      resolveFresh: async tab => {
+        calls.push(`claim:${tab.id}`);
+        return {
+          marker: {state: 'owned', source: 'claimed'},
+          state: 'discarded',
+          tab
+        };
+      },
+      refresh: async tab => {
+        calls.push(`refresh:${tab.id}`);
+        return {...tab, discarded: false, frozen: false, status: 'complete'};
+      },
+      check: async tabs => calls.push(`check:${tabs.map(tab => tab.id).join(',')}`),
+      discard: async tab => calls.push(`discard:${tab.id}`),
+      takeover: async () => assert.fail('an already-awake tab must not enter takeover'),
+      reload: async () => assert.fail('discard commands do not use the release path')
+    });
+
+    assert.deepEqual(result.candidates.map(tab => tab.id), [2]);
+    assert.deepEqual(result.takeovers, []);
+    assert.deepEqual(calls, shiftKey ?
+      ['claim:2', 'refresh:2', 'discard:2'] :
+      ['claim:2', 'refresh:2', 'check:2']);
+  }
+
+  const directCalls = [];
+  const stale = {id: 3, index: 1, active: false, discarded: true, highlighted: false};
+  const direct = await runDirectDiscardCommand({
+    activate: async () => assert.fail('an inactive target does not need a keeper'),
+    allTabs: [stale],
+    command: 'discard-tree',
+    discard: async tab => directCalls.push(`discard:${tab.id}`),
+    inProgress: () => false,
+    notifyNoKeeper: () => assert.fail('an inactive target is not blocked'),
+    refresh: async tab => {
+      directCalls.push(`refresh:${tab.id}`);
+      return {...tab, discarded: false, frozen: false, status: 'complete'};
+    },
+    resolveFresh: async tab => ({
+      marker: {state: 'owned', source: 'claimed'},
+      state: 'discarded',
+      tab
+    }),
+    selected: stale,
+    shiftKey: false,
+    takeover: async () => assert.fail('an already-awake direct target must not enter takeover'),
+    targets: [stale]
+  });
+  assert.deepEqual(direct.candidates.map(tab => tab.id), [3]);
+  assert.deepEqual(direct.takeovers, []);
+  assert.deepEqual(directCalls, ['refresh:3', 'discard:3']);
+});
+
+test('skips a takeover target that wakes active before execution', async () => {
+  for (const shiftKey of [false, true]) {
+    const calls = [];
+    const result = await runScopedCommand({
+      command: 'discard-tabs',
+      selected: {id: 99, index: 5},
+      shiftKey,
+      query: async () => [{id: 2, index: 3, active: false, discarded: true}],
+      resolveFresh: async tab => {
+        calls.push(`claim:${tab.id}`);
+        return {
+          marker: {state: 'owned', source: 'claimed'},
+          state: 'discarded',
+          tab
+        };
+      },
+      refresh: async tab => {
+        calls.push(`refresh:${tab.id}`);
+        return {...tab, active: true, discarded: false, frozen: false, status: 'complete'};
+      },
+      check: async () => assert.fail('a newly active tab must not enter the normal discard pipeline'),
+      discard: async () => assert.fail('a newly active tab must not be force-discarded'),
+      takeover: async () => assert.fail('an already-awake tab must not enter takeover'),
+      reload: async () => assert.fail('discard commands do not use the release path')
+    });
+
+    assert.deepEqual(result.candidates, []);
+    assert.deepEqual(result.takeovers, []);
+    assert.deepEqual(result.skipped.map(tab => tab.id), [2]);
+    assert.deepEqual(calls, ['claim:2', 'refresh:2']);
+  }
+
+  const directCalls = [];
+  const stale = {id: 3, index: 1, active: false, discarded: true, highlighted: false};
+  const direct = await runDirectDiscardCommand({
+    activate: async () => assert.fail('a skipped target does not need a keeper'),
+    allTabs: [stale],
+    command: 'discard-tree',
+    discard: async () => assert.fail('a newly active direct target must not be force-discarded'),
+    inProgress: () => false,
+    notifyNoKeeper: () => assert.fail('a skipped target is not blocked'),
+    refresh: async tab => {
+      directCalls.push(`refresh:${tab.id}`);
+      return {...tab, active: true, discarded: false, frozen: false, status: 'complete'};
+    },
+    resolveFresh: async tab => ({
+      marker: {state: 'owned', source: 'claimed'},
+      state: 'discarded',
+      tab
+    }),
+    selected: stale,
+    shiftKey: false,
+    takeover: async () => assert.fail('an already-awake direct target must not enter takeover'),
+    targets: [stale]
+  });
+  assert.deepEqual(direct.candidates, []);
+  assert.deepEqual(direct.takeovers, []);
+  assert.deepEqual(direct.skipped.map(tab => tab.id), [3]);
+  assert.equal(direct.blocked, false);
+  assert.deepEqual(directCalls, ['refresh:3']);
+});
+
+test('reclassifies a target that wakes while its takeover waits in the queue', async () => {
+  for (const shiftKey of [false, true]) {
+    const calls = [];
+    let refreshCount = 0;
+    const result = await runScopedCommand({
+      command: 'discard-tabs',
+      selected: {id: 99, index: 5},
+      shiftKey,
+      query: async () => [{id: 4, index: 3, active: false, discarded: true}],
+      resolveFresh: async tab => ({
+        marker: {state: 'owned', source: 'claimed'},
+        state: 'discarded',
+        tab
+      }),
+      refresh: async tab => {
+        refreshCount += 1;
+        calls.push(`refresh:${refreshCount}`);
+        return refreshCount === 1 ? tab :
+          {...tab, discarded: false, frozen: false, status: 'complete'};
+      },
+      check: async tabs => calls.push(`check:${tabs.map(tab => tab.id).join(',')}`),
+      discard: async tab => calls.push(`discard:${tab.id}`),
+      takeover: async tab => {
+        calls.push(`takeover:${tab.id}`);
+        throw Error(`tab ${tab.id} is no longer an inactive takeover target`);
+      },
+      reload: async () => assert.fail('discard commands do not use the release path')
+    });
+
+    assert.deepEqual(result.candidates.map(tab => tab.id), [4]);
+    assert.deepEqual(result.takeovers, []);
+    assert.deepEqual(calls, shiftKey ?
+      ['refresh:1', 'takeover:4', 'refresh:2', 'discard:4'] :
+      ['refresh:1', 'takeover:4', 'refresh:2', 'check:4']);
+  }
+});
+
+test('skips a target that wakes active while its takeover waits in the queue', async () => {
+  for (const shiftKey of [false, true]) {
+    const calls = [];
+    let refreshCount = 0;
+    const result = await runScopedCommand({
+      command: 'discard-tabs',
+      selected: {id: 99, index: 5},
+      shiftKey,
+      query: async () => [{id: 4, index: 3, active: false, discarded: true}],
+      resolveFresh: async tab => ({
+        marker: {state: 'owned', source: 'claimed'},
+        state: 'discarded',
+        tab
+      }),
+      refresh: async tab => {
+        refreshCount += 1;
+        calls.push(`refresh:${refreshCount}`);
+        return refreshCount === 1 ? tab :
+          {...tab, active: true, discarded: false, frozen: false, status: 'complete'};
+      },
+      check: async () => assert.fail('a newly active tab must not enter the normal discard pipeline'),
+      discard: async () => assert.fail('a newly active tab must not be force-discarded'),
+      takeover: async tab => {
+        calls.push(`takeover:${tab.id}`);
+        throw Error(`tab ${tab.id} is no longer an inactive takeover target`);
+      },
+      reload: async () => assert.fail('discard commands do not use the release path')
+    });
+
+    assert.deepEqual(result.candidates, []);
+    assert.deepEqual(result.takeovers, []);
+    assert.deepEqual(result.skipped.map(tab => tab.id), [4]);
+    assert.deepEqual(calls, ['refresh:1', 'takeover:4', 'refresh:2']);
   }
 });
 
@@ -470,9 +736,8 @@ test('does not report a popup discard command complete when a takeover fails', a
   }), /takeovers failed/);
 });
 
-test('does not report a normal popup discard command complete when adoption fails', async () => {
+test('does not report a normal popup discard command complete when takeover fails', async () => {
   await assert.rejects(runScopedCommand({
-    adopt: async () => false,
     command: 'discard-tabs',
     selected: {id: 99, index: 5},
     shiftKey: false,
@@ -484,90 +749,7 @@ test('does not report a normal popup discard command complete when adoption fail
     }),
     check: async () => {},
     discard: async () => true,
-    takeover: async () => assert.fail('normal command must not physically take over'),
+    takeover: async () => false,
     reload: async () => {}
-  }), /adoptions failed/);
-});
-
-test('normal adoption joins a busy owner and re-routes a race-woken tab', async () => {
-  let adoptionCalls = 0;
-  const joined = await runScopedCommand({
-    adopt: async () => (++adoptionCalls === 1 ? {busy: true} : true),
-    command: 'discard-tabs',
-    selected: {id: 99, index: 5},
-    shiftKey: false,
-    query: async () => [{id: 2, index: 3, discarded: true}],
-    resolveFresh: async tab => ({
-      marker: {state: 'owned', source: 'claimed'},
-      state: 'discarded',
-      tab
-    }),
-    check: async () => assert.fail('settled ownership should not enter the loaded pipeline'),
-    discard: async () => true,
-    takeover: async () => assert.fail('normal adoption must not physically take over'),
-    reload: async () => {}
-  });
-  assert.equal(adoptionCalls, 2);
-  assert.deepEqual(joined.adopted.map(tab => tab.id), [2]);
-
-  const checked = [];
-  const raceWoken = await runScopedCommand({
-    adopt: async tab => ({state: 'loaded', tab: {...tab, discarded: false}}),
-    command: 'discard-tabs',
-    selected: {id: 99, index: 5},
-    shiftKey: false,
-    query: async () => [{id: 3, index: 4, discarded: true}],
-    resolveFresh: async tab => ({
-      marker: {state: 'owned', source: 'claimed'},
-      state: 'discarded',
-      tab
-    }),
-    check: async tabs => checked.push(...tabs.map(tab => tab.id)),
-    discard: async () => true,
-    takeover: async () => assert.fail('race-woken adoption must not physically take over'),
-    reload: async () => {}
-  });
-  assert.deepEqual(checked, [3]);
-  assert.deepEqual(raceWoken.candidates.map(tab => tab.id), [3]);
-});
-
-test('normal adoption joins the actual physical takeover job without duplicating it', async () => {
-  let releaseTakeover;
-  let takeoverActive = true;
-  const takeover = new Promise(resolve => releaseTakeover = resolve)
-    .finally(() => takeoverActive = false);
-  let adoptionCalls = 0;
-  let settled = false;
-
-  const command = runScopedCommand({
-    adopt: async () => {
-      adoptionCalls += 1;
-      return true;
-    },
-    command: 'discard-tabs',
-    selected: {id: 99, index: 5},
-    shiftKey: false,
-    query: async () => [{id: 4, index: 4, discarded: true}],
-    resolveFresh: async tab => ({
-      marker: {state: 'owned', source: 'claimed'},
-      state: 'discarded',
-      tab
-    }),
-    check: async () => assert.fail('joined takeover must not enter the loaded pipeline'),
-    discard: async () => assert.fail('joined takeover must not issue a second discard'),
-    takeover: async () => assert.fail('normal adoption must not start a takeover'),
-    waitForTakeover: () => takeoverActive ? takeover : undefined,
-    reload: async () => assert.fail('discard command must not use the release path')
-  }).then(result => {
-    settled = true;
-    return result;
-  });
-
-  await new Promise(resolve => setTimeout(resolve));
-  assert.equal(settled, false);
-  assert.equal(adoptionCalls, 0);
-  releaseTakeover();
-  const result = await command;
-  assert.equal(adoptionCalls, 1);
-  assert.deepEqual(result.adopted.map(tab => tab.id), [4]);
+  }), /takeovers failed/);
 });

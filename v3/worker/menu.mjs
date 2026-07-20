@@ -222,12 +222,15 @@ import {interrupts} from './plugins/loader.mjs';
       }
       await runDirectDiscardCommand({
         activate: keeper => chrome.tabs.update(keeper.id, {active: true}),
-        adopt: ownership.adopt,
         allTabs: tabs,
         command: menuItemId,
         discard,
         inProgress: id => inprogress.has(id),
         notifyNoKeeper: () => notify(chrome.i18n.getMessage('menu_msg3')),
+        refresh: target => new Promise(resolve => chrome.tabs.get(ownership.resolveId(target.id), current => {
+          const error = chrome.runtime.lastError;
+          resolve(error ? undefined : current);
+        })),
         resolveFresh: ownership.resolveFresh,
         selected: tab,
         shiftKey,
@@ -274,7 +277,6 @@ import {interrupts} from './plugins/loader.mjs';
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
       await runScopedCommand({
-        adopt: ownership.adopt,
         cancelTakeover: tab => discard.cancelTakeover(tab.id),
         command: menuItemId,
         selected: tab,
@@ -283,14 +285,13 @@ import {interrupts} from './plugins/loader.mjs';
         discard,
         // Make sure normal clicks only discard eligible tabs; Shift remains forced.
         check: tabs => number.check(tabs, number.IGNORE, 'menu/2'),
-        reload: (tab, options) => chrome.tabs.reload(tab.id, options),
-        refresh: tab => new Promise(resolve => chrome.tabs.get(tab.id, current => {
+        reload: (tab, options) => chrome.tabs.reload(ownership.resolveId(tab.id), options),
+        refresh: tab => new Promise(resolve => chrome.tabs.get(ownership.resolveId(tab.id), current => {
           const error = chrome.runtime.lastError;
           resolve(error ? undefined : current);
         })),
         resolveFresh: ownership.resolveFresh,
-        takeover: target => discard.takeover(target, {manual: true}),
-        waitForTakeover: discard.waitForTakeover
+        takeover: target => discard.takeover(target, {manual: true})
       });
     }
   };

@@ -2,6 +2,16 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.8.12
+
+- Make every normal manual discard command physically take over an externally discarded or legacy-adopted tab: wake it once, stop and quiesce the reload, apply the configured `💤` title marker, then perform and verify this extension's native discard. Repeating the command on a self-owned tab is a no-op.
+- Treat Edge Sleeping Tabs (`frozen: true`, `discarded: false`) as existing suspensions instead of silently skipping them in bulk commands; briefly activate them to use Edge's native unfreeze path, restore the prior active tab, apply `💤`, and discard without a document reload.
+- Fence that Edge activation pulse against user activity: any unexpected tab selection aborts before a stale keeper can be restored or a user-selected tab can be discarded.
+- Preserve pending attempts, takeover jobs, observed discard events, and final `source: self` ownership when Edge replaces a tab ID during `tabs.discard()`, including chained replacements and stale callback IDs.
+- Re-query release scopes after cancelling takeover work, and reclassify tabs that wake while queued, so Edge ID replacement and late wake races cannot make the popup silently skip a live successor.
+- Follow replacement lineages throughout the isolated browser harness and protect Edge test profiles from implicit Windows-account sign-in and background networking; disposable profiles are deleted after both passing and failing runs unless explicitly retained.
+- Verify all seven discard rows and five release controls on Edge 150 and Chrome 149, including group/window/left/right scopes, normal takeover request counts, `💤` titles, repeat no-ops, reload quiescence, memory dwell, cleanup, and crash-dump checks.
+
 ## Changes in 0.6.8.11
 
 - Quiesce the one-time Shift takeover reload before calling `tabs.discard()`, apply the configured sleep-title prefix, and prevent Chromium from discarding a live navigation with a stale loading spinner or renderer behind.
