@@ -7,7 +7,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 
 const require = createRequire(import.meta.url);
-const {sanitizePopupReport} = require('../e2e/popup-matrix.cjs');
+const {nativeMenuDiagnosticsFromOutput, sanitizePopupReport} = require('../e2e/popup-matrix.cjs');
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
 
@@ -83,6 +83,7 @@ test('popup matrix drives a real context-menu event and reconciles every restric
     'the helper that opens the native menu must start before its bounded result is awaited');
   assert.match(source, /finally \{\s*try \{\s*await nativeSelector\?\.cancel\(\)/);
   assert.match(source, /const NATIVE_MENU_TIMEOUT_MS = 5000/);
+  assert.match(source, /const NATIVE_MENU_SURFACE_PROBE_MS = 1000/);
   assert.match(source, /const NATIVE_POINTER_TIMEOUT_MS = 2000/);
   assert.match(source, /const NATIVE_FOREGROUND_TIMEOUT_MS = 750/);
   assert.match(source, /const resolveNativeMenuBrowserProcessId = async cdp/);
@@ -93,6 +94,7 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(source, /nativeMenuBrowserProcessId = await resolveNativeMenuBrowserProcessId\(cdp\)/);
   assert.match(nativeHelper, /UIAutomationClient/);
   assert.match(nativeHelper, /ControlType\]::MenuItem/);
+  assert.match(nativeHelper, /ControlType\]::Menu/);
   assert.match(nativeHelper, /NameProperty/);
   assert.match(nativeHelper, /\$current\.ProcessId/);
   assert.match(nativeHelper, /ParentProcessId/);
@@ -135,7 +137,11 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /IsWindow\(IntPtr hWnd\)/);
   assert.match(nativeHelper, /GetCurrentThreadId\(\)/);
   assert.match(nativeHelper, /SetCursorPos\(int x, int y\)/);
-  assert.match(nativeHelper, /mouse_event\(uint flags/);
+  assert.match(nativeHelper, /private static extern uint SendInput\(uint inputCount, Input\[\] inputs, int inputSize\)/);
+  assert.match(nativeHelper, /Input\[\] inputs = new Input\[2\]/);
+  assert.match(nativeHelper, /MouseInput \{flags = 0x0008\}/);
+  assert.match(nativeHelper, /MouseInput \{flags = 0x0010\}/);
+  assert.match(nativeHelper, /SendInput\(\(uint\) inputs\.Length, inputs, Marshal\.SizeOf\(typeof\(Input\)\)\)/);
   assert.match(nativeHelper, /\$targetWindow = \[IntPtr\]::new\(\[long\] \$documentTarget\.TopLevelHandle\)/);
   assert.match(nativeHelper, /TopLevelProcessId = \[int\] \$rootCurrent\.ProcessId/);
   assert.match(nativeHelper, /!\[AtdNativePointer\]::IsWindow\(\$targetWindow\)/);
@@ -159,12 +165,31 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /document-window-became-stale/);
   const foregroundGate = nativeHelper.indexOf("exact-document-window-not-foreground");
   const pointerPosition = nativeHelper.indexOf('[AtdNativePointer]::SetCursorPos');
-  const pointerDown = nativeHelper.indexOf('[AtdNativePointer]::mouse_event(0x0008');
-  assert.ok(foregroundGate > 0 && foregroundGate < pointerPosition && pointerPosition < pointerDown,
+  const pointerBatch = nativeHelper.indexOf('$sentInputCount = [AtdNativePointer]::SendRightClickBatch()');
+  assert.ok(foregroundGate > 0 && foregroundGate < pointerPosition && pointerPosition < pointerBatch,
     'verified foreground/process scope must precede every pointer input');
-  assert.match(nativeHelper, /mouse_event\(0x0008/);
-  assert.match(nativeHelper, /mouse_event\(0x0010/);
-  assert.match(nativeHelper, /ATD_UIA_POINTER_RESULT:ProcessScopedRightClick/);
+  assert.match(nativeHelper, /\$sentInputCount -ne 2/);
+  assert.match(nativeHelper, /checked-send-input-incomplete/);
+  assert.match(nativeHelper, /ATD_UIA_POINTER_RESULT:CheckedSendInputRightClick/);
+  assert.doesNotMatch(nativeHelper, /mouse_event/);
+  for (const status of ['Present', 'Absent', 'Indeterminate']) {
+    assert.match(nativeHelper, new RegExp(`ATD_UIA_FIRST_SURFACE_RESULT:${status}`));
+    assert.match(nativeHelper, new RegExp(`ATD_UIA_FINAL_SURFACE_RESULT:${status}`));
+  }
+  assert.match(nativeHelper, /\$surfaceCurrent\.ControlType -eq \$surfaceControlType/);
+  assert.match(nativeHelper, /\$allowed\.Contains\(\[int\] \$surfaceCurrent\.ProcessId\)/);
+  assert.match(nativeHelper, /\$allowedSurfaceObserved = \$true/);
+  assert.match(nativeHelper, /\$firstSurfaceProofIntact -and \$firstSurfaceScanCount -gt 0 -and[\s\S]*!\$allowedSurfaceObserved/);
+  assert.match(nativeHelper, /diagnostic evidence only[\s\S]*helper remains single-click/);
+  assert.doesNotMatch(nativeHelper, /ATD_UIA_RETRY_RESULT|retryForeground|retryTarget/);
+  assert.equal((nativeHelper.match(/\$sentInputCount = \[AtdNativePointer\]::SendRightClickBatch\(\)/g) || []).length, 1,
+    'the native helper must emit exactly one checked two-input right-click batch');
+  assert.match(nativeHelper, /nativeMenuDiagnosticsFromOutput/);
+  assert.match(nativeHelper, /error\.nativeMenuDiagnostics = nativeMenuDiagnosticsFromOutput\(output\)/);
+  assert.match(source, /rightClickAttempts: selection\.rightClickAttempts/);
+  assert.match(source, /lastNativeMenuDiagnostics = error\.nativeMenuDiagnostics/);
+  assert.match(source, /event: 'native-context-menu-failed'[\s\S]*\.\.\.lastNativeMenuDiagnostics[\s\S]*reasonCode: publicFailureReason\(error\)/);
+  assert.match(source, /catch \(error\) \{\s*runError = error;\s*writeReport\(false, error\)/);
   assert.match(nativeHelper, /pointerMethod/);
   assert.match(nativeHelper, /\$parentNameCondition/);
   assert.match(nativeHelper, /\$current\.Name -cne \$exactParentName/);
@@ -223,6 +248,26 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(source, /every requested scheme must be capability-reported and reconciled/);
 });
 
+test('native-menu surface diagnostics expose only fixed sanitized categories', () => {
+  const hostile = 'SECRET-CANARY-C:/Users/alice/private.txt';
+  assert.deepEqual(nativeMenuDiagnosticsFromOutput([
+    hostile,
+    'ATD_UIA_POINTER_RESULT:CheckedSendInputRightClick',
+    'ATD_UIA_FIRST_SURFACE_RESULT:Absent',
+    'ATD_UIA_FINAL_SURFACE_RESULT:Present'
+  ].join('\n')), {
+    finalSurface: 'present',
+    firstClickSurface: 'absent',
+    rightClickAttempts: 1
+  });
+  assert.deepEqual(nativeMenuDiagnosticsFromOutput(hostile), {
+    finalSurface: 'not-observed',
+    firstClickSurface: 'not-observed',
+    rightClickAttempts: 0
+  });
+  assert.doesNotMatch(JSON.stringify(nativeMenuDiagnosticsFromOutput(hostile)), /SECRET|Users|private/);
+});
+
 test('embedded native-menu UIA helper parses as PowerShell without controlling a browser', async t => {
   if (process.platform !== 'win32') {
     t.skip('Windows PowerShell parser is available only on Windows');
@@ -236,11 +281,12 @@ test('embedded native-menu UIA helper parses as PowerShell without controlling a
   }
 
   const source = await readMatrix();
-  const embedded = source.match(/const NATIVE_MENU_UIA_SCRIPT = String\.raw`([\s\S]*?)`;\nconst startNative/);
+  const embedded = source.match(/const NATIVE_MENU_UIA_SCRIPT = String\.raw`([\s\S]*?)`;\nconst nativeMenuDiagnosticsFromOutput/);
   assert.ok(embedded, 'embedded UIA helper must remain extractable for syntax validation');
   const script = embedded[1]
     .replace('${NATIVE_POINTER_TIMEOUT_MS}', '2000')
     .replace('${NATIVE_FOREGROUND_TIMEOUT_MS}', '750')
+    .replace('${NATIVE_MENU_SURFACE_PROBE_MS}', '1000')
     .replace('${NATIVE_MENU_TIMEOUT_MS}', '5000');
   const parser = [
     '$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($env:ATD_UIA_SCRIPT));',
@@ -374,7 +420,7 @@ test('popup matrix reports sanitize local and process identity at the write boun
   }
   assert.match(source, /JSON\.stringify\(sanitizePopupReport\(report\)/);
   assert.match(source, /browser: \{family: allowEdge \? 'edge' : 'chromium', version: browser\.version\(\)\}/);
-  assert.match(writer, /error: error \? \{reasonCode: publicFailureReason\(error\)\} : undefined/);
+  assert.match(writer, /error: error \? \{\s*nativeMenu: error\.nativeMenuDiagnostics \|\| lastNativeMenuDiagnostics,\s*reasonCode: publicFailureReason\(error\)\s*\} : undefined/);
   assert.match(writer, /reportFormat: 'sanitized-v1'/);
   assert.doesNotMatch(writer,
     /browser: \{executablePath|\bid: extensionId|\bpath: extensionPath|error\.message|error\.stack|launched\.stderr|\n\s*profile,|\n\s*runId,/);

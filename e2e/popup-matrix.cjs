@@ -156,6 +156,7 @@ const powershellPath = process.platform === 'win32' ? path.join(
 ) : undefined;
 const NATIVE_CONTEXT_MENU_TITLE = 'ZATD E2E Discard Tab';
 const NATIVE_MENU_TIMEOUT_MS = 5000;
+const NATIVE_MENU_SURFACE_PROBE_MS = 1000;
 const NATIVE_POINTER_TIMEOUT_MS = 2000;
 const NATIVE_FOREGROUND_TIMEOUT_MS = 750;
 const NATIVE_MENU_UIA_SCRIPT = String.raw`
@@ -215,8 +216,42 @@ public static class AtdNativePointer {
   [DllImport("user32.dll")]
   public static extern bool SetCursorPos(int x, int y);
 
-  [DllImport("user32.dll")]
-  public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MouseInput {
+    public int dx;
+    public int dy;
+    public uint mouseData;
+    public uint flags;
+    public uint time;
+    public UIntPtr extraInfo;
+  }
+
+  [StructLayout(LayoutKind.Explicit)]
+  public struct InputUnion {
+    [FieldOffset(0)] public MouseInput mouse;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct Input {
+    public uint type;
+    public InputUnion value;
+  }
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
+
+  public static uint SendRightClickBatch() {
+    Input[] inputs = new Input[2];
+    inputs[0] = new Input {
+      type = 0,
+      value = new InputUnion {mouse = new MouseInput {flags = 0x0008}}
+    };
+    inputs[1] = new Input {
+      type = 0,
+      value = new InputUnion {mouse = new MouseInput {flags = 0x0010}}
+    };
+    return SendInput((uint) inputs.Length, inputs, Marshal.SizeOf(typeof(Input)));
+  }
 }
 '@
 
@@ -231,6 +266,10 @@ public static class AtdNativePointer {
   $documentNameCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::NameProperty,
     $exactDocumentName
+  )
+  $surfaceControlTypes = @(
+    [System.Windows.Automation.ControlType]::Menu,
+    [System.Windows.Automation.ControlType]::MenuItem
   )
 
   # Locate only the exact selected document inside the authoritative CDP
@@ -419,20 +458,24 @@ public static class AtdNativePointer {
     Stop-Sanitized 28 'pointer-position-failed'
   }
 
-  [AtdNativePointer]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)
-  try {
-    Start-Sleep -Milliseconds 30
+  $sentInputCount = [AtdNativePointer]::SendRightClickBatch()
+  if ($sentInputCount -ne 2) {
+    Stop-Sanitized 28 'checked-send-input-incomplete'
   }
-  finally {
-    [AtdNativePointer]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)
-  }
-  [Console]::Out.WriteLine('ATD_UIA_POINTER_RESULT:ProcessScopedRightClick')
+  [Console]::Out.WriteLine('ATD_UIA_POINTER_RESULT:CheckedSendInputRightClick')
 
   $deadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_MENU_TIMEOUT_MS})
+  $firstSurfaceDeadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_MENU_SURFACE_PROBE_MS})
   $lastMatchCount = 0
   $lastParentMatchCount = 0
   $parentExpansionAttempted = $false
   $sawUnsupportedExactMatch = $false
+  $firstSurfaceDecisionMade = $false
+  $firstSurfaceProofIntact = $true
+  $firstSurfaceScanCount = 0
+  $surfaceProofIntact = $true
+  $surfaceScanCount = 0
+  $allowedSurfaceObserved = $false
 
   do {
     # Refresh the transitive process tree on every bounded poll. Chromium can
@@ -454,6 +497,8 @@ public static class AtdNativePointer {
 
     $preferred = @{}
     $fallbacks = @{}
+    $allowedSurfaces = @{}
+    $surfaceScanComplete = $true
     $exactChildObserved = $false
     $topLevel = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
       [System.Windows.Automation.TreeScope]::Children,
@@ -466,6 +511,27 @@ public static class AtdNativePointer {
         # with the same menu label from ever entering the candidate set.
         if (!$allowed.Contains([int] $root.Current.ProcessId)) {
           continue
+        }
+        # Observe only generic Menu/MenuItem control types in the isolated
+        # process tree. Names, bounds, and unrelated accessibility properties
+        # never cross the helper boundary; only fixed presence categories do.
+        foreach ($surfaceControlType in $surfaceControlTypes) {
+          $surfaceCondition = [System.Windows.Automation.PropertyCondition]::new(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            $surfaceControlType
+          )
+          $surfaceMatches = $root.FindAll(
+            [System.Windows.Automation.TreeScope]::Subtree,
+            $surfaceCondition
+          )
+          foreach ($surface in $surfaceMatches) {
+            $surfaceCurrent = $surface.Current
+            if ($allowed.Contains([int] $surfaceCurrent.ProcessId) -and
+                $surfaceCurrent.ControlType -eq $surfaceControlType) {
+              $surfaceRuntimeId = [string]::Join('.', $surface.GetRuntimeId())
+              $allowedSurfaces[$surfaceRuntimeId] = $true
+            }
+          }
         }
         $matches = $root.FindAll(
           [System.Windows.Automation.TreeScope]::Subtree,
@@ -523,8 +589,28 @@ public static class AtdNativePointer {
         }
       }
       catch {
+        $surfaceScanComplete = $false
         # A transient native-menu element can disappear while its properties
         # are read. The next bounded poll obtains a fresh UIA element.
+      }
+    }
+    if ($surfaceScanComplete) {
+      $surfaceScanCount += 1
+      if (!$firstSurfaceDecisionMade) {
+        $firstSurfaceScanCount += 1
+      }
+      if ($allowedSurfaces.Count -gt 0) {
+        $allowedSurfaceObserved = $true
+        if (!$firstSurfaceDecisionMade) {
+          $firstSurfaceDecisionMade = $true
+          [Console]::Out.WriteLine('ATD_UIA_FIRST_SURFACE_RESULT:Present')
+        }
+      }
+    }
+    else {
+      $surfaceProofIntact = $false
+      if (!$firstSurfaceDecisionMade) {
+        $firstSurfaceProofIntact = $false
       }
     }
     # Prefer the browser-neutral MenuItem contract when a provider exposes it.
@@ -537,6 +623,12 @@ public static class AtdNativePointer {
     $lastMatchCount = $scoped.Count
 
     if ($lastMatchCount -eq 1) {
+      $allowedSurfaceObserved = $true
+      if (!$firstSurfaceDecisionMade) {
+        $firstSurfaceDecisionMade = $true
+        [Console]::Out.WriteLine('ATD_UIA_FIRST_SURFACE_RESULT:Present')
+      }
+      [Console]::Out.WriteLine('ATD_UIA_FINAL_SURFACE_RESULT:Present')
       $target = @($scoped.Values)[0]
       if ($target.Method -eq 'InvokePattern') {
         $target.Pattern.Invoke()
@@ -628,8 +720,33 @@ public static class AtdNativePointer {
       }
     }
 
+    if (!$firstSurfaceDecisionMade -and
+        [DateTime]::UtcNow -ge $firstSurfaceDeadline) {
+      $firstSurfaceDecisionMade = $true
+      if ($firstSurfaceProofIntact -and $firstSurfaceScanCount -gt 0 -and
+          !$allowedSurfaceObserved) {
+        # This is diagnostic evidence only. A second native input sequence
+        # requires stronger hit-test and fresh-document proof than UIA surface
+        # absence alone provides, so the helper remains single-click.
+        [Console]::Out.WriteLine('ATD_UIA_FIRST_SURFACE_RESULT:Absent')
+      }
+      else {
+        [Console]::Out.WriteLine('ATD_UIA_FIRST_SURFACE_RESULT:Indeterminate')
+      }
+    }
+
     Start-Sleep -Milliseconds 50
   } while ([DateTime]::UtcNow -lt $deadline)
+
+  if ($allowedSurfaceObserved) {
+    [Console]::Out.WriteLine('ATD_UIA_FINAL_SURFACE_RESULT:Present')
+  }
+  elseif ($surfaceProofIntact -and $surfaceScanCount -gt 0) {
+    [Console]::Out.WriteLine('ATD_UIA_FINAL_SURFACE_RESULT:Absent')
+  }
+  else {
+    [Console]::Out.WriteLine('ATD_UIA_FINAL_SURFACE_RESULT:Indeterminate')
+  }
 
   if ($lastMatchCount -gt 1) {
     Stop-Sanitized 22 'ambiguous-exact-match'
@@ -649,6 +766,18 @@ catch {
   Stop-Sanitized 24 'automation-failure'
 }
 `;
+const nativeMenuDiagnosticsFromOutput = output => {
+  const fixedSurface = marker => output.match(
+    new RegExp(`ATD_UIA_${marker}_SURFACE_RESULT:(Present|Absent|Indeterminate)`)
+  )?.[1]?.toLowerCase() || 'not-observed';
+  const pointerMethod = output.match(
+    /ATD_UIA_POINTER_RESULT:(CheckedSendInputRightClick)/)?.[1];
+  return {
+    finalSurface: fixedSurface('FINAL'),
+    firstClickSurface: fixedSurface('FIRST'),
+    rightClickAttempts: pointerMethod ? 1 : 0
+  };
+};
 const startNativeContextMenuSelector = (
   exactName, browserPid, exactParentName, exactDocumentName
 ) => {
@@ -710,7 +839,9 @@ const startNativeContextMenuSelector = (
     }
     settled = true;
     clearTimeout(timer);
-    rejectCompletion(Error(`native context-menu UI Automation failed (${reason})`));
+    const error = Error(`native context-menu UI Automation failed (${reason})`);
+    error.nativeMenuDiagnostics = nativeMenuDiagnosticsFromOutput(output);
+    rejectCompletion(error);
   };
   const finishSuccess = value => {
     if (settled) {
@@ -729,14 +860,16 @@ const startNativeContextMenuSelector = (
     }
   });
   child.once('close', code => {
+    const nativeMenuDiagnostics = nativeMenuDiagnosticsFromOutput(output);
     const result = output.match(
       /ATD_UIA_RESULT:(InvokePattern|LegacyIAccessiblePattern)/)?.[1];
     const parentExpansionMethod = output.match(
       /ATD_UIA_PARENT_RESULT:(ExpandCollapsePattern|LegacyIAccessiblePattern)/)?.[1];
     const pointerMethod = output.match(
-      /ATD_UIA_POINTER_RESULT:(ProcessScopedRightClick)/)?.[1];
+      /ATD_UIA_POINTER_RESULT:(CheckedSendInputRightClick)/)?.[1];
     if (!cancelled && code === 0 && result) {
       finishSuccess({
+        ...nativeMenuDiagnostics,
         method: result,
         parentExpansionMethod,
         pointerMethod,
@@ -1374,6 +1507,7 @@ const main = async () => {
   let manifest;
   let driverWindowId;
   let driverTabId;
+  let lastNativeMenuDiagnostics;
   let scenarioSequence = 0;
   let runError;
   const telemetryToken = `${runId}-${crypto.randomUUID()}`;
@@ -1450,7 +1584,10 @@ const main = async () => {
     report = {
       browser: {family: allowEdge ? 'edge' : 'chromium', version: browser.version()},
       crashes: findCrashDumps(profile),
-      error: error ? {reasonCode: publicFailureReason(error)} : undefined,
+      error: error ? {
+        nativeMenu: error.nativeMenuDiagnostics || lastNativeMenuDiagnostics,
+        reasonCode: publicFailureReason(error)
+      } : undefined,
       extension: extensionId ? {
         treeSha256: hashDirectory(extensionPath),
         version: manifest?.version
@@ -2521,19 +2658,38 @@ const main = async () => {
           at: Date.now(),
           command: 'discard-tab',
           event: 'native-context-menu-clicked',
+          finalSurface: selection.finalSurface,
+          firstClickSurface: selection.firstClickSurface,
           menuItemId: observed.menuItemId,
           parentExpansionMethod: selection.parentExpansionMethod,
           pointerMethod: selection.pointerMethod,
+          rightClickAttempts: selection.rightClickAttempts,
           selectionMethod: selection.method
         });
         return {
           entryEvent: 'chrome.contextMenus.onClicked',
+          finalSurface: selection.finalSurface,
+          firstClickSurface: selection.firstClickSurface,
           menuItemId: observed.menuItemId,
           parentExpansionMethod: selection.parentExpansionMethod,
           pointerMethod: selection.pointerMethod,
+          rightClickAttempts: selection.rightClickAttempts,
           selectionMethod: selection.method,
           selectionScope: selection.scope
         };
+      }
+      catch (error) {
+        if (error.nativeMenuDiagnostics) {
+          lastNativeMenuDiagnostics = error.nativeMenuDiagnostics;
+          timeline.push({
+            at: Date.now(),
+            command: 'discard-tab',
+            event: 'native-context-menu-failed',
+            ...lastNativeMenuDiagnostics,
+            reasonCode: publicFailureReason(error)
+          });
+        }
+        throw error;
       }
       finally {
         try {
@@ -2681,11 +2837,14 @@ const main = async () => {
       assertNoCrashes(name);
       scenarios.push({
         entryEvent: entry.entryEvent,
+        finalSurface: entry.finalSurface,
+        firstClickSurface: entry.firstClickSurface,
         menuItemId: entry.menuItemId,
         name,
         ok: true,
         parentExpansionMethod: entry.parentExpansionMethod,
         pointerMethod: entry.pointerMethod,
+        rightClickAttempts: entry.rightClickAttempts,
         selectionMethod: entry.selectionMethod,
         selectionScope: entry.selectionScope
       });
@@ -3514,4 +3673,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = {sanitizePopupReport};
+module.exports = {nativeMenuDiagnosticsFromOutput, sanitizePopupReport};
