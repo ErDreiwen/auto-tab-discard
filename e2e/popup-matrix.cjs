@@ -36,6 +36,15 @@ const publicFailureReason = error => {
   }
   return 'matrix-invariant-failed';
 };
+const EARLY_FAILURE_PHASES = new Set(['browser-launch', 'cdp-attach', 'startup']);
+const EARLY_FAILURE_REASONS = new Set([
+  'bounded-timeout',
+  'browser-launch-failed',
+  'cleanup-failed',
+  'input-missing',
+  'matrix-invariant-failed',
+  'safety-refusal'
+]);
 const reportOmittedKeys = new Set([
   'executablePath',
   'parentProcessId',
@@ -123,6 +132,36 @@ const sanitizePopupReport = value => {
     return sanitized;
   };
   return visit(value);
+};
+const createEarlyFailureReport = ({
+  browserFamily,
+  cleanup = {},
+  crashes = [],
+  error,
+  extension,
+  fixtureRequests = [],
+  phase
+}) => {
+  const boundedPhase = EARLY_FAILURE_PHASES.has(phase) ? phase : 'startup';
+  const candidateReason = publicFailureReason(error);
+  const reasonCode = EARLY_FAILURE_REASONS.has(candidateReason) ?
+    candidateReason : 'matrix-invariant-failed';
+  return sanitizePopupReport({
+    browser: {
+      family: browserFamily === 'edge' ? 'edge' : 'chromium',
+      version: null
+    },
+    cleanup,
+    crashes,
+    error: {phase: boundedPhase, reasonCode},
+    extension,
+    fixtureRequests,
+    memory: [],
+    ok: false,
+    reportFormat: 'sanitized-v1',
+    scenarios: [],
+    timeline: [{event: 'early-failure', phase: boundedPhase, reasonCode}]
+  });
 };
 const waitFor = async (task, description, timeout = 15000, interval = 50) => {
   const deadline = Date.now() + timeout;
@@ -1335,7 +1374,7 @@ const launchOverCDP = async ({edgePrivacy, executablePath, extensionPath, profil
     return {browser, browserProcess, context, stderr: () => stderr};
   }
   catch (error) {
-    await terminateBrowserProcess(browserProcess);
+    error.processCleanup = await terminateBrowserProcess(browserProcess);
     throw error;
   }
 };
@@ -1503,6 +1542,22 @@ const main = async () => {
   }
   fs.mkdirSync(profile, {recursive: true});
   fs.mkdirSync(resultsRoot, {recursive: true});
+  const extensionMetadata = {
+    treeSha256: hashDirectory(extensionPath),
+    version: JSON.parse(fs.readFileSync(path.join(extensionPath, 'manifest.json'), 'utf8')).version
+  };
+  const persistEarlyFailureReport = ({cleanup, crashes, error, fixtureRequests, phase}) => {
+    const earlyReport = createEarlyFailureReport({
+      browserFamily: allowEdge ? 'edge' : 'chromium',
+      cleanup,
+      crashes,
+      error,
+      extension: extensionMetadata,
+      fixtureRequests,
+      phase
+    });
+    fs.writeFileSync(resultPath, `${JSON.stringify(earlyReport, null, 2)}\n`);
+  };
   const restrictedFilePath = path.join(profile, 'restricted-file.html');
   fs.writeFileSync(restrictedFilePath, '<!doctype html><meta charset="utf-8">' +
     '<title>ATD restricted file fixture</title><body>ATD restricted file fixture</body>', 'utf8');
@@ -1515,13 +1570,19 @@ const main = async () => {
   };
   const cleanupEarlyFailure = error => {
     if (retainProfile) {
-      return;
+      return {explicit: true, removed: false, retained: true};
     }
     try {
       removeIsolatedProfile();
+      return {removed: true, retained: false};
     }
     catch (cleanupError) {
       error.message += `\nIsolated profile cleanup also failed: ${cleanupError.message}`;
+      return {
+        reasonCode: publicFailureReason(cleanupError),
+        removed: false,
+        retained: fs.existsSync(profile)
+      };
     }
   };
 
@@ -1530,7 +1591,19 @@ const main = async () => {
     fixture = await startFixtureServer();
   }
   catch (error) {
-    cleanupEarlyFailure(error);
+    const crashes = findCrashDumps(profile);
+    const profileCleanup = cleanupEarlyFailure(error);
+    persistEarlyFailureReport({
+      cleanup: {
+        fixture: {status: 'not-started'},
+        process: {status: 'not-started'},
+        profile: profileCleanup
+      },
+      crashes,
+      error,
+      fixtureRequests: [],
+      phase: 'startup'
+    });
     throw error;
   }
   let launched;
@@ -1543,8 +1616,20 @@ const main = async () => {
     });
   }
   catch (error) {
-    await fixture.stop().catch(() => {});
-    cleanupEarlyFailure(error);
+    const fixtureCleanup = await settleWithin(fixture.stop(), 5000);
+    const crashes = findCrashDumps(profile);
+    const profileCleanup = cleanupEarlyFailure(error);
+    persistEarlyFailureReport({
+      cleanup: {
+        fixture: fixtureCleanup,
+        process: error.processCleanup || {exited: false},
+        profile: profileCleanup
+      },
+      crashes,
+      error,
+      fixtureRequests: fixture.requests,
+      phase: 'browser-launch'
+    });
     throw error;
   }
   const {browser, browserProcess, context} = launched;
@@ -1555,10 +1640,25 @@ const main = async () => {
     nativeMenuBrowserProcessId = await resolveNativeMenuBrowserProcessId(cdp);
   }
   catch (error) {
-    await settleWithin(browser.close(), 5000);
-    await terminateBrowserProcess(browserProcess);
-    await fixture.stop().catch(() => {});
-    cleanupEarlyFailure(error);
+    const detach = cdp ? await settleWithin(cdp.detach(), 3000) : {status: 'not-started'};
+    const close = await settleWithin(browser.close(), 5000);
+    const processCleanup = await terminateBrowserProcess(browserProcess);
+    const fixtureCleanup = await settleWithin(fixture.stop(), 5000);
+    const crashes = findCrashDumps(profile);
+    const profileCleanup = cleanupEarlyFailure(error);
+    persistEarlyFailureReport({
+      cleanup: {
+        browser: close,
+        cdp: detach,
+        fixture: fixtureCleanup,
+        process: processCleanup,
+        profile: profileCleanup
+      },
+      crashes,
+      error,
+      fixtureRequests: fixture.requests,
+      phase: 'cdp-attach'
+    });
     throw error;
   }
   const timeline = [];
@@ -3775,4 +3875,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = {nativeMenuDiagnosticsFromOutput, sanitizePopupReport};
+module.exports = {createEarlyFailureReport, nativeMenuDiagnosticsFromOutput, sanitizePopupReport};

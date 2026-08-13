@@ -371,7 +371,7 @@ test('release workflow signs only the protected trusted tag after both hosted ga
     'browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd',
     'browser-actions/setup-edge@e2f31d5d9f2e6d75e72516221b4df8528e6325cf'
   ];
-  assert.equal(actions.length, 30);
+  assert.equal(actions.length, 31);
   assert.ok(actions.every(action => /@[a-f\d]{40}$/.test(action)), actions.join('\n'));
   assert.deepEqual([...new Set(actions)].sort(), allowedActions.sort());
   assert.match(job, /subject-path:\s*\|\s*\n\s*auto-tab-discard-0\.6\.9\.2\.xpi\s*\n\s*auto-tab-discard-0\.6\.9\.2\.zip/);

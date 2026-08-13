@@ -7,7 +7,11 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 
 const require = createRequire(import.meta.url);
-const {nativeMenuDiagnosticsFromOutput, sanitizePopupReport} = require('../e2e/popup-matrix.cjs');
+const {
+  createEarlyFailureReport,
+  nativeMenuDiagnosticsFromOutput,
+  sanitizePopupReport
+} = require('../e2e/popup-matrix.cjs');
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
 
@@ -552,6 +556,68 @@ test('popup matrix shareable reports redact hostile identity, endpoint, path, an
   assert.match(text, /<fixture-url>|<url>/);
   assert.match(text, /<local-path>/);
   assert.match(text, /<secret-canary>/);
+});
+
+test('early popup failures have bounded phases and reasons and recursively sanitized diagnostics', () => {
+  const secret = 'SECRET-CANARY-50-EARLY-7c2a188e';
+  const report = createEarlyFailureReport({
+    browserFamily: 'hostile-browser-family',
+    cleanup: {
+      nested: {
+        local: String.raw`C:\Users\alice\ATD Private\popup-profile\failure.log`,
+        secret
+      }
+    },
+    crashes: [],
+    error: Error(`native context-menu UI Automation failed (attacker-controlled) ${secret}`),
+    extension: {
+      treeSha256: 'a'.repeat(64),
+      version: secret
+    },
+    fixtureRequests: [{url: `http://127.0.0.1:49152/private?token=${secret}`}],
+    phase: String.raw`C:\Users\alice\unbounded-phase`
+  });
+
+  assert.deepEqual(report.browser, {family: 'chromium', version: null});
+  assert.deepEqual(report.error, {phase: 'startup', reasonCode: 'matrix-invariant-failed'});
+  assert.deepEqual(report.timeline, [{
+    event: 'early-failure',
+    phase: 'startup',
+    reasonCode: 'matrix-invariant-failed'
+  }]);
+  assert.deepEqual(report.scenarios, []);
+  assert.equal(report.ok, false);
+  assert.equal(report.reportFormat, 'sanitized-v1');
+  const serialized = JSON.stringify(report);
+  assert.doesNotMatch(serialized, /alice|ATD Private|49152|7c2a188e|attacker-controlled/i);
+  assert.match(serialized, /<local-path>|<fixture-url>|<secret-canary>/);
+});
+
+test('popup matrix persists exactly one sanitized report at each pre-matrix browser boundary', async () => {
+  const source = await readMatrix();
+  assert.equal((source.match(/persistEarlyFailureReport\(\{/g) || []).length, 3);
+  const startupBoundary = source.slice(
+    source.indexOf('fixture = await startFixtureServer()'),
+    source.indexOf('let launched;')
+  );
+  const launchBoundary = source.slice(
+    source.indexOf('launched = await launchOverCDP'),
+    source.indexOf('const {browser, browserProcess, context} = launched')
+  );
+  const cdpBoundary = source.slice(
+    source.indexOf('cdp = await browser.newBrowserCDPSession()'),
+    source.indexOf('const timeline = []')
+  );
+  assert.match(startupBoundary, /persistEarlyFailureReport\(\{[\s\S]*phase: 'startup'/);
+  assert.match(launchBoundary, /persistEarlyFailureReport\(\{[\s\S]*phase: 'browser-launch'/);
+  assert.match(cdpBoundary, /persistEarlyFailureReport\(\{[\s\S]*phase: 'cdp-attach'/);
+  const earlyReportFactory = source.slice(
+    source.indexOf('const createEarlyFailureReport ='),
+    source.indexOf('const waitFor =')
+  );
+  assert.match(earlyReportFactory, /return sanitizePopupReport\(\{/);
+  assert.match(earlyReportFactory, /version: null/);
+  assert.doesNotMatch(earlyReportFactory, /browser\.version\(/);
 });
 
 test('popup matrix reconciles command outcomes across Edge tab replacement lineage', async () => {

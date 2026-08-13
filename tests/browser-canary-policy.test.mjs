@@ -167,7 +167,14 @@ test('workflow schedules Stable/Beta channels, the declared minimum, and a same-
   assert.match(workflow, /playwright@1\.22\.2/);
   assert.match(workflow, /CANARY_INSTALLED_VERSION=102\.0\.5005\.40/);
   assert.match(workflow, /browser-actions\/setup-chrome@v2/);
-  assert.match(workflow, /browser-actions\/setup-edge@v1/);
+  assert.match(workflow, /\.\/scripts\/select-edge-canary\.ps1/);
+  assert.match(workflow, /EDGE_ACTION_PATH: \$\{\{ steps\.edge\.outputs\.edge-path \}\}/);
+  const edgeSelection = workflow.slice(
+    workflow.indexOf('name: Select Edge channel binary'),
+    workflow.indexOf('name: Run popup matrix against the extracted artifact')
+  );
+  assert.match(edgeSelection, /-EnvironmentFile \$env:GITHUB_ENV/);
+  assert.doesNotMatch(edgeSelection, /steps\.edge\.outputs\.edge-version/);
   assert.match(workflow, /name: \$\{\{ env\.CANARY_ARTIFACT_NAME \}\}/);
   assert.match(workflow, /package-linux:/);
   assert.match(workflow, /package-windows:/);
@@ -212,4 +219,33 @@ test('workflow schedules Stable/Beta channels, the declared minimum, and a same-
   assert.match(workflow, /--reproducibility-gate build\/canary\/reproducibility\/cross-builder-gate\.json/);
   assert.match(workflow,
     /needs: \[package-linux, package-windows, artifact-reproducibility-gate, browser-canary\]/);
+
+  const browserJob = workflow.slice(
+    workflow.indexOf('\n  browser-canary:'),
+    workflow.indexOf('\n  browser-canary-gate:')
+  );
+  assert.match(browserJob, /runs-on: \$\{\{ matrix\.runner \}\}/);
+  const targetRows = [...browserJob.matchAll(
+    /- id: (chrome-minimum|chrome-stable|chrome-beta|edge-stable|edge-beta)\n\s+browser: (chrome|edge)\n\s+channel: (minimum|stable|beta)\n\s+runner: (windows-2022|windows-latest)/g
+  )];
+  assert.deepEqual(Object.fromEntries(targetRows.map(match => [match[1], match[4]])), {
+    'chrome-beta': 'windows-latest',
+    'chrome-minimum': 'windows-2022',
+    'chrome-stable': 'windows-latest',
+    'edge-beta': 'windows-latest',
+    'edge-stable': 'windows-latest'
+  });
+
+  const matrixStep = browserJob.indexOf('name: Run popup matrix against the extracted artifact');
+  const diagnosticsStep = browserJob.indexOf('name: Upload sanitized popup-matrix diagnostics');
+  const attestationStep = browserJob.indexOf('name: Attest browser version, capabilities, and artifact hashes');
+  assert.ok(matrixStep >= 0 && diagnosticsStep > matrixStep && attestationStep > diagnosticsStep);
+  const diagnostics = browserJob.slice(diagnosticsStep, attestationStep);
+  assert.match(diagnostics, /if: steps\.matrix\.outcome == 'failure'/);
+  assert.match(diagnostics,
+    /name: popup-matrix-diagnostics-\$\{\{ matrix\.id \}\}-\$\{\{ github\.sha \}\}/);
+  assert.match(diagnostics, /path: build\/canary\/raw\/\*\.json/);
+  assert.match(diagnostics, /if-no-files-found: error/);
+  assert.doesNotMatch(diagnostics, /canary-evidence/);
+  assert.match(workflow, /pattern: canary-evidence-\*-\$\{\{ github\.sha \}\}/);
 });

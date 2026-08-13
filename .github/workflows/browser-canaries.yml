@@ -121,7 +121,7 @@ jobs:
 
   browser-canary:
     needs: package-linux
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -129,18 +129,23 @@ jobs:
           - id: chrome-minimum
             browser: chrome
             channel: minimum
+            runner: windows-2022
           - id: chrome-stable
             browser: chrome
             channel: stable
+            runner: windows-latest
           - id: chrome-beta
             browser: chrome
             channel: beta
+            runner: windows-latest
           - id: edge-stable
             browser: edge
             channel: stable
+            runner: windows-latest
           - id: edge-beta
             browser: edge
             channel: beta
+            runner: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -196,9 +201,12 @@ jobs:
         if: matrix.browser == 'edge'
         shell: pwsh
         run: |
-          "CANARY_EXECUTABLE=${{ steps.edge.outputs.edge-path }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CANARY_INSTALLER=browser-actions/setup-edge@v1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CANARY_INSTALLED_VERSION=${{ steps.edge.outputs.edge-version }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & ./scripts/select-edge-canary.ps1 `
+            -ActionPath ([string]$env:EDGE_ACTION_PATH) `
+            -Channel '${{ matrix.channel }}' `
+            -EnvironmentFile $env:GITHUB_ENV
+        env:
+          EDGE_ACTION_PATH: ${{ steps.edge.outputs.edge-path }}
       - name: Run popup matrix against the extracted artifact
         id: matrix
         continue-on-error: true
@@ -219,6 +227,14 @@ jobs:
         env:
           CODEX_NODE_MODULES: ${{ github.workspace }}/build/playwright/node_modules
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/build/minimum-browsers
+      - name: Upload sanitized popup-matrix diagnostics
+        if: steps.matrix.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: popup-matrix-diagnostics-${{ matrix.id }}-${{ github.sha }}
+          path: build/canary/raw/*.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Attest browser version, capabilities, and artifact hashes
         if: always()
         shell: pwsh
