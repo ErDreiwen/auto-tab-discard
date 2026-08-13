@@ -33,6 +33,26 @@ const stateFiles = [
   ['rebase-merge', 'rebase']
 ];
 
+const findTrackedReleaseSymlinks = async (repositoryRoot, sourceRoot) => {
+  const relativeSource = path.relative(repositoryRoot, sourceRoot).split(path.sep).join('/');
+  const listing = await git(repositoryRoot, 'ls-tree', '-r', '-z', 'HEAD', '--', relativeSource);
+  return listing.split('\0').filter(Boolean).flatMap(record => {
+    if (!record.startsWith('120000 ')) {
+      return [];
+    }
+    const separator = record.indexOf('\t');
+    if (separator === -1) {
+      throw new Error('Git returned a malformed release-tree entry');
+    }
+    const trackedPath = record.slice(separator + 1).replaceAll('\\', '/');
+    const prefix = `${relativeSource}/`;
+    return [{
+      path: trackedPath.startsWith(prefix) ? trackedPath.slice(prefix.length) : trackedPath,
+      reason: 'symbolic link in Git tree'
+    }];
+  }).sort((a, b) => binaryCompare(a.path, b.path));
+};
+
 const forbiddenName = relativePath => {
   const name = path.posix.basename(relativePath).toLowerCase();
   const parts = relativePath.toLowerCase().split('/');
@@ -106,6 +126,15 @@ export const assertReleaseContext = async ({repositoryRoot, sourceRoot} = {}) =>
   if (status) {
     const sample = status.split(/\r?\n/).slice(0, 8).join('\n');
     throw new Error(`Release mode requires a clean worktree; Git reported:\n${sample}`);
+  }
+
+  // Git can materialize a mode-120000 entry as an ordinary placeholder file
+  // when core.symlinks=false. Inspect the committed tree so that platform
+  // checkout behavior cannot weaken the release-source policy.
+  const trackedSymlinks = await findTrackedReleaseSymlinks(repositoryRoot, sourceRoot);
+  if (trackedSymlinks.length) {
+    throw new Error(`Release source contains forbidden Git entries:\n${trackedSymlinks
+      .map(item => `${item.path}: ${item.reason}`).join('\n')}`);
   }
 
   const forbidden = await findForbiddenReleaseEntries(sourceRoot);

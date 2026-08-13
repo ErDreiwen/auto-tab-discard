@@ -7,7 +7,6 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
-const {chromium} = require('./playwright-runtime.cjs');
 
 const SCRIPT_DIR = __dirname;
 const WORKSPACE_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -293,6 +292,7 @@ const installEmergencyHandlers = () => {
 };
 
 const launchChrome = async ({controller, executable, extension, headed, profile}) => {
+  const {chromium} = require('./playwright-runtime.cjs');
   const extensions = [extension, controller].join(',');
   const child = spawn(executable, [
     '--remote-debugging-port=0',

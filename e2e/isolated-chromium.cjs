@@ -3,8 +3,6 @@ const {spawn, spawnSync} = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const {chromium} = require('./playwright-runtime.cjs');
-
 const taskkillPath = process.platform === 'win32' ?
   path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe') : undefined;
 let emergencyBrowserProcess;
@@ -138,6 +136,7 @@ const launchIsolated = async ({
   headless = false
 }) => {
   assertSafeProfile(profileRoot, profile, profilePrefix);
+  const {chromium} = require('./playwright-runtime.cjs');
   fs.mkdirSync(profile, {recursive: true});
   const args = [
     '--remote-debugging-port=0',

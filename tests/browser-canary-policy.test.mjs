@@ -156,7 +156,10 @@ test('quarantines require an owner, future expiry, reason, and narrow failure ki
 });
 
 test('workflow schedules Stable/Beta channels, the declared minimum, and a same-artifact gate', async () => {
-  const workflow = await readFile(new URL('../.github/workflows/browser-canaries.yml', import.meta.url), 'utf8');
+  const workflow = (await readFile(
+    new URL('../.github/workflows/browser-canaries.yml', import.meta.url),
+    'utf8'
+  )).replaceAll('\r\n', '\n');
   assert.match(workflow, /schedule:\s*\n\s*- cron:/);
   for (const id of ['chrome-minimum', 'chrome-stable', 'chrome-beta', 'edge-stable', 'edge-beta']) {
     assert.match(workflow, new RegExp(`id: ${id}`));
@@ -172,6 +175,33 @@ test('workflow schedules Stable/Beta channels, the declared minimum, and a same-
   assert.match(workflow, /runs-on: windows-latest/);
   assert.match(workflow, /clean: true/);
   assert.match(workflow, /persist-credentials: false/);
+
+  const packageLinux = workflow.slice(
+    workflow.indexOf('\n  package-linux:'),
+    workflow.indexOf('\n  package-windows:')
+  );
+  const checkoutIndex = packageLinux.indexOf('uses: actions/checkout@');
+  const baselineIndex = packageLinux.indexOf(
+    'name: Fetch and verify the immutable v0.6.9.1 upgrade baseline'
+  );
+  const unitIndex = packageLinux.indexOf('name: Unit and model tests');
+  const buildIndex = packageLinux.indexOf(
+    'name: Build the canonical canary artifact from a clean Linux checkout'
+  );
+  assert.ok(checkoutIndex >= 0 && baselineIndex > checkoutIndex &&
+    unitIndex > baselineIndex && buildIndex > unitIndex);
+
+  const baselineStep = packageLinux.slice(baselineIndex, unitIndex);
+  assert.match(baselineStep, /git fetch --no-tags --depth=1 \\\n\s+https:\/\/github\.com\/rNeomy\/auto-tab-discard\.git \\\n\s+refs\/tags\/v0\.6\.9\.1:refs\/tags\/v0\.6\.9\.1/);
+  assert.match(baselineStep,
+    /git rev-parse --verify 'refs\/tags\/v0\.6\.9\.1\^\{tag\}'\)" = \\\n\s+'a76dd7a40307703796a5fa9cf40ea605eaf69b52'/);
+  assert.match(baselineStep,
+    /git rev-parse --verify 'refs\/tags\/v0\.6\.9\.1\^\{commit\}'\)" = \\\n\s+'f26fa353bd4b624d98fc92a4eb33ab54bd381376'/);
+  assert.doesNotMatch(baselineStep, /(?:^|\s)(?:--force|-f)(?:\s|\\|$)/m);
+  assert.doesNotMatch(baselineStep, /(?:^|\s)\+refs\/tags\//m);
+  assert.match(packageLinux,
+    /name: Unit and model tests\s+run: node --test --test-concurrency=1 tests\/\*\.test\.mjs/);
+
   assert.match(workflow, /artifact-reproducibility-gate:/);
   assert.match(workflow, /cross-builder-provenance\.mjs verify/);
   assert.match(workflow, /--builder-dir build\/repro\/linux/);

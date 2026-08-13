@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
-import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {lstat, mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -74,4 +74,21 @@ test('forbidden release material is detected even when committed', async t => {
     reason: 'secret, signed, or nested archive material'
   }]);
   await assert.rejects(assertReleaseContext({repositoryRoot: root}), /signing\.key/);
+});
+
+test('tracked release symlinks are rejected when core.symlinks hides them as regular files', async t => {
+  const root = await repository(t);
+  const readme = path.join(root, 'v3', 'README.md');
+  await writeFile(readme, '../README.md');
+  await git(root, 'config', 'core.symlinks', 'false');
+  const {stdout: object} = await git(root, 'hash-object', '-w', '--', readme);
+  await git(root, 'update-index', '--add', '--cacheinfo',
+    `120000,${object.trim()},v3/README.md`);
+  await git(root, 'commit', '--quiet', '-m', 'tracked symlink fixture');
+
+  assert.equal((await lstat(readme)).isSymbolicLink(), false,
+    'the fixture must reproduce a checkout that hides Git symlink mode');
+  assert.equal((await git(root, 'status', '--porcelain=v1')).stdout.trim(), '');
+  await assert.rejects(assertReleaseContext({repositoryRoot: root}),
+    /README\.md: symbolic link in Git tree/);
 });

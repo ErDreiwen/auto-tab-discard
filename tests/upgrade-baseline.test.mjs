@@ -17,7 +17,7 @@ test('materializes the actual immutable 0.6.9.1 tag without the working tree', a
   });
   assert.equal(result.ref, 'v0.6.9.1');
   assert.equal(result.version, '0.6.9.1');
-  assert.match(result.commitSha, /^[0-9a-f]{40}$/);
+  assert.equal(result.commitSha, 'f26fa353bd4b624d98fc92a4eb33ab54bd381376');
   assert.ok(result.files > 20);
   const manifest = JSON.parse(await readFile(path.join(temporary, 'manifest.json'), 'utf8'));
   assert.equal(manifest.name, 'Auto Tab Discard (suspend)');
