@@ -5,7 +5,7 @@ A browser extension which uses the native tab discarding method (`chrome.tabs.di
 
 This repository branch hardens external-discard ownership, bulk command scoping, reload quiescence, visible sleep markers, Manifest V3 restart recovery, and Firefox compatibility. See [FORK_NOTES.md](FORK_NOTES.md) for the versioned behavior changes.
 
-Release 0.6.9.2 has passed its isolated Chrome 151 popup matrix and Firefox 153 WebDriver BiDi smoke. Edge 151.0.4129.72 passed the current 19-scenario popup matrix. The redesigned native-frozen smoke now requires a direct physical discard with zero activation, scripting, loading, or document requests and a truthful visual-unavailable record; it and the final generated artifact tree must still repeat the browser gates before release.
+Release 0.6.9.2 has passed its isolated Chrome 151 popup matrix and Firefox 153 WebDriver BiDi smoke. Edge 151.0.4129.72 passed the 19-scenario popup matrix and the current-tree direct-native matrix covering all five release scopes, four cancellation boundaries, and three worker-loss boundaries. The redesigned native-frozen smoke requires a direct physical discard with zero activation, scripting, loading, or document requests and a truthful visual-unavailable record. The final generated artifact tree must pass that smoke and every other browser gate before release.
 
 Run the single release gate from a clean repository root, supplying isolated browser executables:
 

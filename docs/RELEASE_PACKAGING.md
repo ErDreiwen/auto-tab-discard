@@ -38,7 +38,7 @@ node scripts/release-gate.mjs --chrome-executable PATH --edge-executable PATH --
 
 The verifier never downloads a root implicitly when deciding a release. Fake-`gh` substitution exists only as an in-process test dependency and is unreachable through either production CLI. The configured signing job and offline fake-`gh` tests are present, but an actual protected-tag hosted signing run and its resulting bundle are still pending; no current local artifact is represented as signed.
 
-The `.zip` is the Chrome/Edge upload or unpack-and-test artifact. The byte-identical `.xpi` is unsigned AMO submission input only; normal Firefox distribution still requires Mozilla signing. Source-tree verification has passed Chrome 151, Firefox 153, and Edge 151.0.4129.72's current 19-scenario popup matrix. The native-frozen smoke was redesigned after those checks and is pending its current source-tree rerun. No historical or source-tree result is silently reused: a release is not complete until every gate passes against the final extracted artifact tree and records that tree's canonical digest.
+The `.zip` is the Chrome/Edge upload or unpack-and-test artifact. The byte-identical `.xpi` is unsigned AMO submission input only; normal Firefox distribution still requires Mozilla signing. Source-tree verification has exercised Chrome 151, Firefox 153, Edge 151.0.4129.72's 19-scenario popup matrix, and the Edge direct-native 5/4/3 release, cancellation, and worker-loss matrix. No historical or source-tree result is silently reused: a release is not complete until every gate, including the redesigned native-frozen smoke, passes against the final extracted artifact tree and records that tree's canonical digest.
 
 ## Fork identity and signing
 
