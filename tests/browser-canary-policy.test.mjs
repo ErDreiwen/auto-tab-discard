@@ -225,6 +225,9 @@ test('workflow schedules Stable/Beta channels, the declared minimum, and a same-
     workflow.indexOf('\n  browser-canary-gate:')
   );
   assert.match(browserJob, /runs-on: \$\{\{ matrix\.runner \}\}/);
+  assert.equal((browserJob.match(/uses: actions\/setup-node@/g) || []).length, 1);
+  assert.match(browserJob,
+    /node-version: \$\{\{ matrix\.channel == 'minimum' && '16\.20\.2' \|\| '24' \}\}/);
   const targetRows = [...browserJob.matchAll(
     /- id: (chrome-minimum|chrome-stable|chrome-beta|edge-stable|edge-beta)\n\s+browser: (chrome|edge)\n\s+channel: (minimum|stable|beta)\n\s+runner: (windows-2022|windows-latest)/g
   )];
