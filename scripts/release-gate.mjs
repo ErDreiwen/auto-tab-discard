@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import {execFile} from 'node:child_process';
+import {constants as fsConstants} from 'node:fs';
 import {copyFile, mkdir, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -106,12 +107,24 @@ const writeCommandEvidence = async (target, result) => {
   ].join('\n').replace(/\r\n?/g, '\n'), 'utf8');
 };
 
-const newestJson = async directory => {
-  const files = (await readdir(directory)).filter(name => name.endsWith('.json')).sort(binaryCompare);
-  if (files.length !== 1) {
-    throw new Error(`Expected exactly one browser report in ${directory}; found ${files.length}`);
+export const retainCanonicalBrowserReport = async (reportDirectory, reportPath) => {
+  reportDirectory = path.resolve(reportDirectory);
+  reportPath = path.resolve(reportPath);
+  if (path.dirname(reportPath) !== reportDirectory) {
+    throw new Error(`Browser report must remain inside its evidence directory: ${reportPath}`);
   }
-  return path.join(directory, files[0]);
+  const canonicalPath = path.join(reportDirectory, 'report.json');
+  if (reportPath !== canonicalPath) {
+    await copyFile(reportPath, canonicalPath, fsConstants.COPYFILE_EXCL);
+    await rm(reportPath);
+  }
+  return canonicalPath;
+};
+
+export const removeBrowserReports = async directory => {
+  const files = (await readdir(directory, {withFileTypes: true}))
+    .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.json'));
+  await Promise.all(files.map(file => rm(path.join(directory, file.name), {force: true})));
 };
 
 const exactOrderedReportValues = (records, key, expected) =>
@@ -151,7 +164,7 @@ export const reportPrivacyError = report => {
 
 export const quarantineUnsafeBrowserReports = async directory => {
   const files = (await readdir(directory, {withFileTypes: true}))
-    .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+    .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.json'))
     .map(entry => entry.name)
     .sort(binaryCompare);
   const reasons = [];
@@ -178,24 +191,88 @@ export const quarantineUnsafeBrowserReports = async directory => {
   return {reasons: [...new Set(reasons)].sort(binaryCompare), removed, retained};
 };
 
+const failedBrowserReport = async ({blocker, commandPath, id, reportDirectory}) => {
+  await removeBrowserReports(reportDirectory);
+  return {id, blocker, commandPath};
+};
+
+export const finalizeBrowserReport = async ({
+  commandOk,
+  commandPath,
+  id,
+  reportDirectory,
+  retainReport = retainCanonicalBrowserReport,
+  validate
+}) => {
+  if (!commandOk) {
+    return failedBrowserReport({
+      id, commandPath, reportDirectory,
+      blocker: `${id} failed against the extracted artifact`
+    });
+  }
+  const reportFiles = (await readdir(reportDirectory, {withFileTypes: true}))
+    .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.json'));
+  if (reportFiles.length !== 1) {
+    return failedBrowserReport({
+      id, commandPath, reportDirectory,
+      blocker: `${id}: expected exactly one browser report; found ${reportFiles.length}`
+    });
+  }
+  const reportPath = path.join(reportDirectory, reportFiles[0].name);
+  let report;
+  try {
+    report = JSON.parse(await readFile(reportPath, 'utf8'));
+  }
+  catch (error) {
+    return failedBrowserReport({
+      id, commandPath, reportDirectory,
+      blocker: `${id}: shareable report is malformed`
+    });
+  }
+  const privacyError = reportPrivacyError(report);
+  if (privacyError) {
+    return failedBrowserReport({
+      id, commandPath, reportDirectory,
+      blocker: `${id}: ${privacyError}`
+    });
+  }
+  let validationError;
+  try {
+    validationError = validate(report);
+  }
+  catch (error) {
+    validationError = 'browser report validation failed';
+  }
+  if (validationError) {
+    return failedBrowserReport({
+      id, commandPath, reportDirectory,
+      blocker: `${id}: ${validationError}`
+    });
+  }
+  try {
+    return {id, commandPath, reportPath: await retainReport(reportDirectory, reportPath)};
+  }
+  catch (error) {
+    return failedBrowserReport({
+      id, commandPath, reportDirectory,
+      blocker: `${id}: browser report retention failed`
+    });
+  }
+};
+
 const runBrowser = async ({id, executable, script, arguments_, reportDirectory, validate}) => {
   await rm(reportDirectory, {recursive: true, force: true});
   await mkdir(reportDirectory, {recursive: true});
   const command = await run(process.execPath, [script, '--executable', executable, ...arguments_]);
   const commandPath = path.join(reportDirectory, 'command.txt');
   await writeCommandEvidence(commandPath, command);
-  if (!command.ok) {
-    const quarantine = await quarantineUnsafeBrowserReports(reportDirectory);
-    const suffix = quarantine.removed > 0 ? '; unsafe failed report removed' : '';
-    return {id, blocker: `${id} failed against the extracted artifact${suffix}`, commandPath};
-  }
-  const reportPath = await newestJson(reportDirectory);
-  const report = JSON.parse(await readFile(reportPath, 'utf8'));
-  const error = reportPrivacyError(report) || validate(report);
-  return error ? {id, blocker: `${id}: ${error}`, commandPath, reportPath} : {
-    id,
-    evidence: {id, path: relativeEvidencePath(reportPath), status: 'passed'},
-    reportPath
+  const result = await finalizeBrowserReport({
+    commandOk: command.ok, commandPath, id, reportDirectory, validate
+  });
+  if (result.blocker) return result;
+  return {
+    ...result,
+    evidence: {id, path: relativeEvidencePath(result.reportPath), status: 'passed'}
   };
 };
 
@@ -212,6 +289,8 @@ export const releaseGate = async ({
   outputDirectory = path.resolve(outputDirectory);
   const releaseContext = await assertReleaseContext({repositoryRoot});
   await mkdir(outputDirectory, {recursive: true});
+  const reportPath = path.join(outputDirectory, 'release-gate-report.json');
+  await rm(reportPath, {force: true});
   const evidenceRoot = path.join(outputDirectory, 'evidence');
   await rm(evidenceRoot, {recursive: true, force: true});
   await mkdir(evidenceRoot, {recursive: true});
@@ -455,23 +534,39 @@ export const releaseGate = async ({
       '--profile-root', path.join(outputDirectory, 'profiles', 'edge-frozen')
     ]);
     await writeCommandEvidence(path.join(frozenDirectory, 'command.txt'), frozen);
-    const copied = path.join(frozenDirectory, 'edge-frozen-smoke.json');
-    if (frozen.ok) {
-      await copyFile(generated, copied);
-      const report = JSON.parse(await readFile(copied, 'utf8'));
-      const privacyError = reportPrivacyError(report);
-      browserRuns.push(privacyError ?
-        {id: 'edge-frozen-smoke', blocker: `edge-frozen-smoke: ${privacyError}`} :
-        report.outcome !== 'passed' ?
-        {id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke report did not pass'} :
-        report.extension?.treeSha256 !== archiveInventory.treeSha256 ?
-          {id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke tested tree digest does not match the release artifact'} : {
-            id: 'edge-frozen-smoke',
-            evidence: {id: 'edge-frozen-smoke', path: relativeEvidencePath(copied), status: 'passed'}
-          });
+    const copied = path.join(frozenDirectory, 'report.json');
+    try {
+      if (frozen.ok) {
+        try {
+          const report = JSON.parse(await readFile(generated, 'utf8'));
+          const error = reportPrivacyError(report) ||
+            (report.outcome !== 'passed' ? 'report did not pass' :
+              report.extension?.treeSha256 !== archiveInventory.treeSha256 ?
+                'tested tree digest does not match the release artifact' : undefined);
+          if (error) {
+            await removeBrowserReports(frozenDirectory);
+            browserRuns.push({id: 'edge-frozen-smoke', blocker: `edge-frozen-smoke: ${error}`});
+          }
+          else {
+            await copyFile(generated, copied, fsConstants.COPYFILE_EXCL);
+            browserRuns.push({
+              id: 'edge-frozen-smoke',
+              evidence: {id: 'edge-frozen-smoke', path: relativeEvidencePath(copied), status: 'passed'}
+            });
+          }
+        }
+        catch (error) {
+          await removeBrowserReports(frozenDirectory);
+          browserRuns.push({id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke report retention failed'});
+        }
+      }
+      else {
+        await removeBrowserReports(frozenDirectory);
+        browserRuns.push({id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke failed against the extracted artifact'});
+      }
     }
-    else {
-      browserRuns.push({id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke failed against the extracted artifact'});
+    finally {
+      await rm(generated, {force: true});
     }
   }
   if (!firefoxExecutable) {
@@ -513,8 +608,6 @@ export const releaseGate = async ({
     sourceTreeSha256: archiveInventory.treeSha256,
     status: 'blocked'
   };
-  const reportPath = path.join(outputDirectory, 'release-gate-report.json');
-
   if (candidateBlockers.length === 0) {
     const final = await packageRelease({
       baseName: policy.policy.archiveBaseName,

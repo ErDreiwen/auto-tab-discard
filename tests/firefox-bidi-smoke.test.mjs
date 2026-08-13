@@ -79,7 +79,7 @@ test('Firefox smoke source uses raw BiDi, temporary path install, scoped runtime
 
 test('release gate binds Firefox BiDi and Edge frozen evidence to the extracted artifact digest', async () => {
   const gate = await readFile(new URL('../scripts/release-gate.mjs', import.meta.url), 'utf8');
-  const edgeStart = gate.indexOf("id: 'edge-frozen-smoke'");
+  const edgeStart = gate.indexOf('const frozenDirectory =');
   const firefoxStart = gate.indexOf("id: 'firefox-bidi-smoke'", edgeStart);
   assert.ok(edgeStart > 0 && firefoxStart > edgeStart, 'browser evidence blocks exist in release order');
 

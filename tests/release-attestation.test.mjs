@@ -11,8 +11,11 @@ import {inspectArchive} from '../scripts/archive-inventory.mjs';
 import {inventorySha256} from '../scripts/cross-builder-provenance.mjs';
 import {packageRelease} from '../scripts/package-release.mjs';
 import {
+  finalizeBrowserReport,
   quarantineUnsafeBrowserReports,
   reportPrivacyError,
+  removeBrowserReports,
+  retainCanonicalBrowserReport,
   sanitizeCommandEvidenceText
 } from '../scripts/release-gate.mjs';
 import {
@@ -440,6 +443,107 @@ test('release gate sanitizes stdout and stderr before retaining command evidence
   assert.match(sanitized, /<fixture-url>|<url>/);
   assert.match(sanitized, /<redacted-id>/);
   assert.match(sanitized, /<secret-canary>/);
+});
+
+test('successful browser reports use a fixed privacy-safe name before metadata binding', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'canonical-browser-evidence-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  const reportDirectory = path.join(root, 'firefox');
+  await mkdir(reportDirectory, {recursive: true});
+  const dynamicName = 'firefox-bidi-smoke-1786652110733-15084-becdaa2c-e5b1-456a-bf8c-6048dd694949.json';
+  const dynamicPath = path.join(reportDirectory, dynamicName);
+  const report = {outcome: 'passed', profile: {removed: true}};
+  await writeFile(dynamicPath, `${JSON.stringify(report)}\n`);
+
+  const canonicalPath = await retainCanonicalBrowserReport(reportDirectory, dynamicPath);
+  assert.equal(canonicalPath, path.join(reportDirectory, 'report.json'));
+  assert.deepEqual(await readdir(reportDirectory), ['report.json']);
+  assert.deepEqual(JSON.parse(await readFile(canonicalPath, 'utf8')), report);
+
+  assert.equal(await retainCanonicalBrowserReport(reportDirectory, canonicalPath), canonicalPath);
+  assert.deepEqual(await readdir(reportDirectory), ['report.json']);
+
+  const evidence = {
+    id: 'firefox-bidi-smoke',
+    path: 'build/results/evidence/firefox/report.json',
+    status: 'passed'
+  };
+  const releaseReport = {
+    archiveSha256: '0'.repeat(64),
+    commitSha: 'd'.repeat(40),
+    evidence: [evidence],
+    sourceTreeSha256: '1'.repeat(64)
+  };
+  const checksums = {
+    provenance: {commitSha: 'd'.repeat(40), gitTree: 'e'.repeat(40)},
+    testEvidence: [{...evidence, bytes: 53, sha256: '2'.repeat(64)}]
+  };
+  assert.equal(reportPrivacyError(releaseReport), undefined);
+  assert.equal(reportPrivacyError(checksums), undefined);
+  assert.match(reportPrivacyError({evidence: [{...evidence, path: `build/results/evidence/firefox/${dynamicName}`}]}),
+    /opaque or secret identity/);
+
+  const source = await readFile(new URL('../scripts/release-gate.mjs', import.meta.url), 'utf8');
+  const finalization = source.slice(source.indexOf('export const finalizeBrowserReport'),
+    source.indexOf('const runBrowser'));
+  assert.ok(finalization.indexOf('validationError = validate(report)') <
+    finalization.indexOf('await retainReport(reportDirectory, reportPath)'),
+  'release gate must validate before canonical retention');
+  assert.match(source, /relativeEvidencePath\(result\.reportPath\)/,
+    'release gate must bind only the finalized canonical report');
+  const gateInitialization = source.slice(source.indexOf('export const releaseGate'),
+    source.indexOf('const blockers = []'));
+  assert.ok(gateInitialization.indexOf("await rm(reportPath, {force: true})") <
+    gateInitialization.indexOf("await rm(evidenceRoot, {recursive: true, force: true})"),
+  'release gate must remove stale metadata before replacing fixed-name evidence');
+});
+
+test('every failed browser finalization removes all JSON and keeps command evidence only', async t => {
+  const scenarios = [
+    {name: 'command', commandOk: false, reports: [['safe.json', '{"outcome":"failed"}']]},
+    {name: 'missing', reports: []},
+    {name: 'multiple', reports: [['one.json', '{}'], ['two.JSON', '{}']]},
+    {name: 'malformed', reports: [['bad.json', '{']]},
+    {name: 'privacy', reports: [['unsafe.json', '{"tabId":717171}']]},
+    {name: 'contract', reports: [['failed.json', '{"outcome":"failed"}']], validate: () => 'report did not pass'},
+    {name: 'validator-throw', reports: [['throw.json', '{"outcome":"passed"}']], validate: () => { throw new Error('boom'); }},
+    {
+      name: 'retention', reports: [['pass.json', '{"outcome":"passed"}']],
+      retainReport: async () => { throw new Error('collision'); }
+    }
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async t => {
+      const root = await mkdtemp(path.join(tmpdir(), `failed-browser-${scenario.name}-`));
+      t.after(() => rm(root, {force: true, recursive: true}));
+      const commandPath = path.join(root, 'command.txt');
+      await writeFile(commandPath, 'exit: failed\n');
+      for (const [name, contents] of scenario.reports) await writeFile(path.join(root, name), contents);
+      const result = await finalizeBrowserReport({
+        commandOk: scenario.commandOk ?? true,
+        commandPath,
+        id: 'fixture-browser',
+        reportDirectory: root,
+        retainReport: scenario.retainReport,
+        validate: scenario.validate || (() => undefined)
+      });
+      assert.match(result.blocker, /^fixture-browser/);
+      assert.deepEqual(await readdir(root), ['command.txt']);
+      assert.equal(result.reportPath, undefined);
+    });
+  }
+});
+
+test('canonical report collision fails without overwriting either file', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'browser-report-collision-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  const source = path.join(root, 'dynamic.json');
+  const destination = path.join(root, 'report.json');
+  await writeFile(source, '{"source":true}\n');
+  await writeFile(destination, '{"destination":true}\n');
+  await assert.rejects(retainCanonicalBrowserReport(root, source));
+  assert.deepEqual(JSON.parse(await readFile(source, 'utf8')), {source: true});
+  assert.deepEqual(JSON.parse(await readFile(destination, 'utf8')), {destination: true});
 });
 
 test('release gate removes unsafe or malformed JSON left by a failed browser harness', async t => {
