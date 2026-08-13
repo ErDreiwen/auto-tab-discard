@@ -51,8 +51,12 @@ test('tags self discards, claims external discards, and rejects stale attempts',
         set(values, callback) {
           write(() => Object.assign(sessionState, values), callback);
         },
-        remove(key, callback) {
-          write(() => delete sessionState[key], callback);
+        remove(keys, callback) {
+          write(() => {
+            for (const key of Array.isArray(keys) ? keys : [keys]) {
+              delete sessionState[key];
+            }
+          }, callback);
         }
       },
       local: {}
@@ -532,6 +536,71 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     assert.equal(state[physicalPending.id].state, 'owned');
     assert.equal(state[physicalPending.id].source, 'physical-only');
 
+    // Definitive late rejection can clear only the exact original pending
+    // authority. A wrong nonce or an onReplaced generation makes the callback
+    // stale and must preserve the current marker.
+    const rejectedDirect = {
+      id: 410,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://rejected-direct-authority.example/'
+    };
+    liveTabs = [rejectedDirect];
+    const rejectedAttempt = await ownership.beginDirectNative(rejectedDirect);
+    const rejectedAuthority = ownership.lateAuthority(rejectedDirect.id);
+    assert.equal(await ownership.finish(rejectedDirect, rejectedAttempt, undefined, {
+      allowClaimed: false,
+      directNative: true,
+      lateNative: true
+    }), false);
+    assert.equal(await ownership.cancelDirectNative(rejectedAuthority, 'newer-attempt'), false);
+    assert.equal((await ownership.status(rejectedDirect.id)).marker?.attemptId, rejectedAttempt);
+    assert.equal(await ownership.cancelDirectNative(rejectedAuthority, rejectedAttempt), true);
+    assert.equal((await ownership.status(rejectedDirect.id)).marker, undefined);
+
+    const replacedRejectedDirect = {...rejectedDirect, id: 411};
+    liveTabs = [replacedRejectedDirect];
+    const replacedRejectedAttempt = await ownership.beginDirectNative(replacedRejectedDirect);
+    const replacedRejectedAuthority = ownership.lateAuthority(replacedRejectedDirect.id);
+    assert.equal(await ownership.finish(
+      replacedRejectedDirect,
+      replacedRejectedAttempt,
+      undefined,
+      {allowClaimed: false, directNative: true, lateNative: true}
+    ), false);
+    const replacedRejectedSuccessor = {...replacedRejectedDirect, id: 412};
+    liveTabs = [replacedRejectedSuccessor];
+    listeners.replaced(replacedRejectedSuccessor.id, replacedRejectedDirect.id);
+    assert.equal(await ownership.cancelDirectNative(
+      replacedRejectedAuthority,
+      replacedRejectedAttempt
+    ), true);
+    assert.equal((await ownership.status(replacedRejectedSuccessor.id)).marker, undefined,
+      'the same live attempt may clear its exact pending marker after onReplaced');
+
+    const attachedRejectedDirect = {...rejectedDirect, id: 413, windowId: 1};
+    liveTabs = [attachedRejectedDirect];
+    const attachedRejectedAttempt = await ownership.beginDirectNative(attachedRejectedDirect);
+    const attachedRejectedAuthority = ownership.lateAuthority(attachedRejectedDirect.id);
+    assert.equal(await ownership.finish(
+      attachedRejectedDirect,
+      attachedRejectedAttempt,
+      undefined,
+      {allowClaimed: false, directNative: true, lateNative: true}
+    ), false);
+    listeners.attached(attachedRejectedDirect.id);
+    await ownership.snapshot();
+    assert.equal((await ownership.status(attachedRejectedDirect.id)).marker?.attemptId,
+      attachedRejectedAttempt);
+    assert.equal(await ownership.cancelDirectNative(
+      attachedRejectedAuthority,
+      attachedRejectedAttempt
+    ), true);
+    assert.equal((await ownership.status(attachedRejectedDirect.id)).marker, undefined,
+      'an attachment generation change cannot strand an exactly rejected native intent');
+
     // Also tolerate a browser that resolves the API callback with the new tab
     // before dispatching onReplaced. The globally unique nonce finds the old
     // pending record, and the later event moves the completed marker.
@@ -850,8 +919,10 @@ test('reset fences a storage read that resolves after the ownership record was e
             callback(result);
           }
         },
-        remove(key, callback) {
-          delete sessionState[key];
+        remove(keys, callback) {
+          for (const key of Array.isArray(keys) ? keys : [keys]) {
+            delete sessionState[key];
+          }
           callback();
         },
         set(values, callback) {
@@ -919,8 +990,10 @@ test('prunes ownership identity maps through thousands of create, replace, and r
         get(defaults, callback) {
           callback({...defaults, ...sessionState});
         },
-        remove(key, callback) {
-          delete sessionState[key];
+        remove(keys, callback) {
+          for (const key of Array.isArray(keys) ? keys : [keys]) {
+            delete sessionState[key];
+          }
           callback();
         },
         set(values, callback) {

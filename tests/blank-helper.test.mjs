@@ -445,6 +445,50 @@ test('commit retains only helpers whose opener succeeded and restores protected 
   }
 });
 
+test('issue 20: popup cancellation rolls back every helper and restores deterministic focus', async () => {
+  globalThis.chrome = {runtime: {lastError: null}};
+  try {
+    const selected = tab(1, 1, {active: true});
+    const otherOriginal = tab(20, 2, {active: true});
+    const browser = browserHarness([selected, otherOriginal]);
+    const creator = helperCreator(browser);
+    const prepare = createBlankPreparer({
+      activate: value => browser.activateTab(value.id),
+      create: creator.create,
+      read: browser.read,
+      registry: browser.registry,
+      sendMessage() {}
+    });
+
+    const transaction = await prepare({menuItemId: 'discard-tabs'}, selected);
+    assert.equal(creator.helpers.length, 1);
+    assert.equal(browser.tabs.get(otherOriginal.id).active, false);
+    assert.equal(browser.tabs.get(creator.helpers[0].id).active, true);
+    assert.ok(browser.state[STORAGE_KEY]?.[TRANSACTIONS_KEY]?.['transaction-1']);
+
+    const cancellation = Error('popup command was cancelled');
+    cancellation.code = 'POPUP_CANCELLED';
+    await transaction.rollback(cancellation);
+
+    assert.deepEqual(browser.removed, [creator.helpers[0].id]);
+    assert.equal(browser.tabs.has(creator.helpers[0].id), false);
+    assert.equal(browser.tabs.get(otherOriginal.id).active, true);
+    assert.deepEqual(browser.activated, [otherOriginal.id]);
+    assert.equal(stateHasPending(browser.state), false);
+    assert.equal(browser.state[STORAGE_KEY], undefined,
+      'cancellation must leave neither helper records nor a transaction envelope');
+
+    // Rollback is idempotent when both a command catch boundary and later
+    // cancellation cleanup observe the same terminal result.
+    await transaction.rollback(cancellation);
+    assert.deepEqual(browser.removed, [creator.helpers[0].id]);
+    assert.deepEqual(browser.activated, [otherOriginal.id]);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
 test('commit keeps a helper when Edge replaces its successful opener id', async () => {
   globalThis.chrome = {runtime: {lastError: null}};
   try {

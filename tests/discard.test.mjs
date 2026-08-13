@@ -315,6 +315,13 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
       discarded: false
     })).status, 'failed');
     assert.equal(storedMarker(5).state, 'late-native');
+    // The unresolved API Promise retains durable/job authority but no repeating
+    // polling timer (this standalone test must exit naturally with it pending).
+    // Release remains fail-closed and leaves the same discoverable fence.
+    discard.releaseNativeFenceTimeout = 2;
+    await assert.rejects(discard.cancelTakeover(5),
+      /native discard operation is still pending/);
+    assert.equal(discard.takeoverSnapshot().some(job => job.id === 5), true);
 
     const edgeOriginal = {
       id: 6,

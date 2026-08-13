@@ -245,3 +245,148 @@ test('100 mixed jobs serialize only frozen focus pulses and meet the p95 budget'
   assert.equal(activePulseWindows.size, 0);
   assert.deepEqual(scheduler.snapshot(), {active: 0, activeKeys: 0, concurrency: 4, queued: 0});
 });
+
+test('independent CPU and network limits admit native work past saturated reloads', async () => {
+  const scheduler = createTakeoverScheduler({
+    concurrency: 4,
+    resourceLimits: {cpu: 3, network: 1}
+  });
+  const gates = new Map();
+  const events = [];
+  const active = {cpu: 0, network: 0};
+  const maximum = {cpu: 0, network: 0};
+  const run = (id, resources, key) => {
+    const gate = deferred();
+    gates.set(id, gate);
+    return scheduler.schedule(async () => {
+      events.push(`start:${id}`);
+      for (const resource of resources) {
+        active[resource] += 1;
+        maximum[resource] = Math.max(maximum[resource], active[resource]);
+      }
+      await gate.promise;
+      for (const resource of resources) active[resource] -= 1;
+      events.push(`end:${id}`);
+      return id;
+    }, {key, resources});
+  };
+
+  const reloadOne = run('reload-1', ['cpu', 'network']);
+  const reloadTwo = run('reload-2', ['cpu', 'network']);
+  const nativeOne = run('native-1', ['cpu'], 'window:1');
+  const nativeBlockedByKey = run('native-key-peer', ['cpu'], 'window:1');
+  const nativeTwo = run('native-2', ['cpu'], 'window:2');
+  const nativeCpuQueued = run('native-cpu-queued', ['cpu'], 'window:3');
+  await new Promise(resolve => setTimeout(resolve));
+
+  assert.deepEqual(events, ['start:reload-1', 'start:native-1', 'start:native-2']);
+  assert.deepEqual(scheduler.snapshot(), {
+    active: 3,
+    activeKeys: 2,
+    concurrency: 4,
+    queued: 3,
+    resources: {
+      cpu: {active: 3, limit: 3},
+      network: {active: 1, limit: 1}
+    }
+  });
+
+  gates.get('native-2').resolve();
+  assert.equal(await nativeTwo.promise, 'native-2');
+  await new Promise(resolve => setTimeout(resolve));
+  assert.equal(events.includes('start:native-cpu-queued'), true,
+    'free CPU must admit an unrelated native job while network remains saturated');
+  assert.equal(events.includes('start:reload-2'), false,
+    'a second reload must wait for the independent network budget');
+
+  gates.get('reload-1').resolve();
+  assert.equal(await reloadOne.promise, 'reload-1');
+  await new Promise(resolve => setTimeout(resolve));
+  assert.equal(events.includes('start:reload-2'), true);
+  assert.deepEqual(maximum, {cpu: 3, network: 1});
+
+  gates.get('native-1').resolve();
+  assert.equal(await nativeOne.promise, 'native-1');
+  await new Promise(resolve => setTimeout(resolve));
+  assert.equal(events.includes('start:native-key-peer'), true,
+    'matching focus keys remain serialized after resource admission');
+
+  for (const id of ['reload-2', 'native-key-peer', 'native-cpu-queued']) gates.get(id).resolve();
+  assert.deepEqual(await Promise.all([
+    reloadTwo.promise,
+    nativeBlockedByKey.promise,
+    nativeCpuQueued.promise
+  ]), ['reload-2', 'native-key-peer', 'native-cpu-queued']);
+  await new Promise(resolve => setTimeout(resolve));
+  assert.deepEqual(scheduler.snapshot(), {
+    active: 0,
+    activeKeys: 0,
+    concurrency: 4,
+    queued: 0,
+    resources: {
+      cpu: {active: 0, limit: 3},
+      network: {active: 0, limit: 1}
+    }
+  });
+});
+
+test('resource scheduling rejects undeclared classes before queueing work', () => {
+  const scheduler = createTakeoverScheduler({resourceLimits: {cpu: 2}});
+  assert.throws(() => scheduler.schedule(() => true, {resources: ['network']}),
+    /unknown takeover scheduler resource: network/);
+  assert.equal(scheduler.snapshot().queued, 0);
+});
+
+test('priority cleanup jumps queued work without preempting active resource owners', async () => {
+  const scheduler = createTakeoverScheduler({
+    concurrency: 1,
+    resourceLimits: {cpu: 1}
+  });
+  const ownerGate = deferred();
+  const events = [];
+  let active = 0;
+  let maximum = 0;
+  const task = (name, gate) => scheduler.schedule(async () => {
+    active += 1;
+    maximum = Math.max(maximum, active);
+    events.push(`start:${name}`);
+    if (gate) await gate.promise;
+    events.push(`end:${name}`);
+    active -= 1;
+    return name;
+  }, {priority: name === 'cleanup' ? 1 : 0, resources: ['cpu']});
+
+  const owner = task('owner', ownerGate);
+  const queuedNormal = task('normal');
+  const queuedCleanup = task('cleanup');
+  await new Promise(resolve => setTimeout(resolve));
+  assert.deepEqual(events, ['start:owner']);
+  assert.equal(queuedCleanup.started, false,
+    'priority must not preempt the active resource owner');
+  assert.deepEqual(scheduler.snapshot(), {
+    active: 1,
+    activeKeys: 0,
+    concurrency: 1,
+    queued: 2,
+    resources: {cpu: {active: 1, limit: 1}}
+  });
+
+  ownerGate.resolve();
+  assert.equal(await owner.promise, 'owner');
+  assert.equal(await queuedCleanup.promise, 'cleanup');
+  assert.equal(await queuedNormal.promise, 'normal');
+  assert.deepEqual(events, [
+    'start:owner', 'end:owner',
+    'start:cleanup', 'end:cleanup',
+    'start:normal', 'end:normal'
+  ]);
+  assert.equal(maximum, 1, 'priority must retain the global and resource caps');
+  await new Promise(resolve => setTimeout(resolve));
+  assert.deepEqual(scheduler.snapshot(), {
+    active: 0,
+    activeKeys: 0,
+    concurrency: 1,
+    queued: 0,
+    resources: {cpu: {active: 0, limit: 1}}
+  });
+});

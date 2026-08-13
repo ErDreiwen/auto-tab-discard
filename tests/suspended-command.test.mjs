@@ -164,6 +164,163 @@ test('Shift explicitly bypasses suspended protection without losing its audit re
   assert.ok(result.bypassed[0].reasons.some(reason => reason.includes('unsaved-form')));
 });
 
+test('issue 3: every suspended protection is explicit for discarded and Edge-frozen targets', async () => {
+  const cases = [
+    {
+      name: 'persistent whitelist',
+      policy: {whitelist: ['protected.example']},
+      reason: /whitelist/,
+      tab: {url: 'https://protected.example/draft'}
+    },
+    {
+      name: 'session whitelist',
+      policy: {'whitelist.session': ['protected.example']},
+      reason: /whitelist/,
+      tab: {url: 'https://protected.example/draft'}
+    },
+    {
+      name: 'URL-mode allowlist',
+      policy: {mode: 'url-based', 'whitelist-url': ['allowed.example']},
+      reason: /outside the URL-based discard list/,
+      tab: {url: 'https://protected.example/draft'}
+    },
+    {
+      name: 'pinned',
+      policy: {pinned: true},
+      reason: /pinned-tab protection/,
+      tab: {pinned: true}
+    },
+    {
+      name: 'autoDiscardable',
+      policy: {},
+      reason: /not automatically discardable/,
+      tab: {autoDiscardable: false}
+    },
+    {
+      name: 'audible',
+      policy: {audio: true},
+      reason: /tab is audible/,
+      tab: {audible: true}
+    },
+    {
+      name: 'recent access',
+      policy: {period: 60},
+      reason: /not old enough/,
+      tab: {lastAccessed: Date.now()}
+    },
+    {
+      name: 'unknown access age',
+      policy: {period: 60},
+      reason: /last-accessed time is unavailable/,
+      tab: {lastAccessed: undefined}
+    },
+    {
+      name: 'unsaved-form state',
+      policy: {form: true},
+      reason: /unsaved-form state cannot be verified/,
+      rendererOnly: true,
+      tab: {}
+    },
+    {
+      name: 'picture-in-picture state',
+      policy: {audio: true},
+      reason: /picture-in-picture state cannot be verified/,
+      rendererOnly: true,
+      tab: {audible: false}
+    },
+    {
+      name: 'paused-media state',
+      policy: {paused: true},
+      reason: /paused-media state cannot be verified/,
+      rendererOnly: true,
+      tab: {}
+    },
+    {
+      name: 'notification state',
+      policy: {'notification.permission': true},
+      reason: /notification permission cannot be verified/,
+      rendererOnly: true,
+      tab: {}
+    }
+  ];
+  let id = 1_000;
+
+  const execute = async ({definition, medium, shiftKey}) => {
+    const tab = medium === 'discarded' ? externallyDiscarded({
+      id: id++,
+      windowId: 1,
+      ...definition.tab
+    }) : suspended({
+      id: id++,
+      windowId: 1,
+      ...definition.tab
+    });
+    const takeovers = [];
+    const settledMarkers = new Map();
+    const result = await runScopedCommand({
+      check: async () => assert.fail(`${definition.name}/${medium}: suspended target entered metadata`),
+      command: 'discard-tabs',
+      discard: async () => assert.fail(`${definition.name}/${medium}: suspended target used loaded discard`),
+      query: async () => [tab],
+      resolveFresh: async target => claimed(target),
+      selected: {id: 999, incognito: false, index: 99, windowId: 1},
+      shiftKey,
+      suspendedPolicy: {...safePolicy, ...definition.policy},
+      takeover: async target => {
+        takeovers.push(target.id);
+        settledMarkers.set(target.id, {source: 'self', state: 'owned'});
+        return {
+          ok: true,
+          tab: {...target, discarded: true, frozen: false, status: 'unloaded'}
+        };
+      }
+    });
+    return {result, settledMarkers, tab, takeovers};
+  };
+
+  for (const definition of cases) {
+    for (const medium of ['discarded', 'frozen']) {
+      // A browser-discarded renderer no longer has form/PiP/media/notification
+      // state to preserve. The matrix still covers that medium explicitly and
+      // proves that the worker does not invent renderer state. Edge-frozen
+      // renderers retain it and therefore fail closed when it is unavailable.
+      const protectedNormally = definition.rendererOnly !== true || medium === 'frozen';
+      const normal = await execute({definition, medium, shiftKey: false});
+      if (protectedNormally) {
+        assert.deepEqual(normal.takeovers, [], `${definition.name}/${medium}: normal wake`);
+        assert.equal(normal.result.protected.length, 1, `${definition.name}/${medium}: protected count`);
+        assert.match(normal.result.protected[0].reason, definition.reason,
+          `${definition.name}/${medium}: protected reason`);
+      }
+      else {
+        assert.deepEqual(normal.takeovers, [normal.tab.id],
+          `${definition.name}/${medium}: destroyed renderer must not invent protection`);
+        assert.deepEqual(normal.result.protected, [], `${definition.name}/${medium}: invented protection`);
+      }
+
+      const forced = await execute({definition, medium, shiftKey: true});
+      assert.deepEqual(forced.takeovers, [forced.tab.id],
+        `${definition.name}/${medium}: Shift must execute exactly once`);
+      assert.deepEqual(forced.settledMarkers.get(forced.tab.id), {
+        source: 'self',
+        state: 'owned'
+      }, `${definition.name}/${medium}: Shift settlement`);
+      assert.equal(forced.result.succeeded.length, 1,
+        `${definition.name}/${medium}: Shift success accounting`);
+      if (protectedNormally) {
+        assert.equal(forced.result.bypassed.length, 1,
+          `${definition.name}/${medium}: Shift bypass audit`);
+        assert.match(forced.result.bypassed[0].reason, definition.reason,
+          `${definition.name}/${medium}: Shift bypass reason`);
+      }
+      else {
+        assert.deepEqual(forced.result.bypassed, [],
+          `${definition.name}/${medium}: no nonexistent state may be bypassed`);
+      }
+    }
+  }
+});
+
 test('a failed policy read fails closed normally but Shift can still force', async () => {
   for (const shiftKey of [false, true]) {
     const calls = [];

@@ -43,10 +43,16 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
   };
   const calls = [];
   const contested = new Set();
+  const heldNativeIds = new Set();
+  const heldNativeResolvers = new Map();
+  const nativeRejectIds = new Set();
+  const nativeRejectAfterReplacementIds = new Set();
   const alarmListeners = [];
   const scheduledAlarms = new Map();
   let finishNative;
+  let finishNativePhysical;
   let nativeImmediate = false;
+  let nativeCallbackBeforePhysical = false;
   let ignoredStops = 1;
   let nativeFinalStatus = 'unloaded';
   let nativeReplacementId;
@@ -405,36 +411,60 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
           emitUpdated(id, {discarded: true});
           return Promise.reject(Error('tab is already discarded'));
         }
-        return new Promise(resolve => {
+        return new Promise((resolve, reject) => {
           const completeNative = () => {
+            heldNativeResolvers.delete(id);
             finishNative = undefined;
-            tab.discarded = true;
-            tab.status = nativeFinalStatus;
-            let resultTab = tab;
-            if (Number.isInteger(nativeReplacementId)) {
-              const replacementId = nativeReplacementId;
-              nativeReplacementId = undefined;
-              resultTab = {...tab, id: replacementId};
-              liveTabs.delete(id);
-              liveTabs.set(replacementId, resultTab);
-              listeners.replaced.forEach(listener => listener(replacementId, id));
-              emitUpdated(replacementId, {discarded: true, status: nativeFinalStatus});
+            if (nativeRejectIds.delete(id)) {
+              reject(Error('native discard rejected after callback delay'));
+              return;
             }
-            else {
-              emitUpdated(id, {discarded: true, status: nativeFinalStatus});
+            const completePhysical = () => {
+              finishNativePhysical = undefined;
+              tab.discarded = true;
+              tab.status = nativeFinalStatus;
+              let resultTab = tab;
+              if (Number.isInteger(nativeReplacementId)) {
+                const replacementId = nativeReplacementId;
+                nativeReplacementId = undefined;
+                resultTab = {...tab, id: replacementId};
+                liveTabs.delete(id);
+                liveTabs.set(replacementId, resultTab);
+                listeners.replaced.forEach(listener => listener(replacementId, id));
+                emitUpdated(replacementId, {discarded: true, status: nativeFinalStatus});
+              }
+              else {
+                emitUpdated(id, {discarded: true, status: nativeFinalStatus});
+              }
+              if (nativeWakeBeforeCallback) {
+                nativeWakeBeforeCallback = false;
+                resultTab.active = true;
+                resultTab.discarded = false;
+                resultTab.status = 'complete';
+                emitUpdated(resultTab.id, {discarded: false, status: 'complete'});
+              }
+              return clone(resultTab);
+            };
+            if (nativeCallbackBeforePhysical) {
+              nativeCallbackBeforePhysical = false;
+              finishNativePhysical = completePhysical;
+              resolve(clone(tab));
+              return;
             }
-            const result = clone(resultTab);
-            if (nativeWakeBeforeCallback) {
-              nativeWakeBeforeCallback = false;
-              resultTab.active = true;
-              resultTab.discarded = false;
-              resultTab.status = 'complete';
-              emitUpdated(resultTab.id, {discarded: false, status: 'complete'});
+            const result = completePhysical();
+            if (nativeRejectAfterReplacementIds.delete(id)) {
+              reject(Error('native discard rejected after an external replacement'));
+              return;
             }
             resolve(result);
           };
-          finishNative = completeNative;
-          if (nativeImmediate) {
+          if (heldNativeIds.has(id)) {
+            heldNativeResolvers.set(id, completeNative);
+          }
+          else {
+            finishNative = completeNative;
+          }
+          if (nativeImmediate && !heldNativeIds.has(id)) {
             queueMicrotask(completeNative);
           }
         });
@@ -554,6 +584,10 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     assert.equal(settled, false);
     assert.ok(discard.waitForTakeover(1));
     assert.deepEqual(calls, ['reload:1:false', 'stop:1', 'stop:1', 'stop:1', 'discard:1']);
+    assert.deepEqual(discard.takeoverScheduler.snapshot().resources, {
+      cpu: {active: 1, limit: 2},
+      network: {active: 0, limit: 4}
+    }, 'ordinary takeover must release the network budget before renderer/native settlement');
 
     finishNative();
     const result = await command;
@@ -650,6 +684,10 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     const frozenTakeover = discard.takeover(clone(frozen), {manual: true});
     await waitForNative('Edge frozen takeover');
     assert.deepEqual(calls.slice(frozenCallStart), ['discard:62']);
+    assert.deepEqual(discard.takeoverScheduler.snapshot().resources, {
+      cpu: {active: 1, limit: 2},
+      network: {active: 0, limit: 4}
+    }, 'direct frozen ownership must never consume the reload/network budget');
     finishNative();
     const frozenResult = await frozenTakeover;
     assert.equal(frozenResult.ok, true);
@@ -795,6 +833,138 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     discard.takeoverFenceTimeout = savedDirectTakeoverFence;
     discard.releaseNativeFenceTimeout = savedDirectReleaseFence;
 
+    // Once a direct call crosses both timeout fences, a definitive rejection
+    // clears only that call's exact pending authority. A late accepted call
+    // follows the existing promotion path and retains source:self ownership.
+    const lateDirectTabs = [{
+      id: 216,
+      windowId: 216,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://late-direct-rejected.example/'
+    }, {
+      id: 218,
+      windowId: 218,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://late-direct-accepted.example/'
+    }];
+    for (const tab of lateDirectTabs) {
+      liveTabs.set(tab.id, tab);
+      liveTabs.set(tab.id + 1, {
+        id: tab.id + 1,
+        windowId: tab.windowId,
+        index: 1,
+        active: true,
+        discarded: false,
+        frozen: false,
+        status: 'complete',
+        url: `${tab.url}keeper`
+      });
+    }
+    discard.nativeTimeout = 5;
+    discard.takeoverFenceTimeout = 5;
+
+    nativeRejectIds.add(lateDirectTabs[0].id);
+    const rejectedLateDirect = discard.takeover(
+      clone(lateDirectTabs[0]),
+      {manual: true}
+    ).catch(() => false);
+    await waitForNative('late direct native rejection');
+    assert.equal(await rejectedLateDirect, false);
+    assert.equal((await ownership.status(lateDirectTabs[0].id)).marker?.state,
+      'direct-native-pending');
+    finishNative();
+    const rejectedClearDeadline = Date.now() + 1000;
+    while ((await ownership.status(lateDirectTabs[0].id)).marker &&
+        Date.now() < rejectedClearDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal((await ownership.status(lateDirectTabs[0].id)).marker, undefined,
+      'the exact definitively rejected native authority must be cleared');
+    assert.equal(await ownership.hasBlockingNativeIntent(lateDirectTabs[0].id), false);
+    assert.equal(hasTakeover(lateDirectTabs[0].id), false);
+    assert.equal(liveTabs.get(lateDirectTabs[0].id).frozen, true,
+      'a rejected call must leave the frozen target physically untouched');
+
+    const acceptedLateDirect = discard.takeover(
+      clone(lateDirectTabs[1]),
+      {manual: true}
+    ).catch(() => false);
+    await waitForNative('late direct native acceptance');
+    assert.equal(await acceptedLateDirect, false,
+      'the caller times out before the browser reaches its physical boundary');
+    assert.equal((await ownership.status(lateDirectTabs[1].id)).marker?.state,
+      'direct-native-pending');
+    finishNative();
+    const acceptedPromotionDeadline = Date.now() + 1000;
+    let acceptedMarker;
+    while (Date.now() < acceptedPromotionDeadline) {
+      acceptedMarker = (await ownership.status(lateDirectTabs[1].id)).marker;
+      if (acceptedMarker?.state === 'owned' && acceptedMarker.source === 'self') {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal(acceptedMarker?.state, 'owned');
+    assert.equal(acceptedMarker?.source, 'self');
+    assert.equal(await ownership.hasBlockingNativeIntent(lateDirectTabs[1].id), false);
+    assert.equal(hasTakeover(lateDirectTabs[1].id), false);
+
+    const rejectedReplacement = {
+      id: 236,
+      windowId: 236,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://late-direct-rejected-replacement.example/'
+    };
+    liveTabs.set(rejectedReplacement.id, rejectedReplacement);
+    liveTabs.set(237, {
+      id: 237,
+      windowId: rejectedReplacement.windowId,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: 'https://late-direct-rejected-replacement-keeper.example/'
+    });
+    const rejectedReplacementTakeover = discard.takeover(
+      clone(rejectedReplacement),
+      {manual: true}
+    ).catch(() => false);
+    await waitForNative('late rejected direct native replacement');
+    assert.equal(await rejectedReplacementTakeover, false);
+    nativeReplacementId = 238;
+    nativeRejectAfterReplacementIds.add(rejectedReplacement.id);
+    finishNative();
+    const replacementClaimDeadline = Date.now() + 1000;
+    let replacementClaim;
+    while (Date.now() < replacementClaimDeadline) {
+      replacementClaim = (await ownership.status(238)).marker;
+      if (replacementClaim?.state === 'owned') {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal(replacementClaim?.state, 'owned');
+    assert.equal(['physical-only', 'claimed'].includes(replacementClaim?.source), true,
+      'a physically settled external replacement remains conservatively owned');
+    assert.equal(await ownership.hasBlockingNativeIntent(238), false);
+    assert.equal(hasTakeover(238), false);
+
+    discard.nativeTimeout = savedDirectNativeTimeout;
+    discard.takeoverFenceTimeout = savedDirectTakeoverFence;
+
     // Cancellation before tabs.discard is invoked clears the durable direct
     // intent. Release must classify that post-cancel state, then perform its
     // one explicit reload instead of treating the pre-cancel marker as an
@@ -856,6 +1026,128 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       call => call === 'release:129:false'
     ).length, 1);
     assert.equal((await ownership.status(cancelledBeforeNative.id)).marker, undefined);
+
+    // Removal can land after direct-native-pending is durable but before the
+    // mandatory post-persistence read issues tabs.discard(). That exact
+    // never-issued nonce must clear even if onRemoved has already converted it
+    // into a global orphan; an issued native operation is never cleaned here.
+    const removedAfterDirectPersistence = {
+      id: 239,
+      windowId: 239,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://removed-after-direct-persistence.example/'
+    };
+    const removedAfterDirectPersistenceKeeper = {
+      id: 240,
+      windowId: 239,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: 'https://removed-after-direct-persistence-keeper.example/'
+    };
+    liveTabs.set(removedAfterDirectPersistence.id, removedAfterDirectPersistence);
+    liveTabs.set(removedAfterDirectPersistenceKeeper.id, removedAfterDirectPersistenceKeeper);
+    const originalBeginDirectNative = ownership.beginDirectNative;
+    let removalBoundaryReached;
+    const removalBoundary = new Promise(resolve => { removalBoundaryReached = resolve; });
+    ownership.beginDirectNative = async tab => {
+      const nonce = await originalBeginDirectNative(tab);
+      liveTabs.delete(tab.id);
+      listeners.removed.forEach(listener => listener(tab.id));
+      removalBoundaryReached();
+      return nonce;
+    };
+    const removedAfterPersistenceCallStart = calls.length;
+    try {
+      const removedAfterPersistenceTakeover = discard.takeover(
+        clone(removedAfterDirectPersistence),
+        {manual: true}
+      ).catch(() => false);
+      await removalBoundary;
+      assert.equal(await removedAfterPersistenceTakeover, false);
+      const orphanClearDeadline = Date.now() + 1000;
+      while ((await ownership.status(removedAfterDirectPersistence.id)).marker &&
+          Date.now() < orphanClearDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      const removedState = await ownership.status(removedAfterDirectPersistence.id);
+      assert.equal(removedState.marker, undefined);
+      assert.notEqual(removedState.nativeOrphan, true);
+      assert.equal(await ownership.hasBlockingNativeIntent(removedAfterDirectPersistence.id), false);
+      assert.equal(calls.slice(removedAfterPersistenceCallStart).some(
+        call => call === `discard:${removedAfterDirectPersistence.id}`
+      ), false, 'post-persistence removal must abort before native invocation');
+      assert.equal(hasTakeover(removedAfterDirectPersistence.id), false);
+    }
+    finally {
+      ownership.beginDirectNative = originalBeginDirectNative;
+    }
+
+    const removedAfterNativeInvocation = {
+      id: 241,
+      windowId: 241,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://removed-after-native-invocation.example/'
+    };
+    liveTabs.set(removedAfterNativeInvocation.id, removedAfterNativeInvocation);
+    liveTabs.set(242, {
+      id: 242,
+      windowId: 241,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: 'https://removed-after-native-invocation-keeper.example/'
+    });
+    const savedInvokedRemovalNativeTimeout = discard.nativeTimeout;
+    const savedInvokedRemovalFenceTimeout = discard.takeoverFenceTimeout;
+    discard.nativeTimeout = 5;
+    discard.takeoverFenceTimeout = 5;
+    nativeRejectIds.add(removedAfterNativeInvocation.id);
+    const invokedRemovalTakeover = discard.takeover(
+      clone(removedAfterNativeInvocation),
+      {manual: true}
+    ).catch(() => false);
+    await waitForNative('removal after native invocation');
+    liveTabs.delete(removedAfterNativeInvocation.id);
+    listeners.removed.forEach(listener => listener(removedAfterNativeInvocation.id));
+    assert.equal(await invokedRemovalTakeover, false);
+    const invokedOrphanDeadline = Date.now() + 1000;
+    let invokedOrphanState;
+    while (Date.now() < invokedOrphanDeadline) {
+      invokedOrphanState = await ownership.status(removedAfterNativeInvocation.id);
+      if (invokedOrphanState.marker?.state === 'direct-native-orphan') {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal(invokedOrphanState?.marker?.state, 'direct-native-orphan',
+      'issued native work must retain its fail-closed orphan authority');
+    assert.equal(invokedOrphanState.nativeOrphan, true);
+    assert.equal(hasTakeover(removedAfterNativeInvocation.id), true);
+    finishNative();
+    const invokedRejectionClearDeadline = Date.now() + 1000;
+    while (((await ownership.status(removedAfterNativeInvocation.id)).marker ||
+        hasTakeover(removedAfterNativeInvocation.id)) &&
+        Date.now() < invokedRejectionClearDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    assert.equal((await ownership.status(removedAfterNativeInvocation.id)).marker, undefined,
+      'only the later definitive rejection may retire issued orphan authority');
+    assert.equal(hasTakeover(removedAfterNativeInvocation.id), false);
+    discard.nativeTimeout = savedInvokedRemovalNativeTimeout;
+    discard.takeoverFenceTimeout = savedInvokedRemovalFenceTimeout;
 
     // The release reservation is acquired synchronously before cancellation.
     // Even when cancellation itself pauses, no fresh takeover may start in
@@ -1161,6 +1453,234 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     finishNative();
     assert.equal(await removalHeadTakeover, true);
 
+    // A frozen job waiting for the CPU/API phase must retain only its recoverable
+    // takeover-queued request. Persisting direct-native-pending before admission
+    // would turn removal into a global orphan fence even though tabs.discard()
+    // was never invoked for that target.
+    const frozenCpuBlockers = [210, 211].map((id, index) => ({
+      id,
+      windowId: 40 + index,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: `https://frozen-cpu-blocker-${index}.example/`
+    }));
+    const frozenCpuKeepers = frozenCpuBlockers.map((tab, index) => ({
+      id: 212 + index,
+      windowId: tab.windowId,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: `https://frozen-cpu-keeper-${index}.example/`
+    }));
+    const removedCpuWaiter = {
+      id: 214,
+      windowId: 42,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://removed-frozen-cpu-waiter.example/'
+    };
+    const removedCpuWaiterKeeper = {
+      id: 215,
+      windowId: removedCpuWaiter.windowId,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: 'https://removed-frozen-cpu-waiter-keeper.example/'
+    };
+    for (const tab of [...frozenCpuBlockers, ...frozenCpuKeepers,
+      removedCpuWaiter, removedCpuWaiterKeeper]) {
+      liveTabs.set(tab.id, tab);
+    }
+    frozenCpuBlockers.forEach(tab => heldNativeIds.add(tab.id));
+    const frozenBlockerTakeovers = frozenCpuBlockers.map(tab =>
+      discard.takeover(clone(tab), {manual: true}));
+    try {
+      const blockerDeadline = Date.now() + 1000;
+      while (heldNativeResolvers.size < frozenCpuBlockers.length && Date.now() < blockerDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      assert.equal(heldNativeResolvers.size, 2);
+      assert.deepEqual(discard.takeoverScheduler.snapshot().resources, {
+        cpu: {active: 2, limit: 2},
+        network: {active: 0, limit: 4}
+      });
+
+      const waiterCallStart = calls.length;
+      const removedWaiterTakeover = discard.takeover(
+        clone(removedCpuWaiter),
+        {manual: true}
+      ).catch(() => false);
+      const queuedDeadline = Date.now() + 1000;
+      let queuedMarker;
+      while (Date.now() < queuedDeadline) {
+        queuedMarker = (await ownership.status(removedCpuWaiter.id)).marker;
+        if (queuedMarker?.state === 'takeover-queued' &&
+            discard.takeoverScheduler.snapshot().queued >= 1) {
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      assert.equal(queuedMarker?.state, 'takeover-queued');
+      assert.equal(calls.slice(waiterCallStart).includes(`discard:${removedCpuWaiter.id}`), false);
+
+      liveTabs.delete(removedCpuWaiter.id);
+      listeners.removed.forEach(listener => listener(removedCpuWaiter.id));
+      const waiterTimeout = Symbol('waiter-timeout');
+      const waiterResult = await Promise.race([
+        removedWaiterTakeover,
+        new Promise(resolve => setTimeout(resolve, 250, waiterTimeout))
+      ]);
+      assert.notEqual(waiterResult, waiterTimeout,
+        'removed resource-queued work must cancel before either CPU owner settles');
+      assert.equal(waiterResult, false);
+      assert.equal(heldNativeResolvers.size, 2,
+        'cancelling the waiter must not disturb either running native owner');
+      assert.equal((await ownership.status(removedCpuWaiter.id)).marker, undefined);
+      assert.equal(Object.values(await ownership.snapshot()).some(marker =>
+        marker.state === 'direct-native-orphan'), false);
+      assert.equal(discard.takeoverSnapshot().some(job => job.id === removedCpuWaiter.id), false);
+    }
+    finally {
+      heldNativeIds.clear();
+      for (const resolve of [...heldNativeResolvers.values()]) {
+        resolve();
+      }
+      await Promise.all(frozenBlockerTakeovers);
+    }
+
+    // Resource phases alone cannot bound memory between phases: a fast reload
+    // could otherwise wake an entire batch while only two CPU jobs prepare it.
+    // Four full transactions are admitted, later targets stay truly discarded,
+    // and cancelling an admission-queued target consumes no transaction slot.
+    const transactionTargets = Array.from({length: 6}, (_, index) => ({
+      id: 220 + index,
+      windowId: 220 + index,
+      index: 0,
+      active: false,
+      discarded: true,
+      frozen: false,
+      status: 'unloaded',
+      url: `https://transaction-admission-${index}.example/`
+    }));
+    const transactionKeepers = transactionTargets.map((tab, index) => ({
+      id: 230 + index,
+      windowId: tab.windowId,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      url: `https://transaction-admission-keeper-${index}.example/`
+    }));
+    for (const tab of [...transactionTargets, ...transactionKeepers]) {
+      liveTabs.set(tab.id, tab);
+    }
+    const savedAdmissionNativeTimeout = discard.nativeTimeout;
+    const savedAdmissionFenceTimeout = discard.takeoverFenceTimeout;
+    discard.nativeTimeout = 1000;
+    discard.takeoverFenceTimeout = 1000;
+    transactionTargets.forEach(tab => heldNativeIds.add(tab.id));
+    const admissionCallStart = calls.length;
+    const transactionTakeovers = transactionTargets.map(tab =>
+      discard.takeover(clone(tab), {manual: true}).catch(() => false));
+    try {
+      const admissionDeadline = Date.now() + 1000;
+      while (Date.now() < admissionDeadline) {
+        const jobs = discard.takeoverSnapshot().filter(job =>
+          transactionTargets.some(tab => tab.id === job.id));
+        if (jobs.filter(job => job.started).length === 4 &&
+            jobs.filter(job => !job.started).length === 2 &&
+            heldNativeResolvers.size === 2) {
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      const admissionJobs = discard.takeoverSnapshot().filter(job =>
+        transactionTargets.some(tab => tab.id === job.id));
+      assert.equal(admissionJobs.filter(job => job.started).length, 4);
+      assert.equal(admissionJobs.filter(job => !job.started).length, 2);
+      assert.deepEqual(discard.takeoverAdmission.snapshot(), {
+        active: 4,
+        activeKeys: 0,
+        concurrency: 4,
+        queued: 2
+      });
+      assert.deepEqual(discard.takeoverScheduler.snapshot().resources, {
+        cpu: {active: 2, limit: 2},
+        network: {active: 0, limit: 4}
+      });
+      assert.deepEqual(calls.slice(admissionCallStart).filter(call =>
+        call.startsWith('reload:')).map(call => Number(call.split(':')[1])).sort((a, b) => a - b),
+      transactionTargets.slice(0, 4).map(tab => tab.id));
+      for (const target of transactionTargets.slice(0, 4)) {
+        assert.equal(liveTabs.get(target.id).discarded, false,
+          'only admitted transactions may be awake between phases');
+      }
+      for (const target of transactionTargets.slice(4)) {
+        assert.equal(liveTabs.get(target.id).discarded, true,
+          'admission-queued transactions must retain their unloaded renderer');
+      }
+
+      assert.equal(await discard.cancelTakeover(transactionTargets[4].id), true);
+      assert.equal(await transactionTakeovers[4], false);
+      assert.equal(liveTabs.get(transactionTargets[4].id).discarded, true);
+      assert.equal(calls.slice(admissionCallStart).some(call =>
+        call === `reload:${transactionTargets[4].id}:false`), false);
+      assert.deepEqual(discard.takeoverAdmission.snapshot(), {
+        active: 4,
+        activeKeys: 0,
+        concurrency: 4,
+        queued: 1
+      });
+
+      let remainingSettled = false;
+      const remaining = Promise.all(transactionTakeovers.filter((value, index) => index !== 4))
+        .then(value => {
+          remainingSettled = true;
+          return value;
+        });
+      const drainDeadline = Date.now() + 3000;
+      while (!remainingSettled && Date.now() < drainDeadline) {
+        for (const resolve of [...heldNativeResolvers.values()]) {
+          resolve();
+        }
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      assert.equal(remainingSettled, true, 'every admitted transaction must drain in bounded waves');
+      assert.equal((await remaining).every(value => value === true), true);
+      assert.equal(calls.slice(admissionCallStart).filter(call =>
+        call.startsWith('reload:')).length, 5);
+      assert.deepEqual(discard.takeoverAdmission.snapshot(), {
+        active: 0,
+        activeKeys: 0,
+        concurrency: 4,
+        queued: 0
+      });
+      await new Promise(resolve => setTimeout(resolve));
+      assert.deepEqual(discard.takeoverScheduler.snapshot().resources, {
+        cpu: {active: 0, limit: 2},
+        network: {active: 0, limit: 4}
+      });
+    }
+    finally {
+      heldNativeIds.clear();
+      for (const resolve of [...heldNativeResolvers.values()]) {
+        resolve();
+      }
+      discard.nativeTimeout = savedAdmissionNativeTimeout;
+      discard.takeoverFenceTimeout = savedAdmissionFenceTimeout;
+    }
+
     const releaseRace = {
       id: 5,
       windowId: 1,
@@ -1176,25 +1696,34 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     assert.equal(Number.isInteger(releaseRaceKeeperId), true);
     const savedTakeoverFenceTimeout = discard.takeoverFenceTimeout;
     const savedReleaseNativeFenceTimeout = discard.releaseNativeFenceTimeout;
+    const savedNativeSettleTimeout = discard.nativeSettleTimeout;
     discard.nativeTimeout = 5;
     discard.takeoverFenceTimeout = 5;
     discard.releaseNativeFenceTimeout = 200;
+    discard.nativeSettleTimeout = 5;
+    nativeCallbackBeforePhysical = true;
     const racingTakeover = discard.takeover(clone(releaseRace), {manual: true}).catch(() => false);
     await waitForNative('joined takeover');
+    finishNative();
+    assert.equal(typeof finishNativePhysical, 'function',
+      'the browser callback may accept before the physical discard settles');
     let releaseSettled = false;
     const release = releasePhaseTarget(releaseRace).then(result => {
       releaseSettled = true;
       return result;
     });
-    // Cross both the normal native timeout and takeover fence. The job remains
-    // live and release remains joined to the unresolved browser operation.
+    // Cross both caller fences and the legacy physical-settlement timeout after
+    // API acceptance. The job remains live and release stays joined to the
+    // authoritative physical boundary, not merely to the resolved callback.
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(releaseSettled, false,
       'release must not report success ahead of a late native discard');
     assert.equal(hasTakeover(releaseRace.id), true,
       'late native authority must remain discoverable to release scopes');
     assert.equal(calls.at(-1), 'discard:5');
-    finishNative();
+    assert.equal(liveTabs.get(releaseRace.id).discarded, false,
+      'release must not run ahead of delayed physical settlement');
+    finishNativePhysical();
     assert.equal(await racingTakeover, false);
     await release;
     assert.equal(calls.at(-1), 'release:5:false');
@@ -1204,6 +1733,64 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(calls.length, postReleaseCallCount,
       'late native settlement must not trigger a second wake or re-discard');
+
+    // Ordinary renderer-prepared discard uses the same accepted-native
+    // boundary even without a takeover transaction. Its bounded caller may
+    // report timeout, but release still discovers and joins the physical call.
+    const ordinaryBoundary = {
+      id: 221,
+      windowId: 221,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      title: 'ordinary delayed native target',
+      url: 'https://ordinary-delayed-native.example/'
+    };
+    const ordinaryBoundaryKeeper = {
+      id: 222,
+      windowId: 221,
+      index: 1,
+      active: true,
+      discarded: false,
+      frozen: false,
+      status: 'complete',
+      title: 'ordinary delayed native keeper',
+      url: 'https://ordinary-delayed-native-keeper.example/'
+    };
+    liveTabs.set(ordinaryBoundary.id, ordinaryBoundary);
+    liveTabs.set(ordinaryBoundaryKeeper.id, ordinaryBoundaryKeeper);
+    nativeCallbackBeforePhysical = true;
+    const ordinaryBoundaryCallStart = calls.length;
+    const ordinaryDiscard = discard.perform(clone(ordinaryBoundary));
+    await waitForNative('ordinary accepted-native boundary');
+    finishNative();
+    assert.equal(typeof finishNativePhysical, 'function');
+    const ordinaryResult = await ordinaryDiscard;
+    assert.equal(ordinaryResult.status, 'failed');
+    assert.match(ordinaryResult.reason, /native discard timed out/);
+    assert.equal(hasTakeover(ordinaryBoundary.id), true,
+      'ordinary timed-out native work must remain in the release registry');
+    let ordinaryReleaseSettled = false;
+    const ordinaryRelease = releasePhaseTarget(ordinaryBoundary).then(result => {
+      ordinaryReleaseSettled = true;
+      return result;
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(ordinaryReleaseSettled, false);
+    assert.equal(calls.slice(ordinaryBoundaryCallStart).includes('release:221:false'), false);
+    finishNativePhysical();
+    await ordinaryRelease;
+    await assertReleaseInvariant(ordinaryBoundary, ordinaryBoundaryKeeper.id);
+    assert.deepEqual(calls.slice(ordinaryBoundaryCallStart), [
+      'discard:221',
+      'release:221:false'
+    ]);
+    const postOrdinaryReleaseCalls = calls.length;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(calls.length, postOrdinaryReleaseCalls,
+      'ordinary late settlement must not rediscard after release success');
 
     // If Chromium never reaches that boundary inside release's own fence, the
     // command fails explicitly and retains the live transaction. Once the same
@@ -1266,6 +1853,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     discard.nativeTimeout = 200;
     discard.takeoverFenceTimeout = savedTakeoverFenceTimeout;
     discard.releaseNativeFenceTimeout = savedReleaseNativeFenceTimeout;
+    discard.nativeSettleTimeout = savedNativeSettleTimeout;
 
     // A completed source:self transaction has no live job to union into the
     // command scope. Its queried suspended snapshot still releases exactly
@@ -1451,6 +2039,10 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       await new Promise(resolve => setTimeout(resolve, 1));
     }
     assert.equal(typeof finishReloadCallback, 'function');
+    assert.deepEqual(discard.takeoverScheduler.snapshot().resources, {
+      cpu: {active: 0, limit: 2},
+      network: {active: 1, limit: 4}
+    }, 'the reload callback gap must consume only the network/RAM budget');
     let callbackGapReleaseSettled = false;
     const callbackGapRelease = releasePhaseTarget(callbackGap).then(result => {
       callbackGapReleaseSettled = true;
@@ -1747,14 +2339,24 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     nativeFinalStatus = 'loading';
     discard.nativeSettleTimeout = 30;
     discard.reloadStartGrace = 0;
+    const savedFalseSuccessFence = discard.takeoverFenceTimeout;
+    discard.takeoverFenceTimeout = 30;
     callStart = calls.length;
     const falseTakeover = discard.takeover(clone(falseSuccess), {manual: true});
     await waitForNative('false native success takeover');
     finishNative();
-    await assert.rejects(falseTakeover, /did not settle in the browser discard state/);
+    await assert.rejects(falseTakeover, /native discard timed out/);
     assert.deepEqual(calls.slice(callStart), ['reload:25:false', 'stop:25', 'stop:25', 'discard:25']);
     assert.notEqual((await ownership.status(25)).marker?.source, 'self');
+    assert.ok(discard.waitForTakeover(25),
+      'accepted native work stays fenced until an authoritative browser boundary');
+    activateLiveTab(25);
+    for (let i = 0; i < 100 && hasTakeover(25); i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
     assert.equal(discard.waitForTakeover(25), undefined);
+    liveTabs.get(25).active = false;
+    discard.takeoverFenceTimeout = savedFalseSuccessFence;
     assert.equal(listeners.updated.length, updatedListenerBaseline);
 
     // A transient missing live read during Edge replacement is not proof of

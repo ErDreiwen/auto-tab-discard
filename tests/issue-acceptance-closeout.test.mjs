@@ -9,6 +9,10 @@ import {
 } from '../v3/worker/core/command-scope.mjs';
 import {runEntryCommand} from '../v3/worker/core/entry.mjs';
 import {
+  createPopupProgressManager,
+  POPUP_CODES
+} from '../v3/worker/core/popup-progress.mjs';
+import {
   commitSettingsImport,
   parseSettingsBackup,
   RAW_BACKUP_LABEL,
@@ -41,6 +45,80 @@ const runGcProbe = source => {
 
 const sortedIds = values => values.map(value => value?.tab?.id ?? value?.id ?? value)
   .toSorted((a, b) => a - b);
+
+test('issue 2: false discard results fail visibly for all seven discard commands', async () => {
+  const commands = [
+    'discard-tab',
+    'discard-tree',
+    'discard-window',
+    'discard-rights',
+    'discard-lefts',
+    'discard-other-windows',
+    'discard-tabs'
+  ];
+
+  for (const [ordinal, command] of commands.entries()) {
+    const selected = {
+      active: false,
+      discarded: false,
+      frozen: false,
+      id: 10_000 + ordinal * 10,
+      incognito: false,
+      index: 5,
+      status: 'complete',
+      url: `https://selected-${command}.example/`,
+      windowId: 100 + ordinal,
+      windowType: 'normal'
+    };
+    const target = command === 'discard-tab' || command === 'discard-tree' ? selected : {
+      ...selected,
+      active: false,
+      id: selected.id + 1,
+      index: command === 'discard-rights' ? 6 : 4,
+      url: `https://target-${command}.example/`,
+      windowId: command === 'discard-other-windows' ? selected.windowId + 1 : selected.windowId
+    };
+    const manager = createPopupProgressManager();
+    const request = {cmd: command, tabId: selected.id, windowId: selected.windowId};
+    const snapshot = await manager.run(request, async progress => {
+      await progress.addTargets([target]);
+      if (command === 'discard-tab' || command === 'discard-tree') {
+        return runDirectDiscardCommand({
+          activate: async () => assert.fail(`${command}: inactive target needs no keeper`),
+          allTabs: [target],
+          command,
+          discard: async () => false,
+          inProgress: () => false,
+          notifyNoKeeper: () => assert.fail(`${command}: inactive target is not keeper-blocked`),
+          selected,
+          shiftKey: true,
+          takeover: async () => assert.fail(`${command}: loaded target must not use takeover`),
+          targets: [target]
+        });
+      }
+      return runScopedCommand({
+        check: async () => assert.fail(`${command}: Shift must use the forced loaded path`),
+        command,
+        discard: async () => false,
+        query: async () => [target],
+        selected,
+        shiftKey: true,
+        takeover: async () => assert.fail(`${command}: loaded target must not use takeover`)
+      });
+    });
+
+    assert.equal(snapshot.state, 'failed', command);
+    assert.equal(snapshot.errorCode, POPUP_CODES.COMMAND_FAILED, command);
+    assert.deepEqual(snapshot.summary, {failed: 1, skipped: 0, success: 0}, command);
+    assert.deepEqual(snapshot.outcomes[target.id], {
+      code: POPUP_CODES.TAB_FAILED,
+      status: 'failed',
+      tabId: target.id
+    }, command);
+    assert.deepEqual(await manager.snapshot(request), snapshot,
+      `${command}: useful terminal failure must remain available after popup recreation`);
+  }
+});
 
 test('issue 8: mixed no-keeper group settles loaded, frozen, and external children', async () => {
   const active = {

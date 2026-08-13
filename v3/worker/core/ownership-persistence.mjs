@@ -190,10 +190,14 @@ const createOwnershipPersistence = api => {
   let recordCount;
   const metrics = {
     bytesWritten: 0,
+    coalescedMutations: 0,
     loadCalls: 0,
+    maxBatchMutations: 0,
     maxQueueLatencyMs: 0,
     maxWriteBytes: 0,
     migrations: 0,
+    mutationBatches: 0,
+    mutationsPersisted: 0,
     noops: 0,
     queueLatencyMs: 0,
     queueSamples: 0,
@@ -275,8 +279,9 @@ const createOwnershipPersistence = api => {
     }
   });
   const removeKeys = async (area, keys) => {
-    for (const key of [...new Set(keys)]) {
-      await removeOne(area, key);
+    const unique = [...new Set(keys)];
+    if (unique.length) {
+      await removeOne(area, unique.length === 1 ? unique[0] : unique);
     }
   };
   const ownershipKeys = values => Object.keys(values || {}).filter(ownershipKey);
@@ -286,19 +291,33 @@ const createOwnershipPersistence = api => {
       await removeKeys(area, keys);
     }
   };
-  const writeState = async (area, state, phase = ROOT_READY) => {
-    const values = {[STORAGE_KEY]: phase};
+  const recordValues = state => {
+    const values = {};
     for (const [key, marker] of Object.entries(state)) {
       const id = Number(key);
       values[recordKey(id)] = recordEnvelope(id, marker);
     }
-    await set(area, values);
+    return values;
   };
   const migrate = async (sourceArea, sourceValues, state, current) => {
     if (!current()) {
       return state;
     }
-    await writeState(primary, state, ROOT_MIGRATING);
+    // Keep the legacy/fallback root authoritative while writing envelopes. A
+    // multi-key storage call can report failure after applying only a prefix;
+    // on restart that old root lets load() discard the partial records and
+    // retry the complete migration instead of trusting a truncated v2 state.
+    const records = recordValues(state);
+    if (Object.keys(records).length) {
+      await set(primary, records);
+    }
+    if (!current()) {
+      return state;
+    }
+    // Only publish the migrating root after every record write succeeded. From
+    // here onward each root transition is a single-key operation; a torn
+    // migrating phase therefore always has a complete record set to resume.
+    await set(primary, {[STORAGE_KEY]: ROOT_MIGRATING});
     if (!current()) {
       return state;
     }
@@ -495,9 +514,19 @@ const createOwnershipPersistence = api => {
     metrics.queueSamples += 1;
     metrics.maxQueueLatencyMs = Math.max(metrics.maxQueueLatencyMs, latency);
   };
+  const observeMutationBatch = size => {
+    size = Math.max(0, Math.floor(Number(size) || 0));
+    if (!size) {
+      return;
+    }
+    metrics.mutationBatches += 1;
+    metrics.mutationsPersisted += size;
+    metrics.coalescedMutations += Math.max(0, size - 1);
+    metrics.maxBatchMutations = Math.max(metrics.maxBatchMutations, size);
+  };
   const diagnostics = () => ({...metrics});
 
-  return {clear, diagnostics, load, observeQueueLatency, persist};
+  return {clear, diagnostics, load, observeMutationBatch, observeQueueLatency, persist};
 };
 
 export {

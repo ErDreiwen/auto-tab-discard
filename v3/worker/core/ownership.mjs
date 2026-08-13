@@ -14,6 +14,12 @@ const attemptOrigins = new Map();
 const takeoverAttempts = new Map();
 const observedDiscards = new Map();
 const generations = new Map();
+// A destructive mutation can report failure after its storage call applied.
+// Keep only the exact nonce whose in-memory authority was already retired so a
+// later certainty reconciliation can finish that idempotent cleanup without
+// replaying the mutation task or guessing from live tab shape.
+const retiredDirectNativeAttempts = new Set();
+const retiredTakeoverQueues = new Set();
 // Edge can replace a tab id as part of tabs.discard(). Treat the replacement
 // as the same logical tab so the nonce written before the native call remains
 // authoritative when its callback and lifecycle events arrive on different ids.
@@ -27,6 +33,9 @@ let loading;
 // cannot repopulate the in-memory cache after the persisted record was erased.
 let cacheGeneration = 0;
 let writes = Promise.resolve();
+const MUTATION_BATCH_LIMIT = 64;
+const mutationQueue = [];
+let mutationDrain;
 // Browser mutations that can script, focus, reload, or discard serialize with
 // the two operations that may create an unattributed global native fence
 // (startup reconciliation and predecessor removal). This closes the
@@ -37,6 +46,16 @@ let nativeMutationTail = Promise.resolve();
 // conversion is serialized. A guard that already owns the serializer must
 // still observe a removal delivered while it awaits storage/reconciliation.
 let nativeRemovalGeneration = 0;
+// A failed storage mutation may have partially applied a multi-record batch.
+// Cache invalidation alone cannot make that state authoritative: reconcile the
+// durable records with live tabs before any later status/native guard relies on
+// them. Mutation tasks are never replayed.
+let persistenceUncertain = false;
+// A failed onRemoved transition can leave a durable direct-native-pending
+// marker under an id that no longer exists. That is the same unresolved global
+// authority as an orphan, even though the failed write could not encode it yet.
+// Keep guards closed until a later reconciliation durably repairs the marker.
+let nativeRemovalPersistenceUncertain = false;
 const serializeNativeMutation = task => {
   const previous = nativeMutationTail;
   let release;
@@ -131,7 +150,28 @@ const directNativeOrphanMarker = attemptId => ({
   updatedAt: Date.now()
 });
 const isDirectNativeOrphan = marker => marker?.state === 'direct-native-orphan';
-const nativeOrphanIn = state => Object.values(state).some(isDirectNativeOrphan);
+const directNativeNonce = marker => typeof marker?.attemptId === 'string' &&
+  (marker.state === 'direct-native-pending' || marker.state === 'direct-native-orphan' ||
+    (marker.state === 'owned' && marker.source === 'physical-only')) ? marker.attemptId : undefined;
+const nativeOrphanIn = state => {
+  const nonces = new Set();
+  for (const marker of Object.values(state)) {
+    if (isDirectNativeOrphan(marker)) {
+      return true;
+    }
+    const nonce = directNativeNonce(marker);
+    if (nonce && nonces.has(nonce)) {
+      // A globally unique direct-native nonce on multiple records is unresolved
+      // lineage even when both numeric ids are currently live (the predecessor
+      // id may have been reused while MV3 was stopped). Never guess a winner.
+      return true;
+    }
+    if (nonce) {
+      nonces.add(nonce);
+    }
+  }
+  return false;
+};
 const lateNativeMarker = (attemptId, visual) => ({
   state: 'late-native',
   source: 'self-pending',
@@ -222,39 +262,277 @@ const mutationView = base => {
     }
     return base;
   };
-  return {changed, commit, view};
+  const apply = target => {
+    for (const key of changed) {
+      if (deleted.has(key)) {
+        delete target[key];
+      }
+      else {
+        target[key] = overlay[key];
+      }
+    }
+    return target;
+  };
+  return {apply, changed, commit, view};
 };
 
 // All ownership mutations share one recoverable tail so concurrent tab events
-// cannot overwrite one another's read-modify-write storage operations.
-const mutate = (task, operationEpoch = epoch) => {
+// cannot overwrite one another's read-modify-write storage operations. Adjacent
+// mutations on disjoint tab records share one bounded storage delta. A repeated
+// key is a durability boundary: flush the earlier marker before applying the
+// later change so pending native authority can never be coalesced away before
+// its caller is released.
+const runMutationEntries = async entries => {
+  const resolveEntry = (entry, value) => {
+    if (!entry.settled) {
+      entry.settled = true;
+      entry.resolve(value);
+    }
+  };
+  const rejectEntry = (entry, error) => {
+    if (!entry.settled) {
+      entry.settled = true;
+      entry.reject(error);
+    }
+  };
+  const rejectEntries = (items, error) => {
+    for (const entry of items) {
+      rejectEntry(entry, error);
+    }
+  };
+
+  try {
+    let previous = await load();
+    let transaction = mutationView(previous);
+    let changed = new Set();
+    let pending = [];
+    let failedBoundary;
+
+    const resetSegment = () => {
+      previous = cached || previous;
+      transaction = mutationView(previous);
+      changed = new Set();
+      pending = [];
+    };
+    const settleFalse = items => {
+      for (const entry of items) {
+        resolveEntry(entry, false);
+      }
+    };
+    const flush = async () => {
+      if (!pending.length) {
+        return {status: 'empty'};
+      }
+      const items = pending;
+      const keys = changed;
+      const currentTransaction = transaction;
+      if (resetting || items.some(entry => entry.operationEpoch !== epoch)) {
+        settleFalse(items);
+        resetSegment();
+        return {status: 'reset'};
+      }
+      try {
+        await persistence.persist(previous, currentTransaction.view, keys);
+        if (resetting || items.some(entry => entry.operationEpoch !== epoch)) {
+          settleFalse(items);
+          resetSegment();
+          return {status: 'reset'};
+        }
+        cached = currentTransaction.commit();
+        persistence.observeMutationBatch(items.length);
+        for (const entry of items) {
+          resolveEntry(entry, entry.result);
+        }
+        resetSegment();
+        return {status: 'committed'};
+      }
+      catch (error) {
+        // A storage call can fail after partially applying a multi-key delta.
+        // Force the next batch to reload its durable base and reject every
+        // mutation ordered behind this boundary. Replaying tasks is unsafe:
+        // some tasks perform asynchronous browser reads and other side effects.
+        cached = undefined;
+        loading = undefined;
+        if (items.length > 1 || keys.size > 1 ||
+            items.some(entry => entry.reconcileOnFailure)) {
+          persistenceUncertain = true;
+        }
+        rejectEntries(items, error);
+        resetSegment();
+        return {error, status: 'failed'};
+      }
+    };
+
+    for (const entry of entries) {
+      persistence.observeQueueLatency(entry.queuedAt);
+      if (failedBoundary) {
+        if (entry.reconcileOnFailure) {
+          persistenceUncertain = true;
+        }
+        rejectEntry(entry, failedBoundary);
+        continue;
+      }
+      if (resetting || entry.operationEpoch !== epoch) {
+        const outcome = await flush();
+        if (outcome.status === 'failed') {
+          failedBoundary = outcome.error;
+          rejectEntry(entry, outcome.error);
+        }
+        else {
+          resolveEntry(entry, false);
+        }
+        continue;
+      }
+
+      // Only explicitly declared synchronous record mutations may share a
+      // durability batch. Browser reads and other asynchronous/barrier tasks
+      // must not even start until every earlier marker is durable: otherwise a
+      // held query could indefinitely withhold a direct-native intent that was
+      // already ordered ahead of it.
+      if (!entry.coalesce) {
+        const outcome = await flush();
+        if (outcome.status === 'failed') {
+          failedBoundary = outcome.error;
+          if (entry.reconcileOnFailure) {
+            persistenceUncertain = true;
+          }
+          rejectEntry(entry, outcome.error);
+          continue;
+        }
+        if (outcome.status === 'reset') {
+          resolveEntry(entry, false);
+          continue;
+        }
+      }
+
+      const change = mutationView(transaction.view);
+      try {
+        const result = entry.task(change.view);
+        if (entry.coalesce && result && typeof result.then === 'function') {
+          throw Error('coalesced ownership mutations must be synchronous');
+        }
+        entry.result = entry.coalesce ? result : await result;
+      }
+      catch (error) {
+        const outcome = await flush();
+        if (outcome.status === 'failed') {
+          failedBoundary = outcome.error;
+        }
+        if (entry.reconcileOnFailure) {
+          persistenceUncertain = true;
+        }
+        rejectEntry(entry, error);
+        continue;
+      }
+      if (resetting || entry.operationEpoch !== epoch) {
+        const outcome = await flush();
+        if (outcome.status === 'failed') {
+          failedBoundary = outcome.error;
+          if (entry.reconcileOnFailure) {
+            persistenceUncertain = true;
+          }
+          rejectEntry(entry, outcome.error);
+        }
+        else {
+          resolveEntry(entry, false);
+        }
+        continue;
+      }
+
+      const overlaps = [...change.changed].some(key => changed.has(key));
+      const exceedsLimit = pending.length >= MUTATION_BATCH_LIMIT ||
+        (changed.size > 0 &&
+          new Set([...changed, ...change.changed]).size > MUTATION_BATCH_LIMIT);
+      if (overlaps || exceedsLimit) {
+        // The task read the ordered staged view. It is safe to apply its exact
+        // patch after a successful flush because that staged view is now the
+        // durable base. A failed boundary rejects this task without replay.
+        const outcome = await flush();
+        if (outcome.status === 'failed') {
+          failedBoundary = outcome.error;
+          if (entry.reconcileOnFailure) {
+            persistenceUncertain = true;
+          }
+          rejectEntry(entry, outcome.error);
+          continue;
+        }
+        if (outcome.status === 'reset') {
+          resolveEntry(entry, false);
+          continue;
+        }
+      }
+      change.apply(transaction.view);
+      for (const key of change.changed) {
+        changed.add(key);
+      }
+      pending.push(entry);
+      if (!entry.coalesce || pending.length >= MUTATION_BATCH_LIMIT ||
+          changed.size >= MUTATION_BATCH_LIMIT) {
+        const outcome = await flush();
+        if (outcome.status === 'failed') {
+          failedBoundary = outcome.error;
+        }
+      }
+    }
+    await flush();
+  }
+  catch (error) {
+    // Loading/migration failures happen before a segment exists. The old
+    // per-mutation chain propagated them directly; batching must settle every
+    // promise in the captured snapshot instead of leaving callers deadlocked.
+    cached = undefined;
+    loading = undefined;
+    if (entries.some(entry => entry.reconcileOnFailure)) {
+      persistenceUncertain = true;
+    }
+    rejectEntries(entries, error);
+  }
+};
+
+const scheduleMutationDrain = () => {
+  if (mutationDrain) {
+    return;
+  }
+  const previousWrites = writes;
+  const operation = previousWrites.then(async () => {
+    // The first mutation schedules this microtask; all adjacent synchronous
+    // callers can enqueue before the bounded drain snapshots their entries.
+    await Promise.resolve();
+    while (mutationQueue.length) {
+      await runMutationEntries(mutationQueue.splice(0));
+    }
+  });
+  mutationDrain = operation;
+  writes = operation.then(() => undefined, () => undefined);
+  void writes.finally(() => {
+    if (mutationDrain === operation) {
+      mutationDrain = undefined;
+    }
+    if (mutationQueue.length) {
+      scheduleMutationDrain();
+    }
+  });
+};
+
+const mutate = (
+  task,
+  operationEpoch = epoch,
+  {coalesce = false, reconcileOnFailure = false} = {}
+) => {
   if (resetting || operationEpoch !== epoch) {
     return Promise.resolve(false);
   }
   const queuedAt = globalThis.performance?.now?.() ?? Date.now();
-  const operation = writes.then(async () => {
-    persistence.observeQueueLatency(queuedAt);
-    if (resetting || operationEpoch !== epoch) {
-      return false;
-    }
-    const previous = await load();
-    const transaction = mutationView(previous);
-    const state = transaction.view;
-    if (resetting || operationEpoch !== epoch) {
-      return false;
-    }
-    const result = await task(state);
-    if (resetting || operationEpoch !== epoch) {
-      return false;
-    }
-    await persistence.persist(previous, state, transaction.changed);
-    if (resetting || operationEpoch !== epoch) {
-      return false;
-    }
-    cached = transaction.commit();
-    return result;
-  });
-  writes = operation.then(() => undefined, () => undefined);
+  const operation = new Promise((resolve, reject) => mutationQueue.push({
+    operationEpoch,
+    coalesce,
+    reconcileOnFailure,
+    queuedAt,
+    reject,
+    resolve,
+    task
+  }));
+  scheduleMutationDrain();
   return operation;
 };
 
@@ -310,7 +588,7 @@ const begin = async (tab, mode = 'discard') => {
         updatedAt: Date.now()
       };
       return true;
-    });
+    }, epoch, {reconcileOnFailure: mode === 'direct-native'});
 
     const currentId = resolveId(id);
     if (!active || attempts.get(currentId) !== attemptId) {
@@ -328,6 +606,13 @@ const begin = async (tab, mode = 'discard') => {
   catch (e) {
     if (mode !== 'discard') {
       const currentId = resolveId(id);
+      if (mode === 'direct-native') {
+        // A reported set failure may still have installed this exact marker,
+        // but the caller will not issue tabs.discard(). Retire the nonce before
+        // dropping its in-memory attempt so certainty reconciliation cannot
+        // misclassify it as a worker-lost native operation.
+        retiredDirectNativeAttempts.add(attemptId);
+      }
       if (attempts.get(currentId) === attemptId) {
         attempts.delete(currentId);
         attemptOrigins.delete(attemptId);
@@ -361,6 +646,12 @@ const finish = async (
   let lastError;
   let failures = 0;
   let latePasses = 0;
+  if (directNative && !lateNative && !source) {
+    // The browser boundary already supplied the definitive non-self outcome.
+    // Declare its exact idempotent cleanup before queueing so an earlier failed
+    // durability boundary cannot reject this entry and strand the old nonce.
+    retiredDirectNativeAttempts.add(attemptId);
+  }
 
   // A single retry covers transient storage failures without returning success
   // while the persisted marker is still pending.
@@ -390,12 +681,27 @@ const finish = async (
           return true;
         }
 
+        if (directNative && !lateNative &&
+            state[currentId]?.state === 'direct-native-pending' &&
+            state[currentId].attemptId === attemptId) {
+          retiredDirectNativeAttempts.add(attemptId);
+        }
         delete state[currentId];
         if (currentId !== id) {
+          if (directNative && !lateNative &&
+              state[id]?.state === 'direct-native-pending' &&
+              state[id].attemptId === attemptId) {
+            retiredDirectNativeAttempts.add(attemptId);
+          }
           delete state[id];
         }
         return false;
-      }, operationEpoch);
+      }, operationEpoch, {reconcileOnFailure: directNative && !lateNative}).then(value => {
+        if (directNative && !lateNative) {
+          retiredDirectNativeAttempts.delete(attemptId);
+        }
+        return value;
+      });
 
       // An event can arrive while persist() is in flight, after the task above
       // inspected the Map. Run one more serialized pass before clearing it.
@@ -480,6 +786,60 @@ const lateAuthority = id => {
   }) : undefined;
 };
 
+// A direct native call that crosses both timeout fences remains fail-closed as
+// direct-native-pending. If that exact call later reports a definitive
+// rejection, or if the tab is removed after persistence but before the native
+// API is invoked, remove only its exact pending/orphan marker. Epoch, lineage,
+// state, and globally unique attempt checks prevent a stale callback from
+// clearing reset or newer authority, while legitimate onReplaced/onAttached
+// lifecycle changes do not make the definitive result impossible to settle.
+const cancelDirectNative = (authority, attemptId) => {
+  if (!authority || typeof attemptId !== 'string' || authority.epoch !== epoch || resetting) {
+    return Promise.resolve(false);
+  }
+  retiredDirectNativeAttempts.add(attemptId);
+  return mutate(state => {
+    const resolvedId = resolveId(authority.id);
+    if (authority.epoch !== epoch || resetting || !Number.isInteger(resolvedId)) {
+      return false;
+    }
+    let id = resolvedId;
+    let marker = state[id];
+    if ((marker?.state !== 'direct-native-pending' &&
+        marker?.state !== 'direct-native-orphan') || marker.attemptId !== attemptId) {
+      const exact = Object.entries(state).find(([, candidate]) =>
+        (candidate?.state === 'direct-native-pending' ||
+          candidate?.state === 'direct-native-orphan') && candidate.attemptId === attemptId
+      );
+      if (exact) {
+        id = Number(exact[0]);
+        marker = exact[1];
+      }
+    }
+    if ((marker?.state !== 'direct-native-pending' &&
+        marker?.state !== 'direct-native-orphan') || marker.attemptId !== attemptId) {
+      return false;
+    }
+    delete state[id];
+    return true;
+  }, authority.epoch, {reconcileOnFailure: true}).then(cancelled => {
+    retiredDirectNativeAttempts.delete(attemptId);
+    if (!cancelled) {
+      return false;
+    }
+    const id = resolveId(authority.id);
+    if (attempts.get(id) === attemptId) {
+      attempts.delete(id);
+      attemptOrigins.delete(attemptId);
+    }
+    if (takeoverAttempts.get(id) === attemptId) {
+      takeoverAttempts.delete(id);
+    }
+    observedDiscards.delete(id);
+    return true;
+  });
+};
+
 const promoteLateSelf = (authority, attemptId, visual) => {
   if (!authority || authority.epoch !== epoch || resetting ||
       resolveId(authority.id) !== authority.id ||
@@ -524,16 +884,45 @@ const invalidate = id => {
   }
   takeoverAttempts.delete(currentId);
   observedDiscards.delete(currentId);
+  const retired = new Set();
+  if (activeAttempt) {
+    retired.add(activeAttempt);
+    retiredDirectNativeAttempts.add(activeAttempt);
+  }
+  for (const candidateId of new Set([currentId, id])) {
+    const marker = cached?.[candidateId];
+    if (marker?.state === 'direct-native-pending' && typeof marker.attemptId === 'string') {
+      retired.add(marker.attemptId);
+      retiredDirectNativeAttempts.add(marker.attemptId);
+    }
+  }
   return mutate(state => {
     const resolvedId = resolveId(id);
     const existed = resolvedId in state || id in state;
     if (!isDirectNativeOrphan(state[resolvedId])) {
+      if (state[resolvedId]?.state === 'direct-native-pending' &&
+          typeof state[resolvedId].attemptId === 'string') {
+        retired.add(state[resolvedId].attemptId);
+        retiredDirectNativeAttempts.add(state[resolvedId].attemptId);
+      }
       delete state[resolvedId];
     }
     if (resolvedId !== id && !isDirectNativeOrphan(state[id])) {
+      if (state[id]?.state === 'direct-native-pending' &&
+          typeof state[id].attemptId === 'string') {
+        retired.add(state[id].attemptId);
+        retiredDirectNativeAttempts.add(state[id].attemptId);
+      }
       delete state[id];
     }
     return existed;
+  }, epoch, {coalesce: true, reconcileOnFailure: true}).then(result => {
+    // A successful delta made every exact retirement above durable. Failed
+    // deltas deliberately retain their nonces for certainty reconciliation.
+    for (const attemptId of retired) {
+      retiredDirectNativeAttempts.delete(attemptId);
+    }
+    return result;
   });
 };
 
@@ -604,15 +993,33 @@ const queueTakeover = async (tab, cancellation) => {
   return operationEpoch === epoch && !resetting && !cancelled() ? queued : false;
 };
 
-const clearQueuedTakeover = (id, queueId) => mutate(state => {
-  id = resolveId(id);
-  const marker = state[id];
-  if (marker?.state !== 'takeover-queued' || marker.attemptId !== queueId) {
-    return false;
+const clearQueuedTakeover = (id, queueId) => {
+  if (typeof queueId === 'string') {
+    retiredTakeoverQueues.add(queueId);
   }
-  delete state[id];
-  return true;
-});
+  return mutate(state => {
+    const resolvedId = resolveId(id);
+    let markerId = resolvedId;
+    let marker = state[markerId];
+    if (marker?.state !== 'takeover-queued' || marker.attemptId !== queueId) {
+      const exact = Object.entries(state).find(([, candidate]) =>
+        candidate?.state === 'takeover-queued' && candidate.attemptId === queueId
+      );
+      if (exact) {
+        markerId = Number(exact[0]);
+        marker = exact[1];
+      }
+    }
+    if (marker?.state !== 'takeover-queued' || marker.attemptId !== queueId) {
+      return false;
+    }
+    delete state[markerId];
+    return true;
+  }, epoch, {reconcileOnFailure: true}).then(result => {
+    retiredTakeoverQueues.delete(queueId);
+    return result;
+  });
+};
 
 // Chromium has no native discard-owner field. Adopt an already-discarded tab
 // into this extension's ownership model without waking or reloading its page.
@@ -717,6 +1124,7 @@ const revalidateAttached = id => {
   }
 
   const generation = renewGeneration(id);
+  const retired = new Set();
 
   return mutate(async state => {
     const current = await getTab(id);
@@ -747,6 +1155,10 @@ const revalidateAttached = id => {
       return state[id];
     }
     if (current.discarded !== true) {
+      if (marker?.state === 'direct-native-pending' && typeof marker.attemptId === 'string') {
+        retired.add(marker.attemptId);
+        retiredDirectNativeAttempts.add(marker.attemptId);
+      }
       delete state[id];
       return false;
     }
@@ -757,6 +1169,11 @@ const revalidateAttached = id => {
     }
     state[id] = ownedMarker('claimed');
     return state[id];
+  }, epoch, {reconcileOnFailure: true}).then(result => {
+    for (const attemptId of retired) {
+      retiredDirectNativeAttempts.delete(attemptId);
+    }
+    return result;
   });
 };
 
@@ -828,7 +1245,7 @@ const claimAtGeneration = (tab, generation, operationEpoch = epoch) => {
 
     state[currentId] = ownedMarker('claimed');
     return state[currentId];
-  }, operationEpoch);
+  }, operationEpoch, {coalesce: true});
 };
 
 // Commands need the full persisted marker after a claim refresh. `claim()`'s
@@ -881,7 +1298,7 @@ const resolveFresh = async tab => {
     if (resolveId(originId) !== current.id || !isGeneration(originId, generation)) {
       continue;
     }
-    const fenceState = await stableState();
+    const fenceState = await certainState();
     if (operationEpoch !== epoch || resetting || resolveId(originId) !== current.id ||
         !isGeneration(originId, generation)) {
       continue;
@@ -930,7 +1347,7 @@ const resolveFresh = async tab => {
   if (!current) {
     return {state: 'missing', unstable: true};
   }
-  const fenceState = await stableState();
+  const fenceState = await certainState();
   if (current.active !== true && nativeOrphanIn(fenceState)) {
     return {
       nativeOrphan: true,
@@ -1059,13 +1476,14 @@ const replace = (addedId, removedId) => {
       state[to] = marker;
     }
     return Boolean(marker);
-  }, operationEpoch).then(result => {
+  }, operationEpoch, {reconcileOnFailure: true}).then(result => {
     const expectedId = resolveId(to);
     const generation = generationOf(expectedId);
 
     // Hold the ownership write fence across the live read. A newer attempt,
     // lifecycle generation, or replacement can still start while tabs.get is
     // pending, so recheck all three afterward before applying its stale result.
+    const retired = new Set();
     return mutate(async state => {
       if (resolveId(to) !== expectedId || !isGeneration(expectedId, generation) ||
           attempts.has(expectedId)) {
@@ -1144,9 +1562,19 @@ const replace = (addedId, removedId) => {
         return state[expectedId];
       }
       const existed = expectedId in state;
+      if (liveMarker?.state === 'direct-native-pending' &&
+          typeof liveMarker.attemptId === 'string') {
+        retired.add(liveMarker.attemptId);
+        retiredDirectNativeAttempts.add(liveMarker.attemptId);
+      }
       delete state[expectedId];
       return existed;
-    }, operationEpoch);
+    }, operationEpoch, {reconcileOnFailure: true}).then(value => {
+      for (const attemptId of retired) {
+        retiredDirectNativeAttempts.delete(attemptId);
+      }
+      return value;
+    });
   });
 };
 
@@ -1233,7 +1661,10 @@ const removeUnlocked = id => {
     finalize();
     return result;
   }, error => {
-    finalize();
+    // Do not forget lineage after an ambiguous storage failure. A late actual
+    // onReplaced event may still be the only authoritative successor evidence,
+    // and the next native guard must first retry reconciliation fail-closed.
+    nativeRemovalPersistenceUncertain = true;
     throw error;
   });
 };
@@ -1265,6 +1696,85 @@ const reconcileUnlocked = (operationEpoch = epoch) => {
   return mutate(async state => {
     const tabs = await queryTabs({});
     const live = new Map(tabs.filter(tab => Number.isInteger(tab.id)).map(tab => [tab.id, tab]));
+    // `onReplaced` records this worker's authoritative identity edge before its
+    // queued storage move. If that first successor write reported failure, finish
+    // the exact marker transfer here before missing predecessors become orphans.
+    // A restarted worker has no such edge and therefore stays conservative.
+    for (const [predecessor, successor] of replacements) {
+      const resolvedSuccessor = resolveId(successor);
+      if (resolveId(predecessor) !== resolvedSuccessor || !live.has(resolvedSuccessor)) {
+        continue;
+      }
+      const source = state[predecessor];
+      if (!source) {
+        continue;
+      }
+      const destination = state[resolvedSuccessor];
+      if (!destination) {
+        state[resolvedSuccessor] = source;
+        delete state[predecessor];
+      }
+      else if (typeof source.attemptId === 'string' &&
+          source.attemptId === destination.attemptId) {
+        // The successor may already contain a later phase for the same exact
+        // operation. Remove only the torn predecessor; never regress it.
+        delete state[predecessor];
+      }
+    }
+    // These exact nonces were already retired by authoritative runtime evidence,
+    // but their destructive storage delta reported an ambiguous failure. Finish
+    // only that idempotent cleanup before ordinary live-shape classification.
+    for (const [key, marker] of Object.entries(state)) {
+      const retiredDirectNative = retiredDirectNativeAttempts.has(marker?.attemptId) &&
+        (marker.state === 'direct-native-pending' || marker.state === 'direct-native-orphan');
+      const retiredTakeover = retiredTakeoverQueues.has(marker?.attemptId) &&
+        marker.state === 'takeover-queued';
+      if (retiredDirectNative || retiredTakeover) {
+        delete state[key];
+      }
+    }
+    // Replacement persistence writes the successor before removing its
+    // predecessor. If that final remove reports an ambiguous failure, both
+    // records can survive a worker restart with the same globally unique
+    // direct-native nonce. Recover only the unambiguous shape: exactly one live
+    // compatible authority and one or more missing pending/orphan duplicates.
+    // Multiple live matches remain fail-closed; topology is never guessed.
+    const nonceEntries = new Map();
+    for (const [key, marker] of Object.entries(state)) {
+      if (typeof marker?.attemptId !== 'string' ||
+          (marker.state !== 'direct-native-pending' &&
+            marker.state !== 'direct-native-orphan' &&
+            !(marker.state === 'owned' && marker.source === 'physical-only'))) {
+        continue;
+      }
+      const entries = nonceEntries.get(marker.attemptId) || [];
+      entries.push({id: Number(key), marker});
+      nonceEntries.set(marker.attemptId, entries);
+    }
+    for (const entries of nonceEntries.values()) {
+      if (entries.length < 2) {
+        continue;
+      }
+      const liveEntries = entries.filter(entry => live.has(entry.id));
+      const missingEntries = entries.filter(entry => !live.has(entry.id));
+      if (liveEntries.length !== 1 || missingEntries.length === 0 ||
+          missingEntries.some(entry => entry.marker.state !== 'direct-native-pending' &&
+            entry.marker.state !== 'direct-native-orphan')) {
+        continue;
+      }
+      const [authority] = liveEntries;
+      const tab = live.get(authority.id);
+      const compatiblePending = authority.marker.state === 'direct-native-pending' &&
+        tab?.active !== true;
+      const compatiblePhysical = authority.marker.state === 'owned' &&
+        authority.marker.source === 'physical-only' && isNativeDiscardSettled(tab);
+      if (!compatiblePending && !compatiblePhysical) {
+        continue;
+      }
+      for (const duplicate of missingEntries) {
+        delete state[duplicate.id];
+      }
+    }
     // Without a replacement event, no live-row shape or absence is causal
     // proof. Edge can expose a short predecessor-absent/successor-not-yet-
     // enumerable gap, so even a full query with zero inactive tabs cannot
@@ -1393,11 +1903,39 @@ const reconcileUnlocked = (operationEpoch = epoch) => {
     }
 
     return Object.values(state).filter(marker => marker.state === 'owned').length;
-  }, operationEpoch);
+  }, operationEpoch, {reconcileOnFailure: true}).then(result => {
+    if (result !== false && operationEpoch === epoch && !resetting) {
+      retiredDirectNativeAttempts.clear();
+      retiredTakeoverQueues.clear();
+      nativeRemovalPersistenceUncertain = false;
+      persistenceUncertain = false;
+    }
+    return result;
+  });
 };
 const reconcile = (operationEpoch = epoch) => serializeNativeMutation(() =>
   reconcileUnlocked(operationEpoch)
 );
+
+const ensurePersistenceCertain = (operationEpoch = epoch) => {
+  if (!persistenceUncertain && !nativeRemovalPersistenceUncertain) {
+    return Promise.resolve(true);
+  }
+  // Recheck the latch inside the native serializer so concurrent status calls
+  // share the first repair instead of issuing redundant live-tab queries.
+  return serializeNativeMutation(async () => {
+    if (!persistenceUncertain && !nativeRemovalPersistenceUncertain) {
+      return true;
+    }
+    const result = await reconcileUnlocked(operationEpoch);
+    if (result === false || persistenceUncertain || nativeRemovalPersistenceUncertain ||
+        operationEpoch !== epoch || resetting) {
+      return false;
+    }
+    reconciledOnce = true;
+    return true;
+  });
+};
 
 const start = async (retries = 2, delay = 250, operationEpoch = epoch) => {
   if (resetting || operationEpoch !== epoch) {
@@ -1442,7 +1980,7 @@ const withNativeMutationGuard = (task, targetId, allowedAttemptId) => {
     error.code = 'DIRECT_NATIVE_ORPHAN_BLOCKED';
     throw error;
   }
-  if (!reconciledOnce) {
+    if (!reconciledOnce || nativeRemovalPersistenceUncertain || persistenceUncertain) {
     const reconciled = await reconcileUnlocked(requestedEpoch);
     if (reconciled === false || resetting || requestedEpoch !== epoch) {
       const error = Error('ownership reconciliation did not reach a stable boundary');
@@ -1451,7 +1989,20 @@ const withNativeMutationGuard = (task, targetId, allowedAttemptId) => {
     }
     reconciledOnce = true;
   }
-  const state = await stableState();
+  let state = await stableState();
+  // An ordinary ownership batch may fail while this guard waits for the write
+  // tail. We already own the native serializer here, so repair directly rather
+  // than recursively queueing behind ourselves.
+  while (persistenceUncertain) {
+    const reconciled = await reconcileUnlocked(requestedEpoch);
+    if (reconciled === false || resetting || requestedEpoch !== epoch) {
+      const error = Error('ownership persistence did not reach a stable boundary');
+      error.code = 'DIRECT_NATIVE_ORPHAN_BLOCKED';
+      throw error;
+    }
+    reconciledOnce = true;
+    state = await stableState();
+  }
   const resolvedTargetId = resolveId(targetId);
   const targetMarker = Number.isInteger(resolvedTargetId) ? state[resolvedTargetId] : undefined;
   const authorizedDirectNative = typeof allowedAttemptId === 'string' &&
@@ -1482,6 +2033,8 @@ const clearTransient = () => {
   observedDiscards.clear();
   generations.clear();
   replacements.clear();
+  retiredDirectNativeAttempts.clear();
+  retiredTakeoverQueues.clear();
 };
 
 const classifyTabs = tabs => {
@@ -1545,11 +2098,21 @@ const reset = ({reconcile: reconcileLive = false} = {}) => {
           initialized = true;
         }
         reconciledOnce = reconcileLive;
+        nativeRemovalPersistenceUncertain = false;
+        persistenceUncertain = false;
         return reconcileLive ? {
           ...result,
           reconciled: true,
           sleepingClaims: Object.keys(cached).length
         } : result;
+      }
+      catch (error) {
+        // clear() and the optional fresh-claim write are multi-key operations.
+        // A reported failure does not prove that none of the keys changed.
+        cached = undefined;
+        loading = undefined;
+        persistenceUncertain = true;
+        throw error;
       }
       finally {
         if (resetEpoch === epoch) {
@@ -1578,10 +2141,26 @@ const stableState = async () => {
   return load();
 };
 
-const snapshot = async () => JSON.parse(JSON.stringify(await stableState()));
+const certainState = async () => {
+  while (true) {
+    // Observe failures from every mutation already ordered before this read.
+    await drainWrites();
+    if (!persistenceUncertain && !nativeRemovalPersistenceUncertain) {
+      return load();
+    }
+    const certain = await ensurePersistenceCertain();
+    if (!certain || persistenceUncertain || nativeRemovalPersistenceUncertain) {
+      const error = Error('ownership persistence reconciliation failed');
+      error.code = 'OWNERSHIP_PERSISTENCE_UNCERTAIN';
+      throw error;
+    }
+  }
+};
+
+const snapshot = async () => JSON.parse(JSON.stringify(await certainState()));
 
 const status = async id => {
-  const state = await stableState();
+  const state = await certainState();
   id = resolveId(id);
   const marker = state[id];
   return {
@@ -1692,6 +2271,7 @@ const ownership = {
   beginDirectNative,
   beginTakeover,
   bind,
+  cancelDirectNative,
   claim,
   claimFresh,
   clearQueuedTakeover,

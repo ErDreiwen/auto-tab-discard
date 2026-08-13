@@ -247,3 +247,186 @@ test('worker reset wiring cancels jobs and repairs visuals before the ownership 
   assert.match(source,
     /resetExtensionState\(\s*ownership,\s*chrome\.storage\.local,\s*discard\.cancelTakeovers,\s*releaseTab\s*\)/);
 });
+
+test('issue 24: reset clears self, claimed, pending, and replacement authority before reload', async () => {
+  const localState = {period: 600, prepends: 'REST'};
+  const sessionState = {};
+  const liveTabs = new Map();
+  const listeners = {};
+  const area = state => ({
+    clear(callback) {
+      Object.keys(state).forEach(key => delete state[key]);
+      callback();
+    },
+    get(defaults, callback) {
+      callback({...defaults, ...state});
+    },
+    remove(keys, callback) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        delete state[key];
+      }
+      callback();
+    },
+    set(values, callback) {
+      Object.assign(state, structuredClone(values));
+      callback();
+    }
+  });
+  const event = name => ({
+    addListener(listener) {
+      (listeners[name] ||= []).push(listener);
+    }
+  });
+  const loaded = (id, url) => ({
+    active: false,
+    discarded: false,
+    frozen: false,
+    id,
+    status: 'complete',
+    url,
+    windowId: 1
+  });
+  const self = loaded(1, 'https://self-reset.example/');
+  const claimed = {...loaded(2, 'https://claimed-reset.example/'), discarded: true, status: 'unloaded'};
+  const pending = loaded(3, 'https://pending-reset.example/');
+  const predecessor = loaded(4, 'https://replacement-reset.example/');
+  [self, claimed, pending, predecessor].forEach(tab => liveTabs.set(tab.id, tab));
+
+  globalThis.chrome = {
+    runtime: {lastError: null},
+    storage: {
+      local: area(localState),
+      session: area(sessionState)
+    },
+    tabs: {
+      get(id, callback) {
+        callback(liveTabs.get(id));
+      },
+      query(options, callback) {
+        callback([...liveTabs.values()]);
+      },
+      onActivated: event('activated'),
+      onAttached: event('attached'),
+      onCreated: event('created'),
+      onRemoved: event('removed'),
+      onReplaced: event('replaced'),
+      onUpdated: event('updated')
+    }
+  };
+
+  try {
+    const nonce = `${Date.now()}-${Math.random()}`;
+    const [{ownership, STORAGE_KEY}, {resetExtensionState}] = await Promise.all([
+      import(`../v3/worker/core/ownership.mjs?reset-matrix=${nonce}`),
+      import('../v3/worker/core/reset.mjs')
+    ]);
+    const visual = {
+      complete: true,
+      favicon: true,
+      repair: true,
+      title: true,
+      titleMarker: 'REST'
+    };
+
+    const selfAttempt = await ownership.begin(self);
+    const selfDiscarded = {...self, discarded: true, status: 'unloaded'};
+    liveTabs.set(self.id, selfDiscarded);
+    assert.equal(await ownership.finish(selfDiscarded, selfAttempt, 'self', {visual}), true);
+    assert.equal((await ownership.claim(claimed)).source, 'claimed');
+    const pendingAttempt = await ownership.beginTakeover(pending);
+    assert.equal(typeof pendingAttempt, 'string');
+
+    const replacementAttempt = await ownership.begin(predecessor);
+    const predecessorDiscarded = {...predecessor, discarded: true, status: 'unloaded'};
+    liveTabs.set(predecessor.id, predecessorDiscarded);
+    assert.equal(await ownership.finish(
+      predecessorDiscarded,
+      replacementAttempt,
+      'self',
+      {visual}
+    ), true);
+    const successor = {...predecessorDiscarded, id: 40};
+    liveTabs.delete(predecessor.id);
+    liveTabs.set(successor.id, successor);
+    for (const listener of listeners.replaced || []) {
+      listener(successor.id, predecessor.id);
+    }
+    const before = await ownership.snapshot();
+    assert.equal(before[self.id].source, 'self');
+    assert.equal(before[claimed.id].source, 'claimed');
+    assert.equal(before[pending.id].state, 'takeover-waking');
+    assert.equal(before[predecessor.id], undefined);
+    assert.equal(before[successor.id].source, 'self');
+    assert.equal(ownership.resolveId(predecessor.id), successor.id);
+
+    const order = [];
+    const released = [];
+    const result = await resetExtensionState(
+      ownership,
+      chrome.storage.local,
+      async () => {
+        order.push('cancel');
+        assert.deepEqual(localState, {}, 'preferences clear before cancellation');
+        assert.equal((await ownership.status(pending.id)).takeover, true,
+          'active jobs must still be observable at the cancellation boundary');
+        return 1;
+      },
+      async ({id}) => {
+        order.push(`release:${id}`);
+        released.push(id);
+        const currentId = ownership.resolveId(id);
+        const current = liveTabs.get(currentId);
+        const awake = {...current, discarded: false, frozen: false, status: 'complete'};
+        liveTabs.set(currentId, awake);
+        return awake;
+      }
+    );
+
+    assert.deepEqual(order, ['cancel', 'release:1', 'release:40']);
+    assert.deepEqual(released, [1, 40], 'only repairable self markers are released serially');
+    assert.deepEqual(localState, {});
+    assert.equal(result.reconciled, true);
+    assert.equal(result.sleepingClaims, 1);
+    assert.deepEqual(result.visualRepairs, {
+      candidates: [1, 40],
+      failed: [],
+      repaired: [1, 40]
+    });
+    const afterReset = await ownership.snapshot();
+    assert.deepEqual(Object.keys(afterReset), [String(claimed.id)]);
+    assert.equal(afterReset[claimed.id].attemptId, null);
+    assert.equal(afterReset[claimed.id].source, 'claimed');
+    assert.equal(afterReset[claimed.id].state, 'owned');
+    assert.deepEqual(await ownership.diagnostics(), {
+      attempts: 0,
+      generations: 0,
+      observedDiscards: 0,
+      replacements: 0,
+      takeoverAttempts: 0
+    });
+    assert.equal(ownership.resolveId(predecessor.id), predecessor.id,
+      'reset must erase predecessor-to-successor authority');
+    for (const id of [self.id, pending.id, predecessor.id, successor.id]) {
+      assert.equal(sessionState[`${STORAGE_KEY}:tab:${id}`], undefined,
+        `old session marker ${id} survived reset`);
+    }
+    assert.ok(sessionState[`${STORAGE_KEY}:tab:${claimed.id}`],
+      'the still-discarded live tab must receive one fresh claimed record');
+
+    // Re-importing the worker proves that the persisted reset boundary, rather
+    // than this module's cache, is authoritative after service-worker reload.
+    const {ownership: reloaded} = await import(
+      `../v3/worker/core/ownership.mjs?reset-matrix-reload=${nonce}`
+    );
+    assert.equal(await reloaded.start(1, 0), 1);
+    const afterReload = await reloaded.snapshot();
+    assert.deepEqual(Object.keys(afterReload), [String(claimed.id)]);
+    assert.equal(afterReload[claimed.id].source, 'claimed');
+    assert.equal(afterReload[claimed.id].state, 'owned');
+    assert.equal((await reloaded.status(pending.id)).takeover, false);
+    assert.equal((await reloaded.status(successor.id)).marker, undefined);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
