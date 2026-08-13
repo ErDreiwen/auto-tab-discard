@@ -5,15 +5,39 @@ import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
+import {EventEmitter} from 'node:events';
+import {PassThrough} from 'node:stream';
 
 const require = createRequire(import.meta.url);
 const {
   createEarlyFailureReport,
   nativeMenuDiagnosticsFromOutput,
+  runMemoryProbeProcess,
   sanitizePopupReport
 } = require('../e2e/popup-matrix.cjs');
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
+
+const memoryProbeChild = () => {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.killCalls = [];
+  child.kill = signal => {
+    child.killCalls.push(signal);
+    child.signalCode = signal;
+    return true;
+  };
+  child.close = code => {
+    child.exitCode = code;
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', code);
+  };
+  return child;
+};
 
 test('popup matrix gives every scoped Shift command a fresh protected loaded fixture', async () => {
   const source = await readMatrix();
@@ -112,10 +136,14 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.doesNotMatch(source,
     /startNativeContextMenuSelector\(\s*NATIVE_CONTEXT_MENU_TITLE, browserProcess\.pid/);
   const selectorStart = source.indexOf('nativeSelector = startNativeContextMenuSelector(');
+  const selectorReady = source.indexOf('await nativeSelector.ready', selectorStart);
   const selectorAwait = source.indexOf('await nativeSelector.completion', selectorStart);
-  assert.ok(selectorStart !== -1 && selectorStart < selectorAwait,
-    'the helper that opens the native menu must start before its bounded result is awaited');
+  assert.ok(selectorStart !== -1 && selectorStart < selectorReady && selectorReady < selectorAwait,
+    'the helper startup handshake must finish before its bounded interaction result is awaited');
+  assert.match(source,
+    /await nativeSelector\.ready;[\s\S]*event: 'native-context-menu-helper-ready',[\s\S]*await nativeSelector\.completion/);
   assert.match(source, /finally \{\s*try \{\s*await nativeSelector\?\.cancel\(\)/);
+  assert.match(source, /const NATIVE_HELPER_STARTUP_TIMEOUT_MS = 30000/);
   assert.match(source, /const NATIVE_MENU_TIMEOUT_MS = 5000/);
   assert.match(source, /const NATIVE_MENU_SURFACE_PROBE_MS = 1000/);
   assert.match(source, /const NATIVE_MENU_UPDATE_SETTLE_MS = 500/);
@@ -260,6 +288,13 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /ATD_UIA_EXACT_PARENT_NAME: exactParentName/);
   assert.match(nativeHelper, /parentExpansionMethod/);
   assert.match(nativeHelper, /const startNativeContextMenuSelector/);
+  assert.equal((nativeHelper.match(/ATD_UIA_READY:1/g) || []).length, 2,
+    'the fixed READY marker must appear once in the helper and once in its controller');
+  const nativeTypeLoadedAt = nativeHelper.indexOf("'@", nativeHelper.indexOf('Add-Type -TypeDefinition'));
+  const helperReadyAt = nativeHelper.indexOf("[Console]::Out.WriteLine('ATD_UIA_READY:1')");
+  const automationWorkAt = nativeHelper.indexOf('$nameCondition =');
+  assert.ok(nativeTypeLoadedAt > 0 && nativeTypeLoadedAt < helperReadyAt && helperReadyAt < automationWorkAt,
+    'READY must follow all Add-Type work and precede UI Automation polling');
   assert.match(nativeHelper, /const child = spawn\(powershellPath/);
   assert.match(nativeHelper,
     /'-Command',\s*'& \(\[scriptblock\]::Create\(\[Console\]::In\.ReadToEnd\(\)\)\)'/);
@@ -272,7 +307,17 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /child\.stdin\.end\(NATIVE_MENU_UIA_SCRIPT, 'utf8'\)/);
   assert.match(nativeHelper, /avoids Windows command-line length and quoting limits/);
   assert.match(nativeHelper, /completion\.catch\(\(\) => \{\}\)/);
+  assert.match(nativeHelper, /ready\.catch\(\(\) => \{\}\)/);
+  assert.match(nativeHelper, /const startActionTimer = \(\) => \{/);
+  assert.match(nativeHelper,
+    /output\.includes\('ATD_UIA_READY:1'\)[\s\S]*startActionTimer\(\)/);
+  assert.match(nativeHelper,
+    /startupTimer = setTimeout\(\(\) => \{[\s\S]*finishError\('helper-startup-timeout'\)[\s\S]*\}, NATIVE_HELPER_STARTUP_TIMEOUT_MS\)/);
   assert.match(nativeHelper, /setTimeout\(\(\) => \{[\s\S]*finishError\('bounded-timeout'\)/);
+  assert.match(nativeHelper,
+    /actionTimer = setTimeout\(\(\) => \{[\s\S]*finishError\('bounded-timeout'\)[\s\S]*NATIVE_MENU_TIMEOUT_MS \+ 2000\)/);
+  assert.match(nativeHelper, /if \(!readyObserved\) \{[\s\S]*helper-startup-failure/);
+  assert.match(nativeHelper, /return \{cancel, completion, ready\}/);
   assert.match(nativeHelper, /child\.kill\('SIGKILL'\)/);
   assert.match(nativeHelper, /const cancel = async/);
   assert.match(nativeHelper, /native context-menu selector cleanup timed out/);
@@ -322,6 +367,149 @@ test('native-menu surface diagnostics expose only fixed sanitized categories', (
     rightClickAttempts: 0
   });
   assert.doesNotMatch(JSON.stringify(nativeMenuDiagnosticsFromOutput(hostile)), /SECRET|Users|private/);
+});
+
+test('memory sampler is asynchronous, bounded, stream-capped, and remains strict', async () => {
+  const source = await readMatrix();
+  const sampler = source.slice(
+    source.indexOf('const MEMORY_SAMPLE_TIMEOUT_MS'),
+    source.indexOf('const resolveNativeMenuBrowserProcessId')
+  );
+
+  assert.match(sampler, /const MEMORY_SAMPLE_TIMEOUT_MS = 30000/);
+  assert.match(sampler, /const MEMORY_SAMPLE_OUTPUT_LIMIT_BYTES = 256 \* 1024/);
+  assert.match(sampler, /const MEMORY_SAMPLE_TERMINATION_TIMEOUT_MS = 2000/);
+  assert.doesNotMatch(sampler, /spawnSync\(/);
+  assert.match(sampler, /spawnProcess\(executable, args, \{/);
+  assert.match(sampler, /shell: false/);
+  assert.match(sampler, /stdio: \['ignore', 'pipe', 'pipe'\]/);
+  assert.match(sampler, /windowsHide: true/);
+  assert.match(sampler, /child\.stdout\.on\('data'/);
+  assert.match(sampler, /child\.stderr\.on\('data'/);
+  assert.match(sampler, /stdoutBytes > outputLimitBytes \|\| stderrBytes > outputLimitBytes/);
+  assert.match(sampler, /await terminateProcessTree\(child\.pid\)/);
+  assert.match(sampler, /closeConfirmed = await waitForClose\(\)/);
+  assert.match(sampler, /memory-probe-cleanup-timeout/);
+  assert.match(sampler, /timer = setTimeout\(\(\) => void terminate\('memory-probe-timeout'\), timeoutMs\)/);
+  assert.match(sampler, /'-NoProfile',\s*'-NonInteractive',\s*'-Command'/);
+  assert.match(sampler, /const outcome = await runMemoryProbeProcess/);
+  assert.match(source,
+    /assert\.equal\(sample\.available, true, `\$\{label\}: \$\{sample\.error \|\| 'memory sample unavailable'\}`\)/);
+  for (const reason of [
+    'memory-probe-timeout',
+    'memory-probe-output-limit',
+    'memory-probe-process-error',
+    'memory-probe-process-failed',
+    'memory-probe-cleanup-timeout'
+  ]) {
+    assert.match(source, new RegExp(`'${reason}'`), `${reason} must remain a fixed public category`);
+  }
+});
+
+test('memory probe process drains split output without blocking the event loop', async () => {
+  let child;
+  let spawnOptions;
+  const probe = runMemoryProbeProcess('unused-memory-probe', ['unused-argument'], {
+    spawnProcess(executable, args, options) {
+      assert.equal(executable, 'unused-memory-probe');
+      assert.deepEqual(args, ['unused-argument']);
+      spawnOptions = options;
+      child = memoryProbeChild();
+      child.pid = 7001;
+      return child;
+    },
+    terminationTimeoutMs: 20,
+    timeoutMs: 1000
+  });
+  let settled = false;
+  probe.then(() => settled = true);
+  child.stdout.write('{"Id":7,"Working');
+  child.stderr.write('bounded diagnostic');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(settled, false, 'the pending child must not block or synchronously settle the event loop');
+  child.stdout.write('Set64":11}');
+  child.close(0);
+
+  assert.deepEqual(await probe, {
+    ok: true,
+    stdout: '{"Id":7,"WorkingSet64":11}'
+  });
+  assert.equal(spawnOptions.shell, false);
+  assert.deepEqual(spawnOptions.stdio, ['ignore', 'pipe', 'pipe']);
+  assert.equal(spawnOptions.windowsHide, true);
+});
+
+test('memory probe timeout and output cap kill the exact tree and await close', async () => {
+  for (const scenario of [
+    {expected: 'memory-probe-timeout', trigger() {}},
+    {expected: 'memory-probe-output-limit', trigger(child) { child.stderr.write('12345'); }}
+  ]) {
+    let child;
+    const terminatedPids = [];
+    const probe = runMemoryProbeProcess('unused-memory-probe', [], {
+      outputLimitBytes: 4,
+      spawnProcess() {
+        child = memoryProbeChild();
+        child.pid = 7002;
+        return child;
+      },
+      async terminateProcessTree(pid) {
+        terminatedPids.push(pid);
+        setTimeout(() => child.close(null), 0);
+        return true;
+      },
+      terminationTimeoutMs: 20,
+      timeoutMs: 10
+    });
+    scenario.trigger(child);
+    assert.deepEqual(await probe, {ok: false, error: scenario.expected});
+    assert.deepEqual(terminatedPids, [7002]);
+  }
+});
+
+test('memory probe errors and unconfirmed termination settle with fixed reasons', async () => {
+  let failedStartChild;
+  const failedStart = runMemoryProbeProcess('unused-memory-probe', [], {
+    spawnProcess() {
+      failedStartChild = memoryProbeChild();
+      return failedStartChild;
+    },
+    terminationTimeoutMs: 10,
+    timeoutMs: 1000
+  });
+  failedStartChild.emit('error', Error('hostile local path and process details'));
+  assert.deepEqual(await failedStart, {ok: false, error: 'memory-probe-process-error'});
+
+  let stuckChild;
+  let treeAttempts = 0;
+  const stuck = runMemoryProbeProcess('unused-memory-probe', [], {
+    spawnProcess() {
+      stuckChild = memoryProbeChild();
+      stuckChild.pid = 7003;
+      return stuckChild;
+    },
+    async terminateProcessTree() {
+      treeAttempts += 1;
+      return false;
+    },
+    terminationTimeoutMs: 10,
+    timeoutMs: 5
+  });
+  assert.deepEqual(await stuck, {ok: false, error: 'memory-probe-cleanup-timeout'});
+  assert.equal(treeAttempts, 2, 'an unconfirmed direct kill must get one exact-tree fallback');
+  assert.deepEqual(stuckChild.killCalls, ['SIGKILL']);
+
+  let nonzeroChild;
+  const nonzero = runMemoryProbeProcess('unused-memory-probe', [], {
+    spawnProcess() {
+      nonzeroChild = memoryProbeChild();
+      nonzeroChild.pid = 7004;
+      return nonzeroChild;
+    },
+    timeoutMs: 1000
+  });
+  nonzeroChild.close(9);
+  assert.deepEqual(await nonzero, {ok: false, error: 'memory-probe-process-failed'});
 });
 
 test('embedded native-menu UIA helper parses as PowerShell without controlling a browser', async t => {
@@ -602,7 +790,7 @@ test('popup matrix persists exactly one sanitized report at each pre-matrix brow
   );
   const launchBoundary = source.slice(
     source.indexOf('launched = await launchOverCDP'),
-    source.indexOf('const {browser, browserProcess, context} = launched')
+    source.indexOf('const {browser, context} = launched')
   );
   const cdpBoundary = source.slice(
     source.indexOf('cdp = await browser.newBrowserCDPSession()'),

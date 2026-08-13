@@ -7,17 +7,36 @@ const {spawn, spawnSync} = require('node:child_process');
 const {pathToFileURL} = require('node:url');
 
 let emergencyBrowserProcess;
+let emergencyManagedBrowser;
 
 const arg = (name, fallback) => {
   const index = process.argv.indexOf(`--${name}`);
   return index === -1 ? fallback : process.argv[index + 1];
 };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const MEMORY_PROBE_FAILURE_REASONS = new Set([
+  'memory-probe-cdp-query-failed',
+  'memory-probe-cleanup-timeout',
+  'memory-probe-no-cdp-processes',
+  'memory-probe-no-live-processes',
+  'memory-probe-output-invalid',
+  'memory-probe-output-limit',
+  'memory-probe-platform-unsupported',
+  'memory-probe-powershell-unavailable',
+  'memory-probe-process-error',
+  'memory-probe-process-failed',
+  'memory-probe-start-failed',
+  'memory-probe-timeout'
+]);
 const publicFailureReason = error => {
   const message = String(error?.message || error || '');
   const nativeReason = message.match(/native context-menu UI Automation failed \(([a-z-]+)\)/i)?.[1];
   if (nativeReason) {
     return `native-menu-${nativeReason.toLowerCase()}`;
+  }
+  const memoryReason = message.match(/\b(memory-probe-[a-z-]+)\b/i)?.[1]?.toLowerCase();
+  if (MEMORY_PROBE_FAILURE_REASONS.has(memoryReason)) {
+    return memoryReason;
   }
   if (/timed out|timeout/i.test(message)) {
     return 'bounded-timeout';
@@ -199,6 +218,7 @@ const NATIVE_MENU_SURFACE_PROBE_MS = 1000;
 const NATIVE_MENU_UPDATE_SETTLE_MS = 500;
 const NATIVE_POINTER_TIMEOUT_MS = 2000;
 const NATIVE_FOREGROUND_TIMEOUT_MS = 750;
+const NATIVE_HELPER_STARTUP_TIMEOUT_MS = 30000;
 const NATIVE_MENU_UIA_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 
@@ -313,6 +333,12 @@ public static class AtdNativePointer {
   }
 }
 '@
+
+  # Signal only after every one-time UI Automation and native interop type
+  # load has completed. The controller starts the bounded interaction clock
+  # from this marker, so cold PowerShell/Add-Type startup is accounted for by
+  # its own fail-closed deadline rather than consuming the click/menu budget.
+  [Console]::Out.WriteLine('ATD_UIA_READY:1')
 
   $nameCondition = [System.Windows.Automation.PropertyCondition]::new(
     [System.Windows.Automation.AutomationElement]::NameProperty,
@@ -918,43 +944,82 @@ const startNativeContextMenuSelector = (
     stdio: ['pipe', 'pipe', 'ignore'],
     windowsHide: true
   });
-  child.stdout.setEncoding('utf8');
-  let output = '';
-  child.stdout.on('data', chunk => output = (output + chunk).slice(-4096));
-
   let cancelled = false;
-  let settled = false;
-  let timer;
+  let completionSettled = false;
+  let readyObserved = false;
+  let readySettled = false;
+  let actionTimer;
+  let startupTimer;
+  let resolveReady;
+  let rejectReady;
   let resolveCompletion;
   let rejectCompletion;
+  const ready = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
   const completion = new Promise((resolve, reject) => {
     resolveCompletion = resolve;
     rejectCompletion = reject;
   });
-  // A failed pointer action can delay the caller's await until cleanup. Mark
-  // the original promise handled immediately while preserving its rejection
-  // for the later explicit await.
+  // Startup or pointer failures can occur before the caller reaches either
+  // explicit await. Mark both original promises handled immediately while
+  // preserving their rejection for those later awaits.
+  ready.catch(() => {});
   completion.catch(() => {});
+  let output = '';
+  const clearTimers = () => {
+    clearTimeout(startupTimer);
+    clearTimeout(actionTimer);
+  };
   const finishError = reason => {
-    if (settled) {
+    if (completionSettled) {
       return;
     }
-    settled = true;
-    clearTimeout(timer);
+    completionSettled = true;
+    clearTimers();
     const error = Error(`native context-menu UI Automation failed (${reason})`);
     error.nativeMenuDiagnostics = nativeMenuDiagnosticsFromOutput(output);
+    if (!readySettled) {
+      readySettled = true;
+      rejectReady(error);
+    }
     rejectCompletion(error);
   };
   const finishSuccess = value => {
-    if (settled) {
+    if (completionSettled) {
       return;
     }
-    settled = true;
-    clearTimeout(timer);
+    completionSettled = true;
+    clearTimers();
     resolveCompletion(value);
   };
+  const startActionTimer = () => {
+    if (readyObserved || completionSettled) {
+      return;
+    }
+    readyObserved = true;
+    readySettled = true;
+    clearTimeout(startupTimer);
+    actionTimer = setTimeout(() => {
+      finishError('bounded-timeout');
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
+    }, NATIVE_POINTER_TIMEOUT_MS + NATIVE_FOREGROUND_TIMEOUT_MS +
+      NATIVE_MENU_TIMEOUT_MS + 2000);
+    resolveReady();
+  };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    output = (output + chunk).slice(-4096);
+    if (output.includes('ATD_UIA_READY:1')) {
+      startActionTimer();
+    }
+  });
   const closed = new Promise(resolve => child.once('close', () => resolve(true)));
-  child.once('error', () => finishError('helper-failure'));
+  child.once('error', () => finishError(
+    readyObserved ? 'helper-failure' : 'helper-startup-failure'));
   child.stdin.once('error', () => {
     finishError('helper-input-failure');
     if (child.exitCode === null && child.signalCode === null) {
@@ -962,6 +1027,12 @@ const startNativeContextMenuSelector = (
     }
   });
   child.once('close', code => {
+    if (!readyObserved) {
+      const reason = output.match(/ATD_UIA_ERROR:([a-z-]+)/)?.[1] ||
+        (cancelled ? 'selector-cancelled' : 'helper-startup-failure');
+      finishError(reason);
+      return;
+    }
     const nativeMenuDiagnostics = nativeMenuDiagnosticsFromOutput(output);
     const result = output.match(
       /ATD_UIA_RESULT:(InvokePattern|LegacyIAccessiblePattern)/)?.[1];
@@ -983,13 +1054,12 @@ const startNativeContextMenuSelector = (
       (cancelled ? 'selector-cancelled' : 'helper-failure');
     finishError(reason);
   });
-  timer = setTimeout(() => {
-    finishError('bounded-timeout');
+  startupTimer = setTimeout(() => {
+    finishError('helper-startup-timeout');
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL');
     }
-  }, NATIVE_POINTER_TIMEOUT_MS + NATIVE_FOREGROUND_TIMEOUT_MS +
-    NATIVE_MENU_TIMEOUT_MS + 2000);
+  }, NATIVE_HELPER_STARTUP_TIMEOUT_MS);
   // Stream the exact in-memory script over this child's private stdin. This
   // avoids Windows command-line length and quoting limits without a shell or
   // a shared/global temporary file.
@@ -1013,7 +1083,7 @@ const startNativeContextMenuSelector = (
     return {needed};
   };
 
-  return {cancel, completion};
+  return {cancel, completion, ready};
 };
 const killProcessTreeSync = child => {
   if (!child || child.exitCode !== null || !Number.isInteger(child.pid)) {
@@ -1067,19 +1137,176 @@ const settleWithin = async (operation, timeout = 5000) => {
   }
 };
 
+const MANAGED_BROWSER_IDENTITY_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$expectedProcessId = 0
+if (![int]::TryParse($env:ATD_EXPECTED_PROCESS_ID, [ref] $expectedProcessId) -or
+    $expectedProcessId -le 0) {
+  [Console]::Out.WriteLine('ATD_PROCESS_PROBE_FAILED')
+  exit 2
+}
+$matches = @(Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId = ' + $expectedProcessId) -Property ProcessId, ExecutablePath, CommandLine -ErrorAction Stop)
+if ($matches.Count -eq 0) {
+  [Console]::Out.WriteLine('ATD_PROCESS_MISSING')
+  exit 0
+}
+if ($matches.Count -ne 1) {
+  [Console]::Out.WriteLine('ATD_PROCESS_IDENTITY_MISMATCH')
+  exit 0
+}
+$candidate = $matches[0]
+$pathMatches = $false
+try {
+  $pathMatches = [string]::Equals(
+    [IO.Path]::GetFullPath([string] $candidate.ExecutablePath),
+    [IO.Path]::GetFullPath([string] $env:ATD_EXPECTED_EXECUTABLE),
+    [StringComparison]::OrdinalIgnoreCase
+  )
+}
+catch {
+  $pathMatches = $false
+}
+$expectedProfile = [string] $env:ATD_EXPECTED_PROFILE
+$profilePattern = '(?i)(?:^|\s)--user-data-dir=(?:' +
+  [regex]::Escape($expectedProfile) + '|"' + [regex]::Escape($expectedProfile) + '")(?=$|\s)'
+$profileMatches = [regex]::IsMatch([string] $candidate.CommandLine, $profilePattern)
+if ($pathMatches -and $profileMatches) {
+  [Console]::Out.WriteLine('ATD_PROCESS_MATCH')
+}
+else {
+  [Console]::Out.WriteLine('ATD_PROCESS_IDENTITY_MISMATCH')
+}
+`;
+const inspectManagedBrowserIdentitySync = controller => {
+  if (!controller || !Number.isInteger(controller.pid) || controller.pid <= 0 ||
+      process.platform !== 'win32' || !powershellPath || !fs.existsSync(powershellPath)) {
+    return {state: 'probe-failed'};
+  }
+  const outcome = spawnSync(powershellPath, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    MANAGED_BROWSER_IDENTITY_SCRIPT
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ATD_EXPECTED_EXECUTABLE: controller.executablePath,
+      ATD_EXPECTED_PROCESS_ID: String(controller.pid),
+      ATD_EXPECTED_PROFILE: controller.profile
+    },
+    timeout: 30000,
+    windowsHide: true
+  });
+  if (outcome.error || outcome.status !== 0) {
+    return {state: 'probe-failed'};
+  }
+  const marker = String(outcome.stdout || '');
+  if (/ATD_PROCESS_MATCH/.test(marker)) {
+    return {state: 'match'};
+  }
+  if (/ATD_PROCESS_MISSING/.test(marker)) {
+    return {state: 'missing'};
+  }
+  if (/ATD_PROCESS_IDENTITY_MISMATCH/.test(marker)) {
+    return {state: 'identity-mismatch'};
+  }
+  return {state: 'probe-failed'};
+};
+const killManagedBrowserProcessTreeSync = controller => {
+  const before = inspectManagedBrowserIdentitySync(controller);
+  if (before.state === 'missing') {
+    return {exited: true, forced: {needed: false}, identityVerified: true};
+  }
+  if (before.state !== 'match') {
+    return {
+      exited: false,
+      forced: {needed: false, reasonCode: 'cleanup-failed'},
+      identityVerified: false
+    };
+  }
+  const outcome = spawnSync(taskkillPath, ['/PID', String(controller.pid), '/T', '/F'], {
+    encoding: 'utf8',
+    timeout: 10000,
+    windowsHide: true
+  });
+  const after = inspectManagedBrowserIdentitySync(controller);
+  return {
+    exited: after.state === 'missing',
+    forced: {
+      method: 'taskkill-exact-managed-process-tree',
+      needed: true,
+      status: outcome.status
+    },
+    identityVerified: after.state === 'missing'
+  };
+};
+const terminateManagedBrowserProcess = async (controller, ownerClose) => {
+  const graceful = ownerClose?.status === 'fulfilled';
+  if (graceful) {
+    if (emergencyManagedBrowser === controller || emergencyManagedBrowser?.deferToPlaywright) {
+      emergencyManagedBrowser = undefined;
+    }
+    return {
+      exited: true,
+      forced: {needed: false},
+      graceful: true,
+      identityVerified: true,
+      owner: 'playwright-persistent-context'
+    };
+  }
+  if (!controller?.pid) {
+    return {
+      exited: graceful,
+      forced: {needed: false},
+      graceful,
+      identityVerified: false,
+      owner: 'playwright-persistent-context'
+    };
+  }
+  const forcedResult = killManagedBrowserProcessTreeSync(controller);
+  if (forcedResult.exited && emergencyManagedBrowser === controller) {
+    emergencyManagedBrowser = undefined;
+  }
+  return {
+    ...forcedResult,
+    graceful: graceful && forcedResult.forced.needed === false,
+    owner: 'playwright-persistent-context'
+  };
+};
+
 const emergencyCleanup = () => {
   if (emergencyBrowserProcess?.exitCode === null) {
     killProcessTreeSync(emergencyBrowserProcess);
+    return 'handled';
   }
+  if (emergencyManagedBrowser?.pid) {
+    killManagedBrowserProcessTreeSync(emergencyManagedBrowser);
+    return 'handled';
+  }
+  if (emergencyManagedBrowser?.deferToPlaywright) {
+    return 'deferred';
+  }
+  return 'none';
 };
 process.once('exit', emergencyCleanup);
 process.once('SIGINT', () => {
-  emergencyCleanup();
-  process.exit(130);
+  if (emergencyCleanup() === 'deferred') {
+    process.exitCode = 130;
+    setTimeout(() => process.exit(130), 30000).unref?.();
+  }
+  else {
+    process.exit(130);
+  }
 });
 process.once('SIGTERM', () => {
-  emergencyCleanup();
-  process.exit(143);
+  if (emergencyCleanup() === 'deferred') {
+    process.exitCode = 143;
+    setTimeout(() => process.exit(143), 30000).unref?.();
+  }
+  else {
+    process.exit(143);
+  }
 });
 
 const PRIMARY_BACKGROUND = [
@@ -1316,15 +1543,12 @@ const startFixtureServer = async () => {
   };
 };
 
-const launchOverCDP = async ({edgePrivacy, executablePath, extensionPath, profile}) => {
-  const {chromium} = require('./playwright-runtime.cjs');
+const chromiumLaunchSafetyArgs = ({edgePrivacy, extensionPath}) => {
   const disabledFeatures = ['OptimizationHints', 'MediaRouter'];
   if (edgePrivacy) {
     disabledFeatures.push('msImplicitSignin', 'msM365LinksImplicitSignin');
   }
   const args = [
-    '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`,
     `--disable-extensions-except=${extensionPath}`,
     `--load-extension=${extensionPath}`,
     '--no-first-run',
@@ -1333,12 +1557,21 @@ const launchOverCDP = async ({edgePrivacy, executablePath, extensionPath, profil
     '--disable-component-update',
     '--disable-background-mode',
     `--disable-features=${disabledFeatures.join(',')}`,
-    '--window-position=20,20',
-    'about:blank'
+    '--window-position=20,20'
   ];
   if (edgePrivacy) {
-    args.splice(-2, 0, '--disable-background-networking');
+    args.splice(-1, 0, '--disable-background-networking');
   }
+  return args;
+};
+const launchManualOverCDP = async ({edgePrivacy, executablePath, extensionPath, profile}) => {
+  const {chromium} = require('./playwright-runtime.cjs');
+  const args = [
+    '--remote-debugging-port=0',
+    `--user-data-dir=${profile}`,
+    ...chromiumLaunchSafetyArgs({edgePrivacy, extensionPath}),
+    'about:blank'
+  ];
   const browserProcess = spawn(executablePath, args, {
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: false
@@ -1371,13 +1604,79 @@ const launchOverCDP = async ({edgePrivacy, executablePath, extensionPath, profil
     if (!context) {
       throw Error('CDP browser did not expose its default context');
     }
-    return {browser, browserProcess, context, stderr: () => stderr};
+    return {
+      bindAuthoritativeBrowserProcessId: async () => {},
+      browser,
+      browserProcess,
+      context,
+      managed: false,
+      stderr: () => stderr
+    };
   }
   catch (error) {
     error.processCleanup = await terminateBrowserProcess(browserProcess);
     throw error;
   }
 };
+const launchPlaywrightManagedOverCDP = async ({executablePath, extensionPath, profile}) => {
+  const {chromium} = require('./playwright-runtime.cjs');
+  let persistentContext;
+  let managedProcess;
+  emergencyManagedBrowser = {deferToPlaywright: true};
+  try {
+    persistentContext = await chromium.launchPersistentContext(profile, {
+      args: [
+        ...chromiumLaunchSafetyArgs({edgePrivacy: false, extensionPath}),
+        '--remote-debugging-port=0'
+      ],
+      executablePath,
+      headless: false,
+      ignoreDefaultArgs: ['--disable-extensions'],
+      timeout: 30000
+    });
+    const portFile = path.join(profile, 'DevToolsActivePort');
+    const port = await waitFor(() => {
+      if (!fs.existsSync(portFile)) {
+        return false;
+      }
+      const [value] = fs.readFileSync(portFile, 'utf8').trim().split(/\r?\n/);
+      return Number(value) || false;
+    }, 'Playwright-managed browser DevTools port', 5000);
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, {timeout: 10000});
+    if (browser.contexts().length !== 1) {
+      throw Error('Playwright-managed CDP browser did not expose exactly one default context');
+    }
+    return {
+      async bindAuthoritativeBrowserProcessId(pid) {
+        const candidate = {executablePath, pid, profile};
+        managedProcess = candidate;
+        emergencyManagedBrowser = candidate;
+      },
+      browser,
+      browserProcess: undefined,
+      context: persistentContext,
+      managed: true,
+      managedProcess: () => managedProcess,
+      persistentContext
+    };
+  }
+  catch (error) {
+    const ownerClose = persistentContext ?
+      await settleWithin(persistentContext.close(), 45000) : {status: 'not-started'};
+    error.processCleanup = await terminateManagedBrowserProcess(managedProcess, ownerClose);
+    if (error.processCleanup.exited) {
+      emergencyManagedBrowser = undefined;
+    }
+    throw error;
+  }
+};
+const launchOverCDP = options => options.playwrightManaged ?
+  launchPlaywrightManagedOverCDP(options) : launchManualOverCDP(options);
+const closeBrowserLaunch = launched => launched.managed ?
+  launched.persistentContext.close() : launched.browser.close();
+const terminateBrowserLaunch = (launched, ownerClose) => launched.managed ?
+  terminateManagedBrowserProcess(launched.managedProcess(), ownerClose) :
+  terminateBrowserProcess(launched.browserProcess);
 
 const findCrashDumps = root => {
   const found = [];
@@ -1424,40 +1723,204 @@ const hashDirectory = root => {
   return hash.digest('hex');
 };
 
+const MEMORY_SAMPLE_TIMEOUT_MS = 30000;
+const MEMORY_SAMPLE_OUTPUT_LIMIT_BYTES = 256 * 1024;
+const MEMORY_SAMPLE_TERMINATION_TIMEOUT_MS = 2000;
+const terminateMemoryProbeProcessTree = pid => new Promise(resolve => {
+  if (process.platform !== 'win32' || !Number.isInteger(pid) || pid <= 0 ||
+      !taskkillPath || !fs.existsSync(taskkillPath)) {
+    resolve(false);
+    return;
+  }
+  let child;
+  try {
+    child = spawn(taskkillPath, ['/PID', String(pid), '/T', '/F'], {
+      shell: false,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+  }
+  catch {
+    resolve(false);
+    return;
+  }
+  let settled = false;
+  let timer;
+  const finish = result => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timer);
+    resolve(result);
+  };
+  child.once('error', () => finish(false));
+  child.once('close', code => finish(code === 0));
+  timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGKILL');
+      }
+      catch {}
+    }
+    finish(false);
+  }, MEMORY_SAMPLE_TERMINATION_TIMEOUT_MS);
+});
+const runMemoryProbeProcess = (executable, args, {
+  env = process.env,
+  outputLimitBytes = MEMORY_SAMPLE_OUTPUT_LIMIT_BYTES,
+  spawnProcess = spawn,
+  terminateProcessTree = terminateMemoryProbeProcessTree,
+  terminationTimeoutMs = MEMORY_SAMPLE_TERMINATION_TIMEOUT_MS,
+  timeoutMs = MEMORY_SAMPLE_TIMEOUT_MS
+} = {}) => new Promise(resolve => {
+  let child;
+  try {
+    child = spawnProcess(executable, args, {
+      env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+  }
+  catch {
+    resolve({ok: false, error: 'memory-probe-start-failed'});
+    return;
+  }
+
+  let failure;
+  let settled = false;
+  let terminating = false;
+  let stderrBytes = 0;
+  let stdoutBytes = 0;
+  let timer;
+  const stdoutChunks = [];
+  let resolveClosed;
+  const closed = new Promise(closedResolve => resolveClosed = closedResolve);
+  const finish = result => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timer);
+    resolve(result);
+  };
+  const waitForClose = () => Promise.race([
+    closed,
+    sleep(terminationTimeoutMs).then(() => false)
+  ]);
+  const terminate = async reason => {
+    failure ||= reason;
+    if (terminating || settled) {
+      return;
+    }
+    terminating = true;
+    const hasExactPid = Number.isInteger(child.pid) && child.pid > 0;
+    let treeTerminationRequested = false;
+    if (hasExactPid) {
+      try {
+        treeTerminationRequested = await terminateProcessTree(child.pid);
+      }
+      catch {}
+    }
+    if (hasExactPid && !treeTerminationRequested &&
+        child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGKILL');
+      }
+      catch {}
+    }
+    let closeConfirmed = await waitForClose();
+    if (!closeConfirmed && hasExactPid) {
+      try {
+        await terminateProcessTree(child.pid);
+      }
+      catch {}
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          child.kill('SIGKILL');
+        }
+        catch {}
+      }
+      closeConfirmed = await waitForClose();
+    }
+    if (!closeConfirmed) {
+      finish({
+        ok: false,
+        error: hasExactPid ? 'memory-probe-cleanup-timeout' : failure
+      });
+    }
+  };
+  const consume = (chunk, stream) => {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    if (stream === 'stdout') {
+      stdoutBytes += bytes.length;
+      if (stdoutBytes <= outputLimitBytes && !failure) {
+        stdoutChunks.push(bytes);
+      }
+    }
+    else {
+      stderrBytes += bytes.length;
+    }
+    if (stdoutBytes > outputLimitBytes || stderrBytes > outputLimitBytes) {
+      void terminate('memory-probe-output-limit');
+    }
+  };
+
+  child.stdout.on('data', chunk => consume(chunk, 'stdout'));
+  child.stderr.on('data', chunk => consume(chunk, 'stderr'));
+  child.once('error', () => void terminate('memory-probe-process-error'));
+  child.once('close', code => {
+    resolveClosed(true);
+    if (failure) {
+      finish({ok: false, error: failure});
+      return;
+    }
+    if (code !== 0) {
+      finish({ok: false, error: 'memory-probe-process-failed'});
+      return;
+    }
+    finish({
+      ok: true,
+      stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8')
+    });
+  });
+  timer = setTimeout(() => void terminate('memory-probe-timeout'), timeoutMs);
+});
+
 const sampleMemory = async cdp => {
   let processInfo;
   try {
     ({processInfo = []} = await cdp.send('SystemInfo.getProcessInfo'));
   }
-  catch (error) {
-    return {available: false, error: `CDP process query failed: ${error.message}`};
+  catch {
+    return {available: false, error: 'memory-probe-cdp-query-failed'};
   }
-  const pids = processInfo.map(info => Number(info.id)).filter(Number.isInteger);
+  const pids = processInfo.map(info => Number(info.id)).filter(id => Number.isInteger(id) && id > 0);
   if (process.platform !== 'win32') {
-    return {available: false, error: 'OS memory sampling is implemented for Windows only', processInfo};
+    return {available: false, error: 'memory-probe-platform-unsupported', processInfo};
   }
   if (pids.length === 0) {
-    return {available: false, error: 'CDP returned no browser process IDs', processInfo};
+    return {available: false, error: 'memory-probe-no-cdp-processes', processInfo};
   }
   // A renderer can exit between the CDP snapshot and the OS query. Filtering a
   // full process snapshot avoids Get-Process -Id treating that normal race as
   // a failed sample.
   const command = `$ids=@(${pids.join(',')}); Get-Process | Where-Object { $ids -contains $_.Id } | ` +
     'Select-Object Id,ProcessName,WorkingSet64,PrivateMemorySize64,CPU | ConvertTo-Json -Compress';
-  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows',
-    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  if (!fs.existsSync(powershell)) {
-    return {available: false, error: `PowerShell not found: ${powershell}`, processInfo};
+  if (!powershellPath || !fs.existsSync(powershellPath)) {
+    return {available: false, error: 'memory-probe-powershell-unavailable', processInfo};
   }
-  const outcome = spawnSync(powershell, ['-NoProfile', '-Command', command], {
-    encoding: 'utf8',
-    timeout: 5000,
-    windowsHide: true
-  });
-  if (outcome.error || outcome.status !== 0) {
+  const outcome = await runMemoryProbeProcess(powershellPath, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    command
+  ]);
+  if (!outcome.ok) {
     return {
       available: false,
-      error: outcome.error?.message || outcome.stderr?.trim() || `PowerShell exited ${outcome.status}`,
+      error: outcome.error,
       processInfo
     };
   }
@@ -1466,11 +1929,11 @@ const sampleMemory = async cdp => {
     const parsed = outcome.stdout.trim() ? JSON.parse(outcome.stdout) : [];
     processes = Array.isArray(parsed) ? parsed : [parsed];
   }
-  catch (error) {
-    return {available: false, error: `Cannot parse PowerShell memory sample: ${error.message}`, processInfo};
+  catch {
+    return {available: false, error: 'memory-probe-output-invalid', processInfo};
   }
-  if (processes.length === 0) {
-    return {available: false, error: 'No CDP browser processes remained in the OS snapshot', processInfo};
+  if (processes.length === 0 || processes.some(process => !process || typeof process !== 'object')) {
+    return {available: false, error: 'memory-probe-no-live-processes', processInfo};
   }
   return {
     available: true,
@@ -1524,10 +1987,14 @@ const main = async () => {
   }
   const executablePath = path.resolve(executableArg);
   const allowEdge = process.argv.includes('--allow-edge');
+  const playwrightManaged = process.argv.includes('--playwright-managed-launch');
   const retainProfile = process.argv.includes('--retain-profile');
   if (path.basename(executablePath).toLowerCase() === 'msedge.exe' &&
       allowEdge === false) {
     throw Error('Refusing to launch Edge without the explicit --allow-edge safety flag');
+  }
+  if (playwrightManaged && allowEdge) {
+    throw Error('Playwright-managed launch is restricted to the declared Chromium minimum');
   }
   const extensionPath = path.resolve(arg('extension', path.join(__dirname, '..', 'v3')));
   const profileRoot = path.resolve(arg('profile-root', path.join(__dirname, '.profiles')));
@@ -1612,6 +2079,7 @@ const main = async () => {
       edgePrivacy: allowEdge,
       executablePath,
       extensionPath,
+      playwrightManaged,
       profile
     });
   }
@@ -1632,17 +2100,18 @@ const main = async () => {
     });
     throw error;
   }
-  const {browser, browserProcess, context} = launched;
+  const {browser, context} = launched;
   let cdp;
   let nativeMenuBrowserProcessId;
   try {
     cdp = await browser.newBrowserCDPSession();
     nativeMenuBrowserProcessId = await resolveNativeMenuBrowserProcessId(cdp);
+    await launched.bindAuthoritativeBrowserProcessId(nativeMenuBrowserProcessId);
   }
   catch (error) {
     const detach = cdp ? await settleWithin(cdp.detach(), 3000) : {status: 'not-started'};
-    const close = await settleWithin(browser.close(), 5000);
-    const processCleanup = await terminateBrowserProcess(browserProcess);
+    const close = await settleWithin(closeBrowserLaunch(launched), launched.managed ? 45000 : 5000);
+    const processCleanup = await terminateBrowserLaunch(launched, close);
     const fixtureCleanup = await settleWithin(fixture.stop(), 5000);
     const crashes = findCrashDumps(profile);
     const profileCleanup = cleanupEarlyFailure(error);
@@ -2843,6 +3312,12 @@ const main = async () => {
           manifest.name,
           exactDocumentName
         );
+        await nativeSelector.ready;
+        timeline.push({
+          at: Date.now(),
+          event: 'native-context-menu-helper-ready',
+          status: 'verified'
+        });
         const selection = await nativeSelector.completion;
         const observed = await waitFor(() => worker.evaluate(({token, tabId, windowId}) =>
           globalThis.__atdE2EContextEvents?.find(event => event.token === token &&
@@ -3811,8 +4286,8 @@ const main = async () => {
   }
   finally {
     const detach = await settleWithin(cdp.detach(), 3000);
-    const close = await settleWithin(browser.close(), 5000);
-    const processCleanup = await terminateBrowserProcess(browserProcess);
+    const close = await settleWithin(closeBrowserLaunch(launched), launched.managed ? 45000 : 5000);
+    const processCleanup = await terminateBrowserLaunch(launched, close);
     const fixtureCleanup = await settleWithin(fixture.stop(), 5000);
     await sleep(750);
     const crashes = findCrashDumps(profile);
@@ -3875,4 +4350,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = {createEarlyFailureReport, nativeMenuDiagnosticsFromOutput, sanitizePopupReport};
+module.exports = {
+  createEarlyFailureReport,
+  nativeMenuDiagnosticsFromOutput,
+  runMemoryProbeProcess,
+  sanitizePopupReport
+};

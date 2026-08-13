@@ -235,6 +235,13 @@ test('workflow schedules Stable/Beta channels, the declared minimum, and a same-
     'edge-beta': 'windows-latest',
     'edge-stable': 'windows-latest'
   });
+  const popupMatrixStep = browserJob.slice(
+    browserJob.indexOf('name: Run popup matrix against the extracted artifact'),
+    browserJob.indexOf('name: Upload sanitized popup-matrix diagnostics')
+  );
+  assert.equal((popupMatrixStep.match(/--playwright-managed-launch/g) || []).length, 1);
+  assert.match(popupMatrixStep,
+    /if \('\$\{\{ matrix\.channel \}\}' -eq 'minimum'\) \{\s*\$arguments \+= '--playwright-managed-launch'\s*\}/);
 
   const matrixStep = browserJob.indexOf('name: Run popup matrix against the extracted artifact');
   const diagnosticsStep = browserJob.indexOf('name: Upload sanitized popup-matrix diagnostics');

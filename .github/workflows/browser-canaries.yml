@@ -223,6 +223,9 @@ jobs:
           if ('${{ matrix.browser }}' -eq 'edge') {
             $arguments += '--allow-edge'
           }
+          if ('${{ matrix.channel }}' -eq 'minimum') {
+            $arguments += '--playwright-managed-launch'
+          }
           node @arguments
         env:
           CODEX_NODE_MODULES: ${{ github.workspace }}/build/playwright/node_modules
