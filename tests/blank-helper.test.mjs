@@ -40,6 +40,7 @@ const browserHarness = (initial, {currentWindow = 1, queryHook} = {}) => {
   const state = {};
   const tabs = new Map(initial.map(value => [value.id, {...value}]));
   const activated = [];
+  const queries = [];
   const removed = [];
   let sequence = 0;
   const activateTab = async id => {
@@ -69,6 +70,7 @@ const browserHarness = (initial, {currentWindow = 1, queryHook} = {}) => {
     transactionId: () => `transaction-${++sequence}`
   });
   const read = async options => {
+    queries.push({...options});
     await queryHook?.(options, tabs);
     let values = [...tabs.values()];
     if (Number.isInteger(options.windowId)) {
@@ -77,12 +79,15 @@ const browserHarness = (initial, {currentWindow = 1, queryHook} = {}) => {
     if (options.currentWindow === false) {
       values = values.filter(value => value.windowId !== currentWindow);
     }
+    if (typeof options.windowType === 'string') {
+      values = values.filter(value => (value.windowType || 'normal') === options.windowType);
+    }
     if (typeof options.active === 'boolean') {
       values = values.filter(value => value.active === options.active);
     }
     return values.map(value => ({...value}));
   };
-  return {activateTab, activated, read, registry, removed, state, tabs};
+  return {activateTab, activated, queries, read, registry, removed, state, tabs};
 };
 
 const helperCreator = (browser, {failAt = Infinity} = {}) => {
@@ -265,6 +270,101 @@ test('mixed keeper states are rejected and the shared predicate is rerun before 
     assert.deepEqual(creator.helpers, []);
     await transaction.commit({succeeded: [{tab: original}]});
     assert.equal(browser.tabs.get(18).active, true);
+    assert.equal(stateHasPending(browser.state), false);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('discard-other-windows prepares only same-privacy normal windows outside the selected window', async () => {
+  globalThis.chrome = {runtime: {lastError: null}};
+  try {
+    const selected = tab(1, 1, {active: true});
+    const backgroundOriginal = tab(10, 2, {active: true});
+    const backgroundKeeper = tab(11, 2);
+    const minimizedOriginal = tab(20, 3, {active: true});
+    const incognitoOriginal = tab(30, 4, {active: true, incognito: true});
+    const incognitoKeeper = tab(31, 4, {incognito: true});
+    const popupOriginal = tab(40, 5, {active: true, windowType: 'popup'});
+    const browser = browserHarness([
+      selected,
+      tab(2, 1),
+      backgroundOriginal,
+      backgroundKeeper,
+      minimizedOriginal,
+      incognitoOriginal,
+      incognitoKeeper,
+      popupOriginal
+    ]);
+    const creator = helperCreator(browser);
+    const prepare = createBlankPreparer({
+      activate: value => browser.activateTab(value.id),
+      create: creator.create,
+      read: browser.read,
+      registry: browser.registry,
+      sendMessage() {}
+    });
+
+    const transaction = await prepare({menuItemId: 'discard-other-windows'}, selected);
+
+    assert.deepEqual(browser.queries[0], {active: true, windowType: 'normal'});
+    assert.deepEqual(browser.activated, [backgroundKeeper.id]);
+    assert.deepEqual(creator.helpers.map(value => value.windowId), [minimizedOriginal.windowId]);
+    assert.equal(browser.tabs.get(selected.id).active, true);
+    assert.equal(browser.tabs.get(incognitoOriginal.id).active, true);
+    assert.equal(browser.tabs.get(popupOriginal.id).active, true);
+    assert.equal([...browser.tabs.values()].some(value =>
+      value.windowId === incognitoOriginal.windowId && value.id >= 100), false);
+    assert.equal([...browser.tabs.values()].some(value =>
+      value.windowId === popupOriginal.windowId && value.id >= 100), false);
+
+    await transaction.commit({
+      succeeded: [{tab: backgroundOriginal}, {tab: minimizedOriginal}]
+    });
+    assert.equal(stateHasPending(browser.state), false);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('discard-tabs keeps selected, incognito, and popup active tabs outside helper preparation', async () => {
+  globalThis.chrome = {runtime: {lastError: null}};
+  try {
+    const selected = tab(1, 1, {active: true});
+    const selectedKeeper = tab(2, 1);
+    const otherOriginal = tab(10, 2, {active: true});
+    const incognitoOriginal = tab(20, 3, {active: true, incognito: true});
+    const popupOriginal = tab(30, 4, {active: true, windowType: 'popup'});
+    const browser = browserHarness([
+      selected,
+      selectedKeeper,
+      otherOriginal,
+      incognitoOriginal,
+      tab(21, 3, {incognito: true}),
+      popupOriginal
+    ]);
+    const creator = helperCreator(browser);
+    const prepare = createBlankPreparer({
+      activate: value => browser.activateTab(value.id),
+      create: creator.create,
+      read: browser.read,
+      registry: browser.registry,
+      sendMessage() {}
+    });
+
+    const transaction = await prepare({menuItemId: 'discard-tabs'}, selected);
+
+    assert.deepEqual(browser.queries[0], {active: true, windowType: 'normal'});
+    assert.deepEqual(browser.activated, []);
+    assert.deepEqual(creator.helpers.map(value => value.windowId), [otherOriginal.windowId]);
+    assert.equal(browser.tabs.get(selected.id).active, true);
+    assert.equal(browser.tabs.get(selectedKeeper.id).active, false);
+    assert.equal(browser.tabs.get(incognitoOriginal.id).active, true);
+    assert.equal(browser.tabs.get(popupOriginal.id).active, true);
+
+    await transaction.commit({succeeded: [{tab: otherOriginal}]});
     assert.equal(stateHasPending(browser.state), false);
   }
   finally {

@@ -195,7 +195,7 @@ const tabStates = (driver, fixtures) => driver.evaluate(entries => Promise.all(e
     }
   }))))), fixtures);
 
-const sendPopupCommand = async (driver, command, fixture) => {
+const sendPopupCommand = async (driver, command, fixture, onUnexpectedProgress = () => {}) => {
   const delivery = await sendMessage(driver, {
     cmd: command,
     method: 'popup',
@@ -203,11 +203,18 @@ const sendPopupCommand = async (driver, command, fixture) => {
     tabId: fixture.keeperId,
     windowId: fixture.windowId
   });
+  const progress = delivery.response?.value;
+  if (progress && !['complete', 'partial'].includes(progress.state)) {
+    // Preserve the worker's structured terminal snapshot before the assertion
+    // replaces it with a generic harness error. The final recursive sanitizer
+    // redacts every tab/window/job identity when the report is written.
+    onUnexpectedProgress({command, progress});
+  }
   assert.equal(delivery.error, undefined, `${command}: runtime message channel failed`);
   assert.equal(delivery.response?.ok, true, delivery.response?.error || `${command}: response failed`);
-  assert.ok(['complete', 'partial'].includes(delivery.response.value?.state),
-    `${command}: unexpected terminal state ${delivery.response.value?.state}`);
-  return delivery.response.value;
+  assert.ok(['complete', 'partial'].includes(progress?.state),
+    `${command}: unexpected terminal state ${progress?.state}`);
+  return progress;
 };
 
 const sendRejectedPopupCommand = async (driver, fixture, expectedType) => {
@@ -345,10 +352,14 @@ const main = async () => {
     const beforeSelectedWindow = await tabStates(isolated.driver, allEntries);
     assert.equal(countDiscarded(beforeSelectedWindow), 0,
       'all scope fixtures must be loaded immediately before the first command');
+    const rememberFailedProgress = entry => {
+      report.failedProgress = entry;
+    };
     const selectedProgress = await sendPopupCommand(
       isolated.driver,
       'discard-window',
-      fixtures.primary
+      fixtures.primary,
+      rememberFailedProgress
     );
     const selectedWindow = await tabStates(isolated.driver, allEntries);
     const selectedGroups = Object.groupBy(selectedWindow, entry => entry.label.split('-')[0]);
@@ -368,7 +379,12 @@ const main = async () => {
     }
     report.scopeTable.at(-1).ok = true;
 
-    await sendPopupCommand(isolated.driver, 'discard-other-windows', fixtures.primary);
+    await sendPopupCommand(
+      isolated.driver,
+      'discard-other-windows',
+      fixtures.primary,
+      rememberFailedProgress
+    );
     const otherWindows = await tabStates(isolated.driver, allEntries);
     const otherGroups = Object.groupBy(otherWindows, entry => entry.label.split('-')[0]);
     assert.equal(countDiscarded(otherGroups.background), 1,

@@ -140,7 +140,7 @@ test('external API smoke is a real isolated second-extension gate over the artif
   assert.match(source, /allowlisted-excess-batch-rejected/);
   assert.match(source, /allowlisted-safe-bounded-discard/);
   assert.match(source, /\{code: 'DISCARDED', status: 'succeeded', tabId: ids\.eligible\}/);
-  assert.match(source, /\{code: 'NOT_ELIGIBLE', status: 'skipped', tabId: ids\.protected\}/);
+  assert.match(source, /\{code: 'PROTECTED', status: 'skipped', tabId: ids\.protected\}/);
   assert.match(source, /summary: \{failed: 0, skipped: 3, succeeded: 1, total: 4\}/);
   assert.match(source, /Object\.keys\(outcome\)\.sort\(\), \['code', 'status', 'tabId'\]/);
   assert.match(source, /The external response reflected sensitive tab or extension data/);

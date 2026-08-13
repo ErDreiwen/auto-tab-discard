@@ -102,7 +102,19 @@ const createBlankPreparer = ({
     }
 
     if (menuItemId === 'discard-other-windows' || menuItemId === 'discard-tabs') {
-      const activeTabs = await readWithoutHelpers({active: true, currentWindow: false});
+      // The command executor admits only normal windows in the selected
+      // privacy context. Mirror that boundary before changing focus: a broad
+      // currentWindow:false query can include incognito and popup windows, and
+      // a popup cannot accept the helper tab this preflight may need to create.
+      // Use the selected window ID instead of mutable browser focus for both
+      // bulk commands; its active tab remains the user's final keeper.
+      const activeTabs = (await readWithoutHelpers({
+        active: true,
+        windowType: 'normal'
+      })).filter(active =>
+        active.windowId !== tab.windowId &&
+        Boolean(active.incognito) === Boolean(tab.incognito)
+      );
       const windowIds = [...new Set(activeTabs
         .filter(active => Number.isInteger(active?.windowId) && isHelper(active) === false)
         .map(active => active.windowId))];

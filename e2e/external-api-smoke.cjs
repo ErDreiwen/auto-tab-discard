@@ -779,7 +779,7 @@ const run = async () => {
       ok: true,
       outcomes: [
         {code: 'DISCARDED', status: 'succeeded', tabId: ids.eligible},
-        {code: 'NOT_ELIGIBLE', status: 'skipped', tabId: ids.protected},
+        {code: 'PROTECTED', status: 'skipped', tabId: ids.protected},
         {code: 'NOT_ELIGIBLE', status: 'skipped', tabId: ids.active},
         {code: 'NOT_ELIGIBLE', status: 'skipped', tabId: ids.incognito}
       ],

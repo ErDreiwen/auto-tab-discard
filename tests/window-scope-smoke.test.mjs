@@ -81,6 +81,15 @@ test('window scope smoke reports unavailable app/workspace capabilities without 
   assert.match(source, /JSON\.stringify\(sanitizeReport\(report\), null, 2\)/);
 });
 
+test('window scope smoke preserves unexpected popup progress before asserting terminal success', () => {
+  assert.match(source,
+    /if \(progress && !\['complete', 'partial'\]\.includes\(progress\.state\)\) \{[\s\S]*onUnexpectedProgress\(\{command, progress\}\);/);
+  assert.ok(source.indexOf('onUnexpectedProgress({command, progress});') <
+    source.indexOf("assert.ok(['complete', 'partial'].includes(progress?.state)"));
+  assert.match(source, /report\.failedProgress = entry/);
+  assert.match(source, /sendPopupCommand\([\s\S]*'discard-other-windows',[\s\S]*rememberFailedProgress/);
+});
+
 test('strict release gate requires Chrome window-scope evidence from the extracted artifact', async () => {
   const gate = await readFile(new URL('../scripts/release-gate.mjs', import.meta.url), 'utf8');
   const start = gate.indexOf("id: 'chrome-window-scope-smoke'");

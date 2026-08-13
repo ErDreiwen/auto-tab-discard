@@ -99,8 +99,17 @@ test('reset clears old authority then freshly claims only still-discarded live t
 
     // Hold a stale ownership write across the reset fence. Reset must wait for
     // it and then remove its result instead of allowing it to repopulate state.
+    // Use a previously unseen tab id so this operation must create a record.
+    // Re-claiming tab 1 only refreshes updatedAt; when both claims land in the
+    // same millisecond the persistence layer correctly treats that refresh as
+    // a no-op, so no session.set callback exists for this test to hold.
     holdNextSessionWrite = true;
-    const lateClaim = ownership.claim(liveTabs[0]);
+    const lateClaim = ownership.claim({
+      id: 4,
+      discarded: true,
+      status: 'unloaded',
+      url: 'https://stale.example/'
+    });
     while (!releaseSessionWrite) {
       await new Promise(resolve => setTimeout(resolve));
     }
