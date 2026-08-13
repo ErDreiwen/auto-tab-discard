@@ -1,0 +1,358 @@
+name: Browser channel canaries
+
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: browser-canaries-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CANARY_ARTIFACT_NAME: auto-tab-discard-canary-linux-${{ github.sha }}
+  REPRO_ARTIFACT_NAME: auto-tab-discard-canary-windows-${{ github.sha }}
+  CURRENT_PLAYWRIGHT_VERSION: 1.60.0
+
+jobs:
+  package-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Unit and model tests
+        run: node --test tests/*.test.mjs
+      - name: Build the canonical canary artifact from a clean Linux checkout
+        run: >-
+          node scripts/prepare-canary-artifact.mjs
+          --output build/canary
+          --builder-id linux
+          --runner-os Linux
+          --runner-image "${ImageOS:-unknown}-${ImageVersion:-unknown}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.CANARY_ARTIFACT_NAME }}
+          path: build/canary/
+          if-no-files-found: error
+          retention-days: 14
+
+  package-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Independently build the canary artifact from a clean Windows checkout
+        shell: pwsh
+        run: >-
+          node scripts/prepare-canary-artifact.mjs
+          --output build/canary
+          --builder-id windows
+          --runner-os Windows
+          --runner-image "$($env:ImageOS)-$($env:ImageVersion)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ env.REPRO_ARTIFACT_NAME }}
+          path: build/canary/
+          if-no-files-found: error
+          retention-days: 14
+
+  artifact-reproducibility-gate:
+    needs: [package-linux, package-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.CANARY_ARTIFACT_NAME }}
+          path: build/repro/linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.REPRO_ARTIFACT_NAME }}
+          path: build/repro/windows
+      - name: Require byte-identical archives, trees, inventories, and source provenance
+        run: >-
+          node scripts/cross-builder-provenance.mjs verify
+          --builder-dir build/repro/linux
+          --builder-dir build/repro/windows
+          --canonical-builder linux
+          --output build/repro/cross-builder-gate.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: cross-builder-gate-${{ github.sha }}
+          path: build/repro/cross-builder-gate.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  browser-canary:
+    needs: package-linux
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: chrome-minimum
+            browser: chrome
+            channel: minimum
+          - id: chrome-stable
+            browser: chrome
+            channel: stable
+          - id: chrome-beta
+            browser: chrome
+            channel: beta
+          - id: edge-stable
+            browser: edge
+            channel: stable
+          - id: edge-beta
+            browser: edge
+            channel: beta
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.CANARY_ARTIFACT_NAME }}
+          path: build/canary
+      - name: Extract the attested extension archive
+        shell: pwsh
+        run: |
+          $archive = Get-Item -LiteralPath build/canary/auto-tab-discard-canary.zip
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath build/canary/extracted
+      - name: Install current Playwright driver
+        if: matrix.channel != 'minimum'
+        shell: pwsh
+        run: npm install --prefix build/playwright --no-save --no-package-lock "playwright@${{ env.CURRENT_PLAYWRIGHT_VERSION }}"
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - name: Install declared-minimum Chromium driver and engine
+        if: matrix.channel == 'minimum'
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
+          npm install --prefix build/playwright --no-save --no-package-lock playwright@1.22.2
+          Remove-Item Env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+          npm exec --prefix build/playwright -- playwright install chromium
+          $path = node -e "process.stdout.write(require('./build/playwright/node_modules/playwright').chromium.executablePath())"
+          "CANARY_EXECUTABLE=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLER=playwright-1.22.2-pinned-chromium" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLED_VERSION=102.0.5005.40" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/build/minimum-browsers
+      - uses: browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd # v2.1.2
+        if: matrix.browser == 'chrome' && matrix.channel != 'minimum'
+        id: chrome
+        with:
+          chrome-version: ${{ matrix.channel }}
+      - name: Select Chrome channel binary
+        if: matrix.browser == 'chrome' && matrix.channel != 'minimum'
+        shell: pwsh
+        run: |
+          "CANARY_EXECUTABLE=${{ steps.chrome.outputs.chrome-path }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLER=browser-actions/setup-chrome@v2" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLED_VERSION=${{ steps.chrome.outputs.chrome-version }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: browser-actions/setup-edge@e2f31d5d9f2e6d75e72516221b4df8528e6325cf # v1.1.2
+        if: matrix.browser == 'edge'
+        id: edge
+        with:
+          edge-version: ${{ matrix.channel }}
+      - name: Select Edge channel binary
+        if: matrix.browser == 'edge'
+        shell: pwsh
+        run: |
+          "CANARY_EXECUTABLE=${{ steps.edge.outputs.edge-path }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLER=browser-actions/setup-edge@v1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLED_VERSION=${{ steps.edge.outputs.edge-version }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run popup matrix against the extracted artifact
+        id: matrix
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/canary/raw | Out-Null
+          $arguments = @(
+            'e2e/popup-matrix.cjs',
+            '--executable', $env:CANARY_EXECUTABLE,
+            '--extension', (Resolve-Path build/canary/extracted),
+            '--profile-root', (Join-Path $env:RUNNER_TEMP '${{ matrix.id }}-profiles'),
+            '--results', (Resolve-Path build/canary/raw)
+          )
+          if ('${{ matrix.browser }}' -eq 'edge') {
+            $arguments += '--allow-edge'
+          }
+          node @arguments
+        env:
+          CODEX_NODE_MODULES: ${{ github.workspace }}/build/playwright/node_modules
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/build/minimum-browsers
+      - name: Attest browser version, capabilities, and artifact hashes
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/canary/evidence | Out-Null
+          $reports = @(Get-ChildItem -LiteralPath build/canary/raw -Filter '*.json')
+          if ($reports.Count -ne 1) {
+            throw "Expected exactly one matrix report; found $($reports.Count)"
+          }
+          $report = $reports[0]
+          node scripts/browser-canary-policy.mjs record `
+            --policy .github/browser-canary-policy.json `
+            --manifest v3/manifest.json `
+            --artifact build/canary/checksums.json `
+            --report $report.FullName `
+            --browser '${{ matrix.browser }}' `
+            --channel '${{ matrix.channel }}' `
+            --installed-version $env:CANARY_INSTALLED_VERSION `
+            --installer $env:CANARY_INSTALLER `
+            --runner-image $env:ImageVersion `
+            --output "build/canary/evidence/${{ matrix.id }}.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: canary-evidence-${{ matrix.id }}-${{ github.sha }}
+          path: build/canary/evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  browser-canary-gate:
+    if: always()
+    needs: [package-linux, package-windows, artifact-reproducibility-gate, browser-canary]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.CANARY_ARTIFACT_NAME }}
+          path: build/canary
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cross-builder-gate-${{ github.sha }}
+          path: build/canary/reproducibility
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          pattern: canary-evidence-*-${{ github.sha }}
+          path: build/canary/evidence
+          merge-multiple: true
+      - name: Require every channel on one artifact hash
+        run: >-
+          node scripts/browser-canary-policy.mjs verify
+          --policy .github/browser-canary-policy.json
+          --manifest v3/manifest.json
+          --artifact build/canary/checksums.json
+          --reproducibility-gate build/canary/reproducibility/cross-builder-gate.json
+          --evidence-dir build/canary/evidence
+          --output build/canary/browser-canary-gate.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: browser-canary-gate-${{ github.sha }}
+          path: build/canary/browser-canary-gate.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  attest-trusted-release-tag:
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.repository == 'ErDreiwen/auto-tab-discard' &&
+      github.ref == 'refs/tags/v0.6.9.2' &&
+      github.ref_protected == true &&
+      needs.package-linux.result == 'success' &&
+      needs.artifact-reproducibility-gate.result == 'success' &&
+      needs.browser-canary-gate.result == 'success'
+    needs: [package-linux, artifact-reproducibility-gate, browser-canary-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      artifact-metadata: write
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.CANARY_ARTIFACT_NAME }}
+          path: build/canary
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cross-builder-gate-${{ github.sha }}
+          path: build/release-attestation/reproducibility
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: browser-canary-gate-${{ github.sha }}
+          path: build/release-attestation/browsers
+      - name: Re-name the byte-identical canonical subjects and build the custom predicate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/canary/auto-tab-discard-canary.xpi auto-tab-discard-0.6.9.2.xpi
+          cp build/canary/auto-tab-discard-canary.zip auto-tab-discard-0.6.9.2.zip
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          node scripts/release-attestation.mjs predicate \
+            --artifact-dir . \
+            --metadata build/canary/checksums.json \
+            --policy docs/release-policy.json \
+            --browser-gate build/release-attestation/browsers/browser-canary-gate.json \
+            --reproducibility-gate build/release-attestation/reproducibility/cross-builder-gate.json \
+            --commit "${GITHUB_SHA}" \
+            --tree "${tree}" \
+            --ref "${GITHUB_REF}" \
+            --output build/release-attestation/predicate.json
+      - name: Sign the exact ZIP/XPI subject pair
+        id: release-attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            auto-tab-discard-0.6.9.2.xpi
+            auto-tab-discard-0.6.9.2.zip
+          predicate-type: https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v1
+          predicate-path: build/release-attestation/predicate.json
+      - name: Retain the independently verifiable bundle and its exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "${{ steps.release-attestation.outputs.bundle-path }}" \
+            build/release-attestation/release-attestation.bundle.json
+          cp auto-tab-discard-0.6.9.2.xpi build/release-attestation/
+          cp auto-tab-discard-0.6.9.2.zip build/release-attestation/
+          cp build/canary/checksums.json build/release-attestation/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: trusted-release-attestation-${{ github.sha }}
+          path: build/release-attestation/
+          if-no-files-found: error
+          retention-days: 90

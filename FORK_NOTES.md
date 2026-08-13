@@ -2,11 +2,35 @@
 
 This fork keeps the upstream extension's behavior and addresses Chromium failures reported against the `0.6.8.2` store build.
 
+## Changes in 0.6.9.2
+
+- Make explicit discard commands take physical ownership of externally discarded tabs while keeping confirmed self-owned tabs as repeat-command no-ops.
+- Bound and persist takeover work across Manifest V3 worker restarts, tab moves, ID replacements, cancellation, and late native-discard settlement.
+- Quiesce takeover navigation before the native discard, preserve truthful per-tab outcomes, and repair visible sleep markers without starting reload feedback loops.
+- Add Firefox tab-API compatibility, deterministic release packaging, complete locale validation, and isolated real-browser safety/cleanup checks.
+- Package the real fork README and MPL-2.0 license, normalize UTF-8 text to LF, and record a normalized source-tree digest with the release checksums.
+- Add a fail-closed release gate with clean-Git provenance, hashed test-evidence references, safe ZIP extraction/inventory comparison, legacy preference/ownership fixtures, and a deterministic permission-change report.
+- Require non-empty migration, permission-change, and fork notes in every strict release; bind their normalized in-archive digests, exact ZIP/XPI subjects, policy, source identity, and hosted evidence in a versioned protected-tag in-toto attestation whose final offline verification fails closed.
+
+### Verification evidence
+
+- Chrome 151: the isolated real-popup matrix passed on a disposable profile, including all discard/release scopes, ownership takeover, repeat no-ops, stable dwell, cleanup, and crash checks.
+- Firefox 153: the raw WebDriver BiDi smoke passed ordinary and scoped discards, authoritative unloaded state, one request per fixture, stable dwell, exact process cleanup, and zero crash artifacts.
+- Edge 151.0.4129.72: the current isolated popup matrix passed all 19 scenarios. The redesigned dedicated frozen Sleeping Tabs smoke requires a direct physical discard with zero activation, scripting, loading, focus, or document requests and a truthful visual-unavailable ownership record; its final rerun is still required.
+- Release gate: Chrome, Firefox, and the Edge popup source-tree checks have passed; the redesigned Edge frozen smoke still needs its current rerun, and every browser must then pass against the final generated artifact tree before publication.
+- Upgrade/store gate: unit fixtures cover supported 0.5.0/0.6.9.1 settings and legacy ownership shapes; the strict release command also requires candidate-artifact update, worker/browser restart, rollback, and no-reload-storm reports from Chrome and Edge.
+- Signing gate: the protected-tag least-privilege workflow has immutable full-SHA pins across its complete producer/signing chain, and exhaustive offline/fake-`gh` tests require the reviewed policy-pinned trusted-root snapshot with no production verifier override; the actual hosted signing run, retained bundle, and trusted-root verification are still pending.
+
+### Fork identity and signing
+
+The fork now uses its own product name, GitHub homepage, and Gecko ID (`{b3b398c4-27bc-46b6-9447-f07deec6aeba}`). Documentation labels upstream store/review URLs as references rather than fork listings. The generated XPI remains unsigned AMO input until Mozilla signs it.
+
 ## Changes in 0.6.8.12
 
 - Make every normal manual discard command physically take over an externally discarded or legacy-adopted tab: wake it once, stop and quiesce the reload, apply the configured `💤` title marker, then perform and verify this extension's native discard. Repeating the command on a self-owned tab is a no-op.
-- Treat Edge Sleeping Tabs (`frozen: true`, `discarded: false`) as existing suspensions instead of silently skipping them in bulk commands; briefly activate them to use Edge's native unfreeze path, restore the prior active tab, apply `💤`, and discard without a document reload.
-- Fence that Edge activation pulse against user activity: any unexpected tab selection aborts before a stale keeper can be restored or a user-selected tab can be discarded.
+- Treat Edge Sleeping Tabs (`frozen: true`, `discarded: false`) as existing suspensions instead of silently skipping them in bulk commands. The extension persists a distinct direct-native intent, invokes `tabs.discard` exactly once without activation, reload, or renderer scripting, follows any replacement lineage, and accepts ownership only after authoritative `discarded: true` plus `status: unloaded` settlement.
+- Record already-frozen takeovers truthfully as physical-only. If title/favicon visuals were requested, their record is incomplete and non-repairing because Edge's frozen renderer cannot accept the write; the popup reports a successful native conversion with a visual-unavailable warning. Repeats are strict no-ops, and release fences any pending native operation before one explicit verified reload.
+- Interlock ordinary renderer work, automatic metadata scans, direct takeovers, and releases with durable intents plus synchronous per-tab reservations. Restart, cancellation, replacement, and transitional both-false states fail closed without a second native discard or delayed renderer wake.
 - Preserve pending attempts, takeover jobs, observed discard events, and final `source: self` ownership when Edge replaces a tab ID during `tabs.discard()`, including chained replacements and stale callback IDs.
 - Re-query release scopes after cancelling takeover work, and reclassify tabs that wake while queued, so Edge ID replacement and late wake races cannot make the popup silently skip a live successor.
 - Follow replacement lineages throughout the isolated browser harness and protect Edge test profiles from implicit Windows-account sign-in and background networking; disposable profiles are deleted after both passing and failing runs unless explicitly retained.

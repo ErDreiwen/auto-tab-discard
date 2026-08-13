@@ -1,4 +1,5 @@
 import {query} from './utils.mjs';
+import {ownership} from './ownership.mjs';
 
 const update = (id, properties) => new Promise((resolve, reject) => chrome.tabs.update(id, properties, tab => {
   const error = chrome.runtime.lastError;
@@ -36,7 +37,9 @@ const navigate = async (method, discarded = false) => {
   }
 
   if (ntab) {
-    await update(ntab.id, {active: true});
+    await ownership.withNativeMutationGuard(() =>
+      update(ntab.id, {active: true}),
+    ntab.id);
     if (method === 'close') {
       await remove(active.id);
     }

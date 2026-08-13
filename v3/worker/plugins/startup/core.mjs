@@ -1,7 +1,9 @@
 import {log, query} from '../../core/utils.mjs';
 import {prefs} from '../../core/prefs.mjs';
+import {releaseMatching} from '../../core/release.mjs';
 import {browserStarters} from '../../core/startup.mjs';
 import {number} from '../../modes/number.mjs';
+import {startupPinnedReleaseScope} from '../release-scopes.mjs';
 
 const observe = () => {
   const opts = {
@@ -56,11 +58,9 @@ const observe = () => {
     });
   }
   if (prefs['startup-release-pinned'] && prefs['startup-pinned'] === false) {
-    query({
-      url: '*://*/*',
-      discarded: true,
-      pinned: true
-    }).then(tabs => tabs.forEach(tab => chrome.tabs.reload(tab.id)));
+    const scope = startupPinnedReleaseScope();
+    query(scope.query).then(tabs => releaseMatching(tabs, scope.matches))
+      .catch(error => log('startup pinned release failed', error));
   }
 };
 

@@ -1,5 +1,7 @@
 import {log, query} from '../../core/utils.mjs';
 import {storage} from '../../core/prefs.mjs';
+import {ownership} from '../../core/ownership.mjs';
+import {evaluateRuleList} from '../../core/rules.mjs';
 
 function enable() {
   log('trash.install is called');
@@ -72,19 +74,17 @@ chrome.alarms.onAlarm.addListener(alarm => {
       };
 
       const findInterval = (href, hostname, list) => {
-        if (list.length === 0) {
+        if (Array.isArray(list) && list.length === 0) {
           return prefs['trash.period'] * 60 * 60;
         }
-        return list.map(item => item.match(/^(?:(\w+):)?([^@]+)(?:@(\d+\w*))?/)).map(
-          ([, exprtype, expr, interval]) => {
-            if (
-              (exprtype === undefined && hostname.indexOf(expr) !== -1) ||
-              (exprtype === 're' && (new RegExp(expr)).test(href))
-            ) {
-              return parseInterval(interval) || prefs['trash.period'] * 60 * 60;
-            }
-          }
-        ).find(interval => interval > 0);
+        const result = evaluateRuleList(list, hostname, href, {format: 'trash'});
+        if (result.valid === false) {
+          log('trash', 'rule list rejected', result.reason);
+          return undefined;
+        }
+        return result.matched ?
+          parseInterval(result.matchedRule.interval) || prefs['trash.period'] * 60 * 60 :
+          undefined;
       };
 
       const keys = new Map();
@@ -124,7 +124,14 @@ chrome.alarms.onAlarm.addListener(alarm => {
         if (now - timestamp > interval * 1000) {
           for (const tab of keys.get(url).tabs) {
             log('trash', 'removing', tab.title);
-            chrome.tabs.remove(tab.id, () => chrome.runtime.lastError);
+            await ownership.withNativeMutationGuard(() => new Promise(resolve => {
+              chrome.tabs.remove(tab.id, () => {
+                void chrome.runtime.lastError;
+                resolve();
+              });
+            }), tab.id).catch(error => {
+              log('trash removal blocked', error?.code || error?.message || String(error));
+            });
           }
           delete prefs['trash.keys'][url];
           keys.delete(url);

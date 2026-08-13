@@ -1,12 +1,13 @@
 import {log, query} from '../../core/utils.mjs';
+import {releaseMatching} from '../../core/release.mjs';
 import {pluginFilters} from '../../modes/number.mjs';
+import {focusReleaseScope} from '../release-scopes.mjs';
 
 const observe = windowId => {
   if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    query({
-      discarded: true,
-      windowId
-    }).then(tabs => tabs.forEach(tab => chrome.tabs.reload(tab.id)));
+    const scope = focusReleaseScope(windowId);
+    return scope && query(scope.query).then(tabs => releaseMatching(tabs, scope.matches))
+      .catch(error => log('focus release failed', error));
   }
 };
 

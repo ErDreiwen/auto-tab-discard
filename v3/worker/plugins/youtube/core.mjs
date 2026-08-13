@@ -1,5 +1,6 @@
 import {log} from '../../core/utils.mjs';
 import {discard} from '../../core/discard.mjs';
+import {ownership} from '../../core/ownership.mjs';
 import {withTimeout} from '../../core/promise.mjs';
 
 const perform = discard.perform;
@@ -8,7 +9,7 @@ function enable() {
   log('installing youtube/core.js');
   discard.perform = tab => {
     if (tab.url && tab.url.startsWith('https://www.youtube.com/') && tab.frozen !== true) {
-      return withTimeout(chrome.scripting.executeScript({
+      return withTimeout(ownership.withNativeMutationGuard(() => chrome.scripting.executeScript({
         target: {
           tabId: tab.id
         },
@@ -24,7 +25,7 @@ function enable() {
             }
           }
         }
-      }), 3000, []).then(() => perform(tab));
+      }), tab.id), 3000, []).then(() => perform(tab));
     }
     else {
       return perform(tab);

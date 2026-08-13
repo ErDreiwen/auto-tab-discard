@@ -219,6 +219,36 @@
         "message": "Відкривати ЧаПи при оновленні",
         "description": ""
     },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
+    },
     "options_footnote_1": {
         "message": "Можна використовувати відповідність регулярного виразу з ключовим словом \"re:\". Наприклад, щоб додати до білого списку всі URL-адреси з ключовим словом \"google\", використовуйте \"re:google\".",
         "description": ""
@@ -447,8 +477,183 @@
         "message": "Закрити вкладку",
         "description": ""
     },
+    "options_title": {
+        "message": "Options Page :: Auto Tab Discard"
+    },
+    "options_list": {
+        "message": "Comma-separated list of hostnames"
+    },
+    "options_list_trash": {
+        "message": "Comma-separated list of hostnames, leave blank for all"
+    },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)"
+    },
+    "options_paused": {
+        "message": "Do not discard a tab when there is a paused media player"
+    },
+    "options_split_view": {
+        "message": "Do not discard a tab if it is in a split view and either tab of the split is focused"
+    },
+    "options_plugin_trash01": {
+        "message": "Permanently delete (remove) old discarded tabs if they are inactive for"
+    },
+    "options_plugin_trash02": {
+        "message": "hours"
+    },
+    "options_save_msg": {
+        "message": "Options saved"
+    },
+    "options_read_more": {
+        "message": "(Read More Here)"
+    },
+    "options_save_notice": {
+        "message": "Please be sure to click the \"Save Options\" button at the bottom of this page once you have finished making changes."
+    },
+    "options_rate_desc": {
+        "message": "If you like to rate the extension, click"
+    },
+    "options_rate_btn": {
+        "message": "Rate it"
+    },
+    "options_managed_1": {
+        "message": "This extension has the ability to use managed storage, allowing domain administrators to preconfigure preferences."
+    },
+    "options_managed_2": {
+        "message": "Read more here."
+    },
+    "popup_move_previous_title": {
+        "message": "Go to the previous active tab"
+    },
+    "popup_close_title": {
+        "message": "Close the current tab and switch to the previous active tab"
+    },
+    "popup_move_next_title": {
+        "message": "Go to the next active tab"
+    },
+    "popup_tmp_disable": {
+        "message": "Disable Auto Discarding Globally for"
+    },
+    "popup_tmp_0": {
+        "message": "Off"
+    },
+    "popup_tmp_1": {
+        "message": "1 hour"
+    },
+    "popup_tmp_6": {
+        "message": "6 hours"
+    },
+    "popup_tmp_12": {
+        "message": "12 hours"
+    },
+    "popup_tmp_24": {
+        "message": "1 day"
+    },
+    "bg_msg_2": {
+        "message": "Auto-discarding is disabled for now"
+    },
+    "menu_extra": {
+        "message": "Keep Tabs"
+    },
+    "cmd_discard_rights": {
+        "message": "Discard Tabs to the Right"
+    },
+    "cmd_discard_lefts": {
+        "message": "Discard Tabs to the Left"
+    },
+    "blank_header": {
+        "message": "(Discarded Window)"
+    },
     "blank_msg": {
         "message": "Усі вкладки у цьому вікні скидаються! Клацніть де завгодно, щоб закрити цю вкладку.",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Cancel"
+  },
+  "popup_retry": {
+    "message": "Повторити"
+  },
+  "popup_progress": {
+    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Cancelling safely…"
+  },
+  "popup_status_cancelled": {
+    "message": "Cancelled."
+  },
+  "popup_status_complete": {
+    "message": "Finished."
+  },
+  "popup_status_partial": {
+    "message": "Finished with some tabs not completed."
+  },
+  "popup_status_failed": {
+    "message": "The action could not be completed."
+  },
+  "popup_status_interrupted": {
+    "message": "The browser interrupted the previous action."
+  },
+  "popup_error_busy": {
+    "message": "Another tab action is already running in this window."
+  },
+  "popup_error_command_failed": {
+    "message": "The tab action failed."
+  },
+  "popup_error_no_active_tab": {
+    "message": "No active tab is available."
+  },
+  "popup_error_target_changed": {
+    "message": "The selected tab changed before the action could run."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ вкладок залишилися завантаженими, оскільки не було іншої безпечної вкладки, яку можна залишити активною. Відкрийте або виберіть іншу вкладку та повторіть спробу.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  }
 }

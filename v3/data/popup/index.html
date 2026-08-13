@@ -1,71 +1,84 @@
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml">
   <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title data-i18n="popup_title"></title>
     <link rel="stylesheet" href="index.css">
   </head>
   <body>
-    <header>Auto Tab Discard</header>
-    <ul>
-      <li data-cmd="discard-tab" data-i18n="popup_discard_tab"></li>
-      <li data-cmd="discard-tree" data-i18n="popup_discard_tree"></li>
+    <header><h1 id="popup-heading" data-i18n="popup_title"></h1></header>
+    <section id="activity" hidden role="region" aria-labelledby="activity-status" aria-busy="false">
+      <div id="activity-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></div>
+      <progress id="activity-progress" value="0" max="1" aria-labelledby="activity-status" aria-describedby="activity-summary"></progress>
+      <div id="activity-summary"></div>
+      <div id="activity-actions">
+        <button type="button" id="activity-cancel" data-i18n="popup_cancel"></button>
+        <button type="button" id="activity-retry" data-i18n="popup_retry" hidden></button>
+      </div>
+    </section>
+    <span id="shift-hint" class="visually-hidden" data-i18n="popup_shift_hint"></span>
+    <span id="release-label" class="visually-hidden" data-i18n="popup_release"></span>
+    <ul aria-labelledby="popup-heading">
+      <li><button type="button" class="row" data-cmd="discard-tab" data-i18n="popup_discard_tab" aria-describedby="shift-hint"></button></li>
+      <li><button type="button" class="row" data-cmd="discard-tree" data-i18n="popup_discard_tree" aria-describedby="shift-hint"></button></li>
       <li class="group">
-        <span data-i18n="popup_discard_window" data-i18n-title="popup_shift_hint" data-cmd="discard-window"></span>
-        <span data-cmd="release-window" data-i18n="popup_release" data-i18n-value="title">
-          <svg viewBox="0 0 100 100">
+        <button type="button" id="scope-window" data-i18n="popup_discard_window" data-i18n-title="popup_shift_hint" data-cmd="discard-window" aria-describedby="shift-hint"></button>
+        <button type="button" class="release" data-cmd="release-window" data-i18n-title="popup_release" aria-labelledby="release-label scope-window">
+          <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
             <polygon points="77.6,21.1 49.6,49.2 21.5,21.1 19.6,23 47.6,51.1 19.6,79.2 21.5,81.1 49.6,53 77.6,81.1 79.6,79.2   51.5,51.1 79.6,23 "/>
           </svg>
-        </span>
+        </button>
       </li>
       <li class="group">
-        <span data-cmd="discard-rights" data-i18n="popup_discard_rights" data-i18n-title="popup_shift_hint"></span>
-        <span data-cmd="release-rights" data-i18n="popup_release" data-i18n-value="title">
-          <svg viewBox="0 0 100 100">
+        <button type="button" id="scope-rights" data-cmd="discard-rights" data-i18n="popup_discard_rights" data-i18n-title="popup_shift_hint" aria-describedby="shift-hint"></button>
+        <button type="button" class="release" data-cmd="release-rights" data-i18n-title="popup_release" aria-labelledby="release-label scope-rights">
+          <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
             <polygon points="77.6,21.1 49.6,49.2 21.5,21.1 19.6,23 47.6,51.1 19.6,79.2 21.5,81.1 49.6,53 77.6,81.1 79.6,79.2   51.5,51.1 79.6,23 "/>
           </svg>
-        </span>
+        </button>
       </li>
       <li class="group">
-        <span data-cmd="discard-lefts" data-i18n="popup_discard_lefts" data-i18n-title="popup_shift_hint"></span>
-        <span data-cmd="release-lefts" data-i18n="popup_release" data-i18n-value="title">
-          <svg viewBox="0 0 100 100">
+        <button type="button" id="scope-lefts" data-cmd="discard-lefts" data-i18n="popup_discard_lefts" data-i18n-title="popup_shift_hint" aria-describedby="shift-hint"></button>
+        <button type="button" class="release" data-cmd="release-lefts" data-i18n-title="popup_release" aria-labelledby="release-label scope-lefts">
+          <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
             <polygon points="77.6,21.1 49.6,49.2 21.5,21.1 19.6,23 47.6,51.1 19.6,79.2 21.5,81.1 49.6,53 77.6,81.1 79.6,79.2   51.5,51.1 79.6,23 "/>
           </svg>
-        </span>
+        </button>
       </li>
       <li class="group">
-        <span data-cmd="discard-other-windows" data-i18n="popup_discard_other_windows" data-i18n-title="popup_shift_hint"></span>
-        <span data-cmd="release-other-windows" data-i18n="popup_release" data-i18n-value="title">
-          <svg viewBox="0 0 100 100">
+        <button type="button" id="scope-other-windows" data-cmd="discard-other-windows" data-i18n="popup_discard_other_windows" data-i18n-title="popup_shift_hint" aria-describedby="shift-hint"></button>
+        <button type="button" class="release" data-cmd="release-other-windows" data-i18n-title="popup_release" aria-labelledby="release-label scope-other-windows">
+          <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
             <polygon points="77.6,21.1 49.6,49.2 21.5,21.1 19.6,23 47.6,51.1 19.6,79.2 21.5,81.1 49.6,53 77.6,81.1 79.6,79.2   51.5,51.1 79.6,23 "/>
           </svg>
-        </span>
+        </button>
       </li>
       <li class="group">
-        <span data-cmd="discard-tabs" data-i18n="popup_discard_tabs" data-i18n-title="popup_shift_hint"></span>
-        <span data-cmd="release-tabs" data-i18n="popup_release" data-i18n-value="title">
-          <svg viewBox="0 0 100 100">
+        <button type="button" id="scope-tabs" data-cmd="discard-tabs" data-i18n="popup_discard_tabs" data-i18n-title="popup_shift_hint" aria-describedby="shift-hint"></button>
+        <button type="button" class="release" data-cmd="release-tabs" data-i18n-title="popup_release" aria-labelledby="release-label scope-tabs">
+          <svg viewBox="0 0 100 100" aria-hidden="true" focusable="false">
             <polygon points="77.6,21.1 49.6,49.2 21.5,21.1 19.6,23 47.6,51.1 19.6,79.2 21.5,81.1 49.6,53 77.6,81.1 79.6,79.2   51.5,51.1 79.6,23 "/>
           </svg>
-        </span>
+        </button>
       </li>
-      <div class="nav">
-        <div data-cmd="move-previous" data-i18n="popup_move_previous_title" data-i18n-value="title">
-          <svg viewBox="0 0 24 24" width="16">
+      <li class="nav">
+        <button type="button" data-cmd="move-previous" data-i18n="popup_move_previous_title" data-i18n-value="title">
+          <svg viewBox="0 0 24 24" width="16" aria-hidden="true" focusable="false">
             <polyline fill="none" points="15.5,21 6.5,12 15.5,3"/>
           </svg>
           <span data-i18n="popup_move_previous"></span>
-        </div>
-        <div data-cmd="close" data-i18n="popup_close_title" data-i18n-value="title">
+        </button>
+        <button type="button" data-cmd="close" data-i18n="popup_close_title" data-i18n-value="title">
           <span data-i18n="popup_close"></span>
-        </div>
-        <div data-cmd="move-next" data-i18n="popup_move_next_title" data-i18n-value="title">
-            <span data-i18n="popup_move_next"></span>
-            <svg viewBox="0 0 24 24" width="16">
-              <polyline fill="none" points="8.5,3 17.5,12 8.5,21"/>
-            </svg>
-        </div>
-      </div>
+        </button>
+        <button type="button" data-cmd="move-next" data-i18n="popup_move_next_title" data-i18n-value="title">
+          <span data-i18n="popup_move_next"></span>
+          <svg viewBox="0 0 24 24" width="16" aria-hidden="true" focusable="false">
+            <polyline fill="none" points="8.5,3 17.5,12 8.5,21"/>
+          </svg>
+        </button>
+      </li>
     </ul>
     <div class="mlt">
       <span data-i18n="popup_whitelist_desc"></span>
@@ -93,9 +106,9 @@
       </select>
     </div>
 
-    <div class="button" data-cmd="open-options" data-i18n="popup_open_options"></div>
+    <button type="button" class="button" data-cmd="open-options" data-i18n="popup_open_options"></button>
 
-    <script type="module" src="/firefox.mjs"></script>
+    <script type="module" src="/firefox/compatibility.mjs"></script>
     <script type="module" src="index.mjs"></script>
   </body>
 </html>

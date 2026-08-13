@@ -1,0 +1,34 @@
+{
+  "formatVersion": 1,
+  "releaseName": "Auto Tab Discard (Hardened)",
+  "releaseVersion": "0.6.9.2",
+  "archiveBaseName": "auto-tab-discard-0.6.9.2",
+  "releaseRef": "refs/tags/v0.6.9.2",
+  "attestation": {
+    "predicateType": "https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v1",
+    "repository": "ErDreiwen/auto-tab-discard",
+    "signerWorkflow": "ErDreiwen/auto-tab-discard/.github/workflows/browser-canaries.yml",
+    "trustedRootSha256": "65ca537f6ed8a47fd0e560c421baa1f6c1efb8b25fc200d8c5c02c0e92eb2b9c"
+  },
+  "baselineManifest": "tests/fixtures/release/manifest-permissions-0.6.9.1.json",
+  "permissionChangeNotes": "docs/PERMISSION_CHANGES.md",
+  "allowedPermissions": [
+    "alarms",
+    "contextMenus",
+    "idle",
+    "notifications",
+    "scripting",
+    "storage"
+  ],
+  "allowedHostPermissions": [
+    "*://*/*"
+  ],
+  "forbiddenManifestKeys": [
+    "key",
+    "update_url"
+  ],
+  "upstreamGeckoId": "{c2c003ee-bd69-42a2-b0e9-6f34222cb046}",
+  "forkGeckoId": "{b3b398c4-27bc-46b6-9447-f07deec6aeba}",
+  "forkHomepage": "https://github.com/ErDreiwen/auto-tab-discard",
+  "independentSubmissionReady": true
+}

@@ -55,6 +55,10 @@
         "message": "Προσθήκη ενός συμβόλου στις καρτέλες που απορρίπτονται (π.χ. 💤 ή ⏻︎) (εάν είναι δυνατόν)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Απόρριψη όλων των ξεκαρφίτσωμένων καρτελών κατά την εκκίνηση ενός περιηγητή ή μιας επέκτασης",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Να μγν γίνει απόρριψη μιας καρτέλας όταν είναι καρφιτσωμένη",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Να μη γίνει απόρριψη μιας καρτέλας αν βρίσκεται σε προβολή διαχωρισμού και κάποια από τις καρτέλες του διαχωρισμού έχει εστίαση",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "Άνοιγμα σελίδας Συχνές Ερωτήσεις σχετικά με τις ενημερώσεις",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "Επαναφορά Εργοστασιακών Ρυθμίσεων",
@@ -538,5 +576,93 @@
     "blank_header": {
         "message": "(Απορριφθέν Παράθυρο)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Cancel"
+  },
+  "popup_retry": {
+    "message": "Επανάληψη"
+  },
+  "popup_progress": {
+    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Cancelling safely…"
+  },
+  "popup_status_cancelled": {
+    "message": "Cancelled."
+  },
+  "popup_status_complete": {
+    "message": "Finished."
+  },
+  "popup_status_partial": {
+    "message": "Finished with some tabs not completed."
+  },
+  "popup_status_failed": {
+    "message": "The action could not be completed."
+  },
+  "popup_status_interrupted": {
+    "message": "The browser interrupted the previous action."
+  },
+  "popup_error_busy": {
+    "message": "Another tab action is already running in this window."
+  },
+  "popup_error_command_failed": {
+    "message": "The tab action failed."
+  },
+  "popup_error_no_active_tab": {
+    "message": "No active tab is available."
+  },
+  "popup_error_target_changed": {
+    "message": "The selected tab changed before the action could run."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ καρτέλα/-ες παρέμειναν φορτωμένες επειδή δεν υπήρχε διαθέσιμη ασφαλής καρτέλα διατήρησης. Ανοίξτε ή επιλέξτε άλλη καρτέλα και δοκιμάστε ξανά.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  }
 }

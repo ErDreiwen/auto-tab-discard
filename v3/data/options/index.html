@@ -59,6 +59,10 @@
           <td><input type="text" id="prepends"></td>
         </tr>
         <tr>
+          <td><input type="checkbox" id="discard-protected-on-close"></td>
+          <td colspan="2"><label for="discard-protected-on-close" data-i18n="options_discard_protected_on_close"></label></td>
+        </tr>
+        <tr>
           <td><input type="checkbox" id="startup-unpinned"></td>
           <td colspan="2"><label for="startup-unpinned" data-i18n="options_startup_unpinned"></label></td>
         </tr>
@@ -108,6 +112,10 @@
         <tr>
           <td><input type="checkbox" id="pinned"></td>
           <td colspan="2"><label for="pinned" data-i18n="options_pinned"></label></td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" id="split-view"></td>
+          <td colspan="2"><label for="split-view" data-i18n="options_split_view"></label></td>
         </tr>
         <tr>
           <td><input type="checkbox" id="form"></td>
@@ -269,12 +277,16 @@
           <td><input type="checkbox" id="faqs"></td>
           <td colspan="2"><label for="faqs" data-i18n="options_faqs"></label></td>
         </tr>
+        <tr>
+          <td><input type="checkbox" id="lifecycle-feedback"></td>
+          <td colspan="2"><label for="lifecycle-feedback" data-i18n="options_lifecycle_feedback"></label></td>
+        </tr>
       </tbody>
     </table>
 
     <div id="rate">
-      <label data-i18n="options_rate_desc"></label>
-      <input type="button" value="Rate Me" data-i18n="options_rate_btn" data-i18n-value="value">
+      <label data-i18n="options_feedback_desc"></label>
+      <input type="button" value="Open GitHub issues" data-i18n="options_feedback_btn" data-i18n-value="value">
     </div>
 
     <p>
@@ -282,6 +294,7 @@
         <span data-i18n="options_managed_1"></span>
         <a data-i18n="options_managed_2" target="_blank" data-href="faq10"></a>
       </div>
+      <div class="wnt backup-note" data-i18n="options_backup_notice"></div>
       <table width=100%>
         <colgroup>
           <col width="1"/>
@@ -293,13 +306,16 @@
           <td><input type="button" id="save" data-i18n="options_save" data-i18n-value="value"></td>
         </tr>
         <tr>
-          <td><input type="button" id="export" data-i18n="options_export" data-i18n-value="value"></td>
-          <td><input type="button" id="support"  data-i18n="options_support" data-i18n-value="value"></td>
+          <td><input type="button" id="export" data-i18n="options_export_raw" data-i18n-value="value"></td>
+          <td><input type="button" id="export-support" data-i18n="options_export_support" data-i18n-value="value"></td>
           <td><span id="info"></span></td>
+        </tr>
+        <tr>
+          <td><input type="button" id="support" data-i18n="options_support" data-i18n-value="value"></td>
         </tr>
       </table>
     </p>
 
-    <script src="index.js"></script>
+    <script type="module" src="index.js"></script>
   </body>
 </html>

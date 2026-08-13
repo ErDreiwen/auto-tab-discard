@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "requiredCapabilities": [
+    "artifactTreeAttested",
+    "crashFree",
+    "externalTakeover",
+    "freshShiftOverride",
+    "isolatedProfileRemoved",
+    "popupDiscardMatrix",
+    "popupReleaseMatrix",
+    "replacementLineage",
+    "versionReported"
+  ],
+  "requiredTargets": [
+    {
+      "browser": "chrome",
+      "channel": "minimum",
+      "id": "chrome-minimum"
+    },
+    {
+      "browser": "chrome",
+      "channel": "stable",
+      "id": "chrome-stable"
+    },
+    {
+      "browser": "chrome",
+      "channel": "beta",
+      "id": "chrome-beta"
+    },
+    {
+      "browser": "edge",
+      "channel": "stable",
+      "id": "edge-stable"
+    },
+    {
+      "browser": "edge",
+      "channel": "beta",
+      "id": "edge-beta"
+    }
+  ],
+  "minimumChrome": {
+    "declaredMajor": 102,
+    "engineVersion": "102.0.5005.40",
+    "playwrightVersion": "1.22.2",
+    "target": "chrome-minimum"
+  },
+  "quarantines": []
+}

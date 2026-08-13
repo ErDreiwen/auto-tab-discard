@@ -1,6 +1,7 @@
 const prefs = {
   'favicon': false,
   'prepends': '💤',
+  'discard-protected-on-close': false,
   'number': 6,
   'period': 10 * 60, // in seconds
   'click': 'click.popup',
@@ -14,6 +15,7 @@ const prefs = {
   'simultaneous-jobs': 10,
   'idle-timeout': 5 * 60, // in seconds
   'pinned': false, // pinned = true => do not discard if tab is pinned
+  'split-view': true, // split-view = true => do not discard split tabs if either tab of the split is focused
   'startup-unpinned': false,
   'startup-pinned': false,
   'startup-release-pinned': false,
@@ -44,7 +46,7 @@ const storage = (prefs, type = 'managed') => new Promise(resolve => {
     cache[name].push(callback);
   };
   chrome.storage.onChanged.addListener(ps => {
-    const keys = Object.keys(ps).filter(k => k !== '__discardOwnership');
+    const keys = Object.keys(ps).filter(k => !k.startsWith('__discardOwnership'));
     for (const k of keys) {
       prefs[k] = ps[k].newValue;
     }

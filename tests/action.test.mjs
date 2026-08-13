@@ -30,5 +30,11 @@ test('falls back to the popup action for an unknown string', async () => {
   const command = await actionCommand(async () => ({click: 'click.not-a-command'}));
 
   assert.equal(command, 'popup');
-  assert.equal(actionPopup('click.not-a-command'), 'data/popup/index.html');
+  assert.equal(actionPopup('click.not-a-command'), '/data/popup/index.html');
+});
+
+test('uses one extension-root-relative popup path for Firefox and Chromium', () => {
+  assert.equal(actionPopup('click.popup'), '/data/popup/index.html');
+  assert.equal(actionPopup('popup'), '/data/popup/index.html');
+  assert.equal(actionPopup('click.discard-tab'), '');
 });

@@ -55,3 +55,26 @@ test('waits for the popup command and passes its active tab through', async () =
   finish();
   assert.equal(await dispatched, true);
 });
+
+test('pins popup dispatch to the tab and window that the popup displayed', async () => {
+  const tab = {id: 42, windowId: 7};
+  const selected = await dispatchPopup({
+    cmd: 'discard-tree',
+    tabId: 42,
+    windowId: 7
+  }, async options => {
+    assert.deepEqual(options, {active: true, windowId: 7});
+    return [tab];
+  }, async (info, target) => {
+    assert.equal(info.menuItemId, 'discard-tree');
+    assert.equal(target, tab);
+  });
+  assert.equal(selected, true);
+
+  await assert.rejects(() => dispatchPopup({
+    cmd: 'discard-tree',
+    tabId: 42,
+    windowId: 7
+  }, async () => [{id: 43, windowId: 7}], async () => {}),
+  /target changed/);
+});

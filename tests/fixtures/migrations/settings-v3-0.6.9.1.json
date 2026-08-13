@@ -1,0 +1,25 @@
+{
+  "id": "settings-v3-0.6.9.1",
+  "sourceVersion": "0.6.9.1",
+  "storageArea": "local",
+  "input": {
+    "click": "click.discard",
+    "discard-protected-on-close": true,
+    "favicon": true,
+    "favicon-delay": 350,
+    "go-hidden": true,
+    "idle-timeout": 900,
+    "simultaneous-jobs": 4,
+    "startup-unpinned": true
+  },
+  "expected": {
+    "click": "click.discard",
+    "discard-protected-on-close": true,
+    "favicon": true,
+    "favicon-delay": 350,
+    "go-hidden": true,
+    "idle-timeout": 900,
+    "simultaneous-jobs": 4,
+    "startup-unpinned": true
+  }
+}

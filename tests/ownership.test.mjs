@@ -81,6 +81,7 @@ test('tags self discards, claims external discards, and rejects stale attempts',
         }
       },
       onUpdated: event('updated'),
+      onActivated: event('activated'),
       onCreated: event('created'),
       onAttached: event('attached'),
       onRemoved: event('removed'),
@@ -144,6 +145,35 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     assert.equal(staleOutcome.state, 'loaded');
     state = await ownership.snapshot();
     assert.equal(state[staleAdoption.id].source, 'self');
+
+    // Removing an identity is allowed to delete its generation entry. A unique
+    // token still fences a late read if Chromium immediately reuses the number.
+    const removedIdentity = {
+      id: 60,
+      windowId: 1,
+      url: 'https://removed-identity.example/',
+      discarded: true
+    };
+    liveTabs = [removedIdentity];
+    holdNextGet = true;
+    const removedAdoption = ownership.adopt(removedIdentity);
+    while (!releaseGet) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    liveTabs = [];
+    listeners.removed(removedIdentity.id);
+    const reusedIdentity = {
+      ...removedIdentity,
+      url: 'https://reused-identity.example/'
+    };
+    liveTabs = [reusedIdentity];
+    listeners.created(reusedIdentity);
+    listeners.updated(reusedIdentity.id, {discarded: true}, reusedIdentity);
+    releaseGet(removedIdentity);
+    assert.equal((await removedAdoption).retry, true);
+    await ownership.reconcile();
+    state = await ownership.snapshot();
+    assert.equal(state[reusedIdentity.id].source, 'claimed');
 
     listeners.updated(external.id, {discarded: false}, {...external, discarded: false});
     state = await ownership.snapshot();
@@ -235,6 +265,35 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     state = await ownership.snapshot();
     assert.deepEqual(state[attachedAdopted.id], attachedAdoptedMarker);
 
+    // Moving a queued takeover to another window must retain its durable MV3
+    // recovery anchor. The in-memory scheduler rekeys separately; if the worker
+    // dies afterward, startup still needs this exact explicit request.
+    const attachedQueued = {...attached, id: 41, discarded: true};
+    liveTabs = [attachedQueued];
+    const attachedQueueId = await ownership.queueTakeover(attachedQueued);
+    assert.equal(typeof attachedQueueId, 'string');
+    listeners.attached(attachedQueued.id);
+    state = await ownership.snapshot();
+    assert.equal(state[attachedQueued.id].state, 'takeover-queued');
+    assert.equal(state[attachedQueued.id].attemptId, attachedQueueId);
+
+    // Attachment also must not downgrade an unresolved late native operation
+    // to an external claim. Its generation-fenced reconciler or the next fresh
+    // claim remains responsible for promoting it to self ownership.
+    const attachedLate = {...attached, id: 44, discarded: false};
+    liveTabs = [attachedLate];
+    const attachedLateAttempt = await ownership.begin(attachedLate);
+    assert.equal(typeof attachedLateAttempt, 'string');
+    assert.equal(await ownership.finish(attachedLate, attachedLateAttempt, undefined, {
+      allowClaimed: false,
+      lateNative: true
+    }), false);
+    liveTabs = [{...attachedLate, discarded: true, status: 'unloaded'}];
+    listeners.attached(attachedLate.id);
+    state = await ownership.snapshot();
+    assert.equal(state[attachedLate.id].state, 'late-native');
+    assert.equal(state[attachedLate.id].attemptId, attachedLateAttempt);
+
     // A stale loaded result from an attachment must not cancel a newer discard
     // attempt that started while tabs.get was pending.
     const attachedAttemptRace = {...attached, id: 42, discarded: true};
@@ -309,6 +368,169 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     assert.equal(state[edgeFinal.id].source, 'self');
     edgeStatus = await ownership.status(edgeOriginal.id);
     assert.equal(edgeStatus.marker.source, 'self');
+
+    // Edge can replace a tab after an explicit takeover was durably queued but
+    // before its in-memory scheduler begins. The successor must retain the same
+    // queue nonce so MV3 restart recovery does not lose the user's command.
+    const queuedReplacementOriginal = {
+      ...edgeOriginal,
+      id: 56,
+      discarded: true,
+      status: 'unloaded',
+      url: 'https://queued-replacement.example/'
+    };
+    liveTabs = [queuedReplacementOriginal];
+    const queuedReplacementId = await ownership.queueTakeover(queuedReplacementOriginal);
+    const queuedReplacementSuccessor = {...queuedReplacementOriginal, id: 57};
+    liveTabs = [queuedReplacementSuccessor];
+    listeners.replaced(queuedReplacementSuccessor.id, queuedReplacementOriginal.id);
+    state = await ownership.snapshot();
+    assert.equal(state[queuedReplacementOriginal.id], undefined);
+    assert.equal(state[queuedReplacementSuccessor.id].state, 'takeover-queued');
+    assert.equal(state[queuedReplacementSuccessor.id].attemptId, queuedReplacementId);
+
+    // A timed-out native discard can itself be the operation that replaces the
+    // tab. The replacement's stable unloaded successor is authoritative proof
+    // of completion and must retain self ownership rather than becoming claimed.
+    const lateReplacementOriginal = {
+      ...edgeOriginal,
+      id: 58,
+      url: 'https://late-native-replacement.example/'
+    };
+    liveTabs = [lateReplacementOriginal];
+    const lateReplacementAttempt = await ownership.begin(lateReplacementOriginal);
+    assert.equal(await ownership.finish(lateReplacementOriginal, lateReplacementAttempt, undefined, {
+      allowClaimed: false,
+      lateNative: true,
+      visual: {complete: true, favicon: false, repair: true, title: true}
+    }), false);
+    const lateReplacementSuccessor = {
+      ...lateReplacementOriginal,
+      id: 59,
+      discarded: true,
+      status: 'unloaded'
+    };
+    liveTabs = [lateReplacementSuccessor];
+    listeners.replaced(lateReplacementSuccessor.id, lateReplacementOriginal.id);
+    state = await ownership.snapshot();
+    assert.equal(state[lateReplacementOriginal.id], undefined);
+    assert.equal(state[lateReplacementSuccessor.id].source, 'self');
+    assert.equal(state[lateReplacementSuccessor.id].attemptId, lateReplacementAttempt);
+    assert.equal(state[lateReplacementSuccessor.id].visual.complete, true);
+
+    // discarded:true is not enough on Chromium while the successor still says
+    // loading. Preserve late-native until an unloaded lifecycle read promotes it.
+    const unsettledReplacementOriginal = {
+      ...edgeOriginal,
+      id: 70,
+      url: 'https://unsettled-late-replacement.example/'
+    };
+    liveTabs = [unsettledReplacementOriginal];
+    const unsettledReplacementAttempt = await ownership.begin(unsettledReplacementOriginal);
+    assert.equal(await ownership.finish(
+      unsettledReplacementOriginal,
+      unsettledReplacementAttempt,
+      undefined,
+      {allowClaimed: false, lateNative: true}
+    ), false);
+    const unsettledReplacementSuccessor = {
+      ...unsettledReplacementOriginal,
+      id: 71,
+      discarded: true,
+      status: 'loading'
+    };
+    liveTabs = [unsettledReplacementSuccessor];
+    listeners.replaced(unsettledReplacementSuccessor.id, unsettledReplacementOriginal.id);
+    state = await ownership.snapshot();
+    assert.equal(state[unsettledReplacementSuccessor.id].state, 'late-native');
+    const settledReplacementSuccessor = {...unsettledReplacementSuccessor, status: 'unloaded'};
+    liveTabs = [settledReplacementSuccessor];
+    assert.equal((await ownership.claim(settledReplacementSuccessor)).source, 'self');
+
+    // The same fence applies without replacement: an early discarded:true /
+    // loading lifecycle event cannot promote or claim the durable intent. A
+    // later authoritative unloaded read converges exactly once to self.
+    const unsettledDirect = {
+      ...edgeOriginal,
+      id: 72,
+      url: 'https://unsettled-late-direct.example/'
+    };
+    liveTabs = [unsettledDirect];
+    const unsettledDirectAttempt = await ownership.begin(unsettledDirect);
+    assert.equal(await ownership.finish(unsettledDirect, unsettledDirectAttempt, undefined, {
+      allowClaimed: false,
+      lateNative: true
+    }), false);
+    const earlyDirect = {...unsettledDirect, discarded: true, status: 'loading'};
+    liveTabs = [earlyDirect];
+    assert.equal((await ownership.claim(earlyDirect)).state, 'late-native');
+    await ownership.reconcile();
+    state = await ownership.snapshot();
+    assert.equal(state[earlyDirect.id].state, 'late-native');
+    const settledDirect = {...earlyDirect, status: 'unloaded'};
+    liveTabs = [settledDirect];
+    assert.equal((await ownership.claim(settledDirect)).source, 'self');
+    state = await ownership.snapshot();
+    assert.equal(state[settledDirect.id].attemptId, unsettledDirectAttempt);
+
+    // Edge frozen direct-native intent survives worker-style reconciliation in
+    // every pre-settlement shape. It is never relabelled as a wake/reload
+    // takeover, and only discarded+unloaded promotes physical ownership.
+    const frozenPending = {
+      id: 73,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://direct-native-pending.example/'
+    };
+    liveTabs = [frozenPending];
+    const frozenPendingAttempt = await ownership.beginDirectNative(frozenPending);
+    assert.equal(typeof frozenPendingAttempt, 'string');
+    await ownership.reconcile();
+    state = await ownership.snapshot();
+    assert.equal(state[frozenPending.id].state, 'direct-native-pending');
+    assert.equal((await ownership.resolveFresh(frozenPending)).state, 'direct-native-pending');
+
+    const intermediatePending = {...frozenPending, frozen: false};
+    liveTabs = [intermediatePending];
+    await ownership.reconcile();
+    state = await ownership.snapshot();
+    assert.equal(state[intermediatePending.id].state, 'direct-native-pending');
+    assert.equal((await ownership.resolveFresh(intermediatePending)).state, 'direct-native-pending');
+
+    const activatedPending = {
+      id: 406,
+      windowId: 4,
+      active: false,
+      discarded: false,
+      frozen: false,
+      status: 'complete'
+    };
+    liveTabs = [activatedPending];
+    assert.ok(await ownership.beginDirectNative(activatedPending));
+    listeners.activated({tabId: activatedPending.id, windowId: activatedPending.windowId});
+    await new Promise(resolve => setTimeout(resolve));
+    assert.equal((await ownership.status(activatedPending.id)).marker, undefined);
+
+    const earlyPending = {...intermediatePending, discarded: true, status: 'complete'};
+    liveTabs = [earlyPending];
+    assert.equal(await ownership.finish(earlyPending, frozenPendingAttempt, undefined, {
+      allowClaimed: false,
+      directNative: true,
+      lateNative: true
+    }), false);
+    await ownership.reconcile();
+    assert.equal((await ownership.snapshot())[earlyPending.id].state, 'direct-native-pending');
+    assert.equal((await ownership.resolveFresh(earlyPending)).marker.state, 'direct-native-pending');
+
+    const physicalPending = {...earlyPending, status: 'unloaded'};
+    liveTabs = [physicalPending];
+    listeners.updated(physicalPending.id, {status: 'unloaded'}, physicalPending);
+    await ownership.reconcile();
+    state = await ownership.snapshot();
+    assert.equal(state[physicalPending.id].state, 'owned');
+    assert.equal(state[physicalPending.id].source, 'physical-only');
 
     // Also tolerate a browser that resolves the API callback with the new tab
     // before dispatching onReplaced. The globally unique nonce finds the old
@@ -586,6 +808,229 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     listeners.removed(20);
     state = await ownership.snapshot();
     assert.equal(state[20], undefined);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('reset fences a storage read that resolves after the ownership record was erased', async () => {
+  const staleMarker = {
+    attemptId: 'deleted-before-late-read',
+    source: 'self',
+    state: 'owned',
+    updatedAt: 1
+  };
+  const sessionState = {
+    __discardOwnership: {1: staleMarker}
+  };
+  const liveTab = {
+    active: false,
+    discarded: true,
+    id: 2,
+    status: 'unloaded',
+    url: 'https://after-reset.example/'
+  };
+  let holdRead = true;
+  let releaseRead;
+  const event = () => ({addListener() {}});
+
+  globalThis.chrome = {
+    runtime: {lastError: null},
+    storage: {
+      local: {},
+      session: {
+        get(defaults, callback) {
+          const result = JSON.parse(JSON.stringify({...defaults, ...sessionState}));
+          if (holdRead) {
+            holdRead = false;
+            releaseRead = () => callback(result);
+          }
+          else {
+            callback(result);
+          }
+        },
+        remove(key, callback) {
+          delete sessionState[key];
+          callback();
+        },
+        set(values, callback) {
+          Object.assign(sessionState, values);
+          callback();
+        }
+      }
+    },
+    tabs: {
+      get(id, callback) {
+        callback(id === liveTab.id ? {...liveTab} : undefined);
+      },
+      query(options, callback) {
+        callback([{...liveTab}]);
+      },
+      onAttached: event(),
+      onCreated: event(),
+      onRemoved: event(),
+      onReplaced: event(),
+      onUpdated: event()
+    }
+  };
+
+  try {
+    const url = new URL('../v3/worker/core/ownership.mjs', import.meta.url);
+    url.searchParams.set('late-reset-read', Date.now().toString());
+    const {ownership, STORAGE_KEY} = await import(url);
+
+    const staleStatus = ownership.status(1);
+    while (!releaseRead) {
+      await new Promise(resolve => setTimeout(resolve));
+    }
+    await ownership.reset();
+    assert.equal(sessionState[STORAGE_KEY], undefined);
+
+    releaseRead();
+    assert.equal((await staleStatus).marker.attemptId, staleMarker.attemptId);
+    await ownership.claim(liveTab);
+
+    const state = await ownership.snapshot();
+    assert.equal(state[1], undefined, 'the pre-reset read must never resurrect its deleted marker');
+    assert.equal(state[liveTab.id].source, 'claimed');
+    assert.equal(sessionState[`${STORAGE_KEY}:tab:1`], undefined);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('prunes ownership identity maps through thousands of create, replace, and remove cycles', async () => {
+  const sessionState = {};
+  const listeners = {};
+  const liveTabs = new Map();
+  const event = name => ({
+    addListener(listener) {
+      listeners[name] = listener;
+    }
+  });
+
+  globalThis.chrome = {
+    runtime: {lastError: null},
+    storage: {
+      local: {},
+      session: {
+        get(defaults, callback) {
+          callback({...defaults, ...sessionState});
+        },
+        remove(key, callback) {
+          delete sessionState[key];
+          callback();
+        },
+        set(values, callback) {
+          Object.assign(sessionState, values);
+          callback();
+        }
+      }
+    },
+    tabs: {
+      get(id, callback) {
+        callback(liveTabs.get(id));
+      },
+      query(options, callback) {
+        callback([...liveTabs.values()]);
+      },
+      onAttached: event('attached'),
+      onCreated: event('created'),
+      onRemoved: event('removed'),
+      onReplaced: event('replaced'),
+      onUpdated: event('updated')
+    }
+  };
+
+  try {
+    const url = new URL('../v3/worker/core/ownership.mjs', import.meta.url);
+    url.searchParams.set('stress', Date.now().toString());
+    const {ownership, STORAGE_KEY} = await import(url);
+    const cycles = 2048;
+    const cycleIdentity = (index, emitRemoval) => {
+      const original = {
+        id: 10_000 + index * 3,
+        discarded: false,
+        status: 'complete',
+        url: `https://identity-${index}.example/`
+      };
+      const middle = {...original, id: original.id + 1};
+      const successor = {...original, id: original.id + 2};
+      liveTabs.set(original.id, original);
+      listeners.created(original);
+      liveTabs.delete(original.id);
+      liveTabs.set(middle.id, middle);
+      listeners.replaced(middle.id, original.id);
+      liveTabs.delete(middle.id);
+      liveTabs.set(successor.id, successor);
+      listeners.replaced(successor.id, middle.id);
+
+      if (emitRemoval) {
+        listeners.removed(original.id);
+        listeners.removed(middle.id);
+        liveTabs.delete(successor.id);
+        listeners.removed(successor.id);
+      }
+      else {
+        liveTabs.delete(successor.id);
+      }
+    };
+
+    // First prove the event path reaches a zero baseline on its own.
+    for (let index = 0; index < cycles / 2; index += 1) {
+      cycleIdentity(index, true);
+    }
+    await ownership.diagnostics();
+    assert.deepEqual(await ownership.diagnostics(), {
+      attempts: 0,
+      generations: 0,
+      observedDiscards: 0,
+      replacements: 0,
+      takeoverAttempts: 0
+    });
+
+    // Then omit removal events so reconciliation has thousands of orphaned
+    // identity records to sweep independently of the direct event path.
+    for (let index = cycles / 2; index < cycles; index += 1) {
+      cycleIdentity(index, false);
+    }
+
+    // Populate every job-side map with identities that disappear without an
+    // onRemoved event. Reconciliation must clear these as well as lineage.
+    for (let index = 0; index < 32; index += 1) {
+      const tab = {
+        id: 50_000 + index,
+        discarded: false,
+        status: 'complete',
+        url: `https://pending-${index}.example/`
+      };
+      liveTabs.set(tab.id, tab);
+      listeners.created(tab);
+      const attemptId = index % 2 === 0 ? await ownership.begin(tab) : await ownership.beginTakeover(tab);
+      assert.equal(typeof attemptId, 'string');
+      listeners.updated(tab.id, {discarded: true}, {...tab, discarded: true, status: 'unloaded'});
+      liveTabs.delete(tab.id);
+    }
+
+    assert.equal(await ownership.reconcile(), 0);
+    assert.deepEqual(await ownership.diagnostics(), {
+      attempts: 0,
+      generations: 0,
+      observedDiscards: 0,
+      replacements: 0,
+      takeoverAttempts: 0
+    });
+    assert.deepEqual(await ownership.snapshot(), {});
+    assert.deepEqual(sessionState[STORAGE_KEY], {
+      phase: 'ready',
+      schema: 'auto-tab-discard/ownership',
+      version: 2
+    });
+    assert.equal(Object.keys(sessionState).some(key => key.startsWith(`${STORAGE_KEY}:tab:`)), false);
+    assert.equal(ownership.resolveId(10_000), 10_000);
+    assert.equal(ownership.resolveId(10_000 + (cycles - 1) * 3), 10_000 + (cycles - 1) * 3);
   }
   finally {
     delete globalThis.chrome;

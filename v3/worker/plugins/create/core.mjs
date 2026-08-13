@@ -1,22 +1,32 @@
 import {log, query} from '../../core/utils.mjs';
+import {ownership} from '../../core/ownership.mjs';
 
-const run = tab => {
-  chrome.scripting.executeScript({
-    target: {
-      tabId: tab.id
-    },
-    func: () => {
-      const run = () => chrome.runtime.sendMessage({
-        method: 'discard.on.load'
-      });
-      if (document.readyState === 'interactive' || document.readyState === 'complete') {
-        run();
+const run = async tab => {
+  // A restarted worker can know that one missing predecessor has an
+  // unattributed native-discard successor without knowing which live tab it
+  // is. This optional plug-in must obey the same global no-renderer fence as
+  // the automatic scanner and command paths.
+  return ownership.withNativeMutationGuard(() => chrome.scripting.executeScript({
+      target: {
+        tabId: tab.id
+      },
+      func: () => {
+        const run = () => chrome.runtime.sendMessage({
+          method: 'discard.on.load'
+        });
+        if (document.readyState === 'interactive' || document.readyState === 'complete') {
+          run();
+        }
+        else {
+          document.addEventListener('DOMContentLoaded', run);
+        }
       }
-      else {
-        document.addEventListener('DOMContentLoaded', run);
+    }), tab.id).then(() => true).catch(e => {
+      if (e?.code !== 'DIRECT_NATIVE_ORPHAN_BLOCKED') {
+        console.error('plugins/create -> error', e);
       }
-    }
-  }).catch(e => console.error('plugins/create -> error', e));
+      return false;
+    });
 };
 
 const observe = {

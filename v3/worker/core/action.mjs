@@ -25,6 +25,6 @@ const actionCommand = async storage => {
   return normalizeActionCommand(click);
 };
 
-const actionPopup = click => normalizeActionCommand(click) === 'popup' ? 'data/popup/index.html' : '';
+const actionPopup = click => normalizeActionCommand(click) === 'popup' ? '/data/popup/index.html' : '';
 
 export {actionCommand, actionPopup, normalizeActionCommand};

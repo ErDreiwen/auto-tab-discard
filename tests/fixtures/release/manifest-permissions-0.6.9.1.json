@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 3,
+  "name": "Auto Tab Discard (suspend)",
+  "version": "0.6.9.1",
+  "permissions": [
+    "alarms",
+    "contextMenus",
+    "idle",
+    "notifications",
+    "scripting",
+    "storage"
+  ],
+  "hostPermissions": [
+    "*://*/*"
+  ],
+  "source": "upstream v3 manifest at the 0.6.9.1 release"
+}

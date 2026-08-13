@@ -17,6 +17,10 @@
       "title": "pinned = true => do not discard if tab is pinned",
       "type": "boolean"
     },
+    "split-view": {
+      "title": "split-view = true => do not discard split tabs if either tab of the split is focused",
+      "type": "boolean"
+    },
     "form": {
       "title": "form = true => do not discard if form data is changed",
       "type": "boolean"
@@ -68,6 +72,17 @@
     "favicon": {
       "title": "Change favicon of discarded tabs (if possible)",
       "type": "boolean"
+    },
+    "discard-protected-on-close": {
+      "title": "Discard pinned or grouped tabs instead of closing them",
+      "type": "boolean"
+    },
+    "external.trusted-ids": {
+      "title": "Extension IDs permitted to request bounded safe tab discards",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "go-hidden": {
       "title": "Discard a tab if it is hidden",

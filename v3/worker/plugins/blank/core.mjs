@@ -1,76 +1,102 @@
 import {overwrite, release} from '../loader.mjs';
-import {tabsOutsideSelectedGroup} from '../../core/group.mjs';
+import {helperRegistry} from '../../core/helper-registry.mjs';
+import {helperMetadata} from '../../core/helper-metadata.mjs';
+import {createBlankPreparer} from '../../core/blank-helper.mjs';
+import {inprogress} from '../../core/discard.mjs';
+import {ownership} from '../../core/ownership.mjs';
 import {log, query} from '../../core/utils.mjs';
+
+const createTab = options => new Promise((resolve, reject) => {
+  try {
+    const operation = chrome.tabs.create(options, tab => {
+      const error = chrome.runtime.lastError;
+      error ? reject(Error(error.message || error)) : resolve(tab);
+    });
+    if (operation?.then) {
+      operation.then(resolve, reject);
+    }
+  }
+  catch (error) {
+    reject(error);
+  }
+});
+
+const helperOptions = (tab, active = false, nonce = '') => {
+  return {
+    active,
+    index: tab.index,
+    url: `/worker/plugins/blank/blank.html#${nonce}`,
+    windowId: tab.windowId
+  };
+};
+
+const createHelper = async (tab, {active = false, transactionId} = {}) => {
+  const nonce = await helperMetadata.put({
+    favicon: tab.favIconUrl,
+    title: tab.title
+  });
+  let helper;
+  try {
+    helper = await ownership.withNativeMutationGuard(() =>
+      createTab(helperOptions(tab, active, nonce)),
+    tab.id);
+    await helperRegistry.add(helper, {transactionId, openerTabId: tab.id});
+    return helper;
+  }
+  catch (error) {
+    await helperMetadata.remove(nonce).catch(() => false);
+    if (Number.isInteger(helper?.id)) {
+      await helperRegistry.close(helper.id).catch(() => false);
+    }
+    throw error;
+  }
+};
+
+const helperPage = chrome.runtime.getURL('worker/plugins/blank/blank.html');
+const isHelper = tab => [tab?.pendingUrl, tab?.url]
+  .some(url => typeof url === 'string' && url.split('#', 1)[0] === helperPage);
+
+const prepareBlank = createBlankPreparer({
+  activate: tab => ownership.withNativeMutationGuard(() =>
+    chrome.tabs.update(tab.id, {active: true}),
+  tab.id),
+  create: createHelper,
+  inProgress: id => inprogress.has(id),
+  isHelper,
+  read: query,
+  registry: helperRegistry,
+  resolveId: ownership.resolveId,
+  sendMessage: (id, message) => chrome.tabs.sendMessage(id, message)
+});
+let recovery = Promise.resolve();
+const recover = () => {
+  recovery = recovery.then(async () => {
+    const settled = await Promise.allSettled([
+      helperMetadata.cleanup(),
+      helperRegistry.cleanup()
+    ]);
+    const failures = settled
+      .filter(result => result.status === 'rejected')
+      .map(result => result.reason);
+    if (failures.length) {
+      throw new AggregateError(failures, 'blank helper recovery failed');
+    }
+  });
+  // Keep the recovery rejection observed while preserving it for prepare().
+  recovery.catch(error => log('blank helper recovery failed', error));
+};
+const prepare = (...args) => recovery.then(() => prepareBlank(...args));
 
 function enable() {
   log('blank.enable is called');
-  overwrite('before-menu-click', function({menuItemId}, tab) {
-    log('menu command:', menuItemId);
-    if (menuItemId === 'release-tabs' || menuItemId === 'release-other-windows') {
-      return query({
-        active: true,
-        currentWindow: false
-      }).then(tbs => {
-        for (const tb of tbs) {
-          chrome.tabs.sendMessage(tb.id, {
-            method: 'tab-is-active'
-          });
-        }
-      });
-    }
-    else if (menuItemId === 'discard-other-windows' || menuItemId === 'discard-tabs') {
-      return query({
-        active: true,
-        currentWindow: false,
-        url: '*://*/*' // only if the active tab is not an internal page
-      }).then(tbs => {
-        return Promise.all(tbs.map(tb => new Promise(resolve => {
-          const args = new URLSearchParams();
-          args.set('title', tb.title);
-          args.set('favicon', tb.favIconUrl);
-
-          chrome.tabs.create({
-            openerTabId: tb.id,
-            windowId: tb.windowId,
-            url: '/worker/plugins/blank/blank.html?' + args.toString(),
-            index: tb.index
-          }, resolve);
-        })));
-      });
-    }
-    else if (menuItemId === 'discard-tab' || menuItemId === 'discard-tree') {
-      return query({
-        active: false,
-        highlighted: false,
-        currentWindow: true,
-        discarded: false
-      }).then(tbs => {
-        if (menuItemId === 'discard-tree') {
-          tbs = tabsOutsideSelectedGroup(tbs, tab);
-        }
-        if (tbs.length === 0 && tab.url.startsWith('http')) {
-          const args = new URLSearchParams();
-          args.set('title', tab.title);
-          args.set('favicon', tab.favIconUrl);
-
-          return new Promise(resolve => chrome.tabs.create({
-            openerTabId: tab.id,
-            windowId: tab.windowId,
-            url: '/worker/plugins/blank/blank.html?' + args.toString(),
-            index: tab.index,
-            active: false // so that this tab gets focused
-          }, resolve));
-        }
-      });
-    }
-  });
+  recover();
+  overwrite('before-menu-click', prepare);
 }
 function disable() {
   log('blank.disable is called');
   release('before-menu-click');
+  recover();
 }
 
-export default {
-  enable,
-  disable
-};
+export default {disable, enable};
+export {createBlankPreparer, prepare};

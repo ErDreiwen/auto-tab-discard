@@ -19,21 +19,29 @@ const respondAsync = (task, sendResponse) => {
 };
 
 const dispatchPopup = async (request, query, onClicked) => {
-  const tabs = await query({
+  const pinnedWindow = Number.isInteger(request?.windowId);
+  const tabs = await query(pinnedWindow ? {
+    active: true,
+    windowId: request.windowId
+  } : {
     active: true,
     currentWindow: true
   });
   if (tabs.length === 0) {
     throw Error('No active tab is available');
   }
-  await onClicked({
+  if (Number.isInteger(request?.tabId) && tabs[0].id !== request.tabId) {
+    throw Error('The popup target changed before the command could run');
+  }
+  const value = await onClicked({
     menuItemId: request.cmd,
     value: request.value,
     checked: request.checked,
-    shiftKey: request.shiftKey
+    shiftKey: request.shiftKey,
+    progress: request.progress
   }, tabs[0]);
 
-  return true;
+  return value === undefined ? true : value;
 };
 
 export {dispatchPopup, respondAsync};

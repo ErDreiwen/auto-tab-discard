@@ -93,6 +93,10 @@ a {
   text-align: center;
 }
 
+.backup-note {
+  text-align: left;
+}
+
 .disabled {
   opacity: 0.2;
   pointer-events: none;

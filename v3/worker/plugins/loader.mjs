@@ -1,4 +1,6 @@
 import {storage} from '../core/prefs.mjs';
+import {createPluginPreferenceGate} from '../core/plugin-preferences.mjs';
+import {createInterruptRegistry} from '../core/plugin-interrupts.mjs';
 import startup from './startup/core.mjs';
 import focus from './focus/core.mjs';
 import trash from './trash/core.mjs';
@@ -10,29 +12,22 @@ import create from './create/core.mjs';
 import unloaded from './unloaded/core.mjs';
 import youtube from './youtube/core.mjs';
 
-const D = {
+const D = Object.freeze({
   'before-menu-click'() {
     return Promise.resolve();
   },
   'before-action'() {
     return ready;
   }
-};
+});
 
 // this is used to interrupt an internal process from a plug-in
-const interrupts = D;
-
-const overwrite = (name, c) => {
-  interrupts[name] = c;
-};
-const release = name => {
-  interrupts[name] = D[name];
-};
+const {interrupts, overwrite, release} = createInterruptRegistry(D);
 
 /* plug-in system */
 // Register browser-start behavior synchronously so the onStartup event cannot outrun it.
 startup.enable();
-const ready = storage({
+const pluginPreferences = {
   './plugins/focus/core.js': false,
   './plugins/trash/core.js': false,
   './plugins/force/core.js': false,
@@ -42,64 +37,28 @@ const ready = storage({
   './plugins/new/core.js': false,
   './plugins/unloaded/core.js': false,
   './plugins/youtube/core.js': false
-}).then(prefs => {
-  if (prefs['./plugins/focus/core.js']) {
-    focus.enable();
-  }
-  if (prefs['./plugins/trash/core.js']) {
-    trash.enable();
-  }
-  if (prefs['./plugins/force/core.js']) {
-    force.enable();
-  }
-  if (prefs['./plugins/next/core.js']) {
-    next.enable();
-  }
-  if (prefs['./plugins/previous/core.js']) {
-    previous.enable();
-  }
-  if (prefs['./plugins/blank/core.js']) {
-    blank.enable();
-  }
-  if (prefs['./plugins/new/core.js']) {
-    create.enable();
-  }
-  if (prefs['./plugins/unloaded/core.js']) {
-    unloaded.enable();
-  }
-  if (prefs['./plugins/youtube/core.js']) {
-    youtube.enable();
-  }
+};
+const pluginGate = createPluginPreferenceGate({
+  './plugins/focus/core.js': focus,
+  './plugins/trash/core.js': trash,
+  './plugins/force/core.js': force,
+  './plugins/next/core.js': next,
+  './plugins/previous/core.js': previous,
+  './plugins/blank/core.js': blank,
+  './plugins/new/core.js': create,
+  './plugins/unloaded/core.js': unloaded,
+  './plugins/youtube/core.js': youtube
+});
+const startupPreferenceRevision = pluginGate.snapshot();
+const ready = storage(pluginPreferences).then(preferences => {
+  pluginGate.applyStartup(startupPreferenceRevision, preferences);
 });
 
 chrome.storage.onChanged.addListener(ps => {
-  // AMO does not like dynamic imports
-  if ('./plugins/focus/core.js' in ps) {
-    focus[ps['./plugins/focus/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/trash/core.js' in ps) {
-    trash[ps['./plugins/trash/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/force/core.js' in ps) {
-    force[ps['./plugins/force/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/next/core.js' in ps) {
-    next[ps['./plugins/next/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/previous/core.js' in ps) {
-    previous[ps['./plugins/previous/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/blank/core.js' in ps) {
-    blank[ps['./plugins/blank/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/new/core.js' in ps) {
-    create[ps['./plugins/new/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/unloaded/core.js' in ps) {
-    unloaded[ps['./plugins/unloaded/core.js'].newValue ? 'enable' : 'disable']();
-  }
-  if ('./plugins/youtube/core.js' in ps) {
-    youtube[ps['./plugins/youtube/core.js'].newValue ? 'enable' : 'disable']();
+  // AMO does not like dynamic imports. The modules remain statically imported;
+  // this gate only protects their preference ordering.
+  for (const [key, change] of Object.entries(ps)) {
+    pluginGate.applyChange(key, change?.newValue === true);
   }
 });
 

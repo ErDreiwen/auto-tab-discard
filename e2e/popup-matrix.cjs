@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
+const {pathToFileURL} = require('node:url');
 const {chromium} = require('./playwright-runtime.cjs');
 
 let emergencyBrowserProcess;
@@ -13,6 +14,29 @@ const arg = (name, fallback) => {
   return index === -1 ? fallback : process.argv[index + 1];
 };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const publicFailureReason = error => {
+  const message = String(error?.message || error || '');
+  const nativeReason = message.match(/native context-menu UI Automation failed \(([a-z-]+)\)/i)?.[1];
+  if (nativeReason) {
+    return `native-menu-${nativeReason.toLowerCase()}`;
+  }
+  if (/timed out|timeout/i.test(message)) {
+    return 'bounded-timeout';
+  }
+  if (/cleanup|profile directory/i.test(message)) {
+    return 'cleanup-failed';
+  }
+  if (/does not exist/i.test(message)) {
+    return 'input-missing';
+  }
+  if (/refusing|requires the explicit/i.test(message)) {
+    return 'safety-refusal';
+  }
+  if (/browser exited|spawn/i.test(message)) {
+    return 'browser-launch-failed';
+  }
+  return 'matrix-invariant-failed';
+};
 const waitFor = async (task, description, timeout = 15000, interval = 50) => {
   const deadline = Date.now() + timeout;
   let value;
@@ -36,6 +60,640 @@ const waitFor = async (task, description, timeout = 15000, interval = 50) => {
 
 const taskkillPath = process.platform === 'win32' ?
   path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe') : undefined;
+const powershellPath = process.platform === 'win32' ? path.join(
+  process.env.SystemRoot || 'C:\\Windows',
+  'System32',
+  'WindowsPowerShell',
+  'v1.0',
+  'powershell.exe'
+) : undefined;
+const NATIVE_CONTEXT_MENU_TITLE = 'ZATD E2E Discard Tab';
+const NATIVE_MENU_TIMEOUT_MS = 5000;
+const NATIVE_POINTER_TIMEOUT_MS = 2000;
+const NATIVE_FOREGROUND_TIMEOUT_MS = 750;
+const NATIVE_MENU_UIA_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+
+function Stop-Sanitized([int] $Code, [string] $Reason) {
+  [Console]::Out.WriteLine('ATD_UIA_ERROR:' + $Reason)
+  exit $Code
+}
+
+try {
+  $rootProcessId = 0
+  if (![int]::TryParse($env:ATD_UIA_ROOT_PROCESS_ID, [ref] $rootProcessId) -or $rootProcessId -le 0) {
+    Stop-Sanitized 20 'invalid-process-scope'
+  }
+  $exactName = $env:ATD_UIA_EXACT_MENU_NAME
+  if ([string]::IsNullOrWhiteSpace($exactName)) {
+    Stop-Sanitized 20 'invalid-accessible-name'
+  }
+  $exactParentName = $env:ATD_UIA_EXACT_PARENT_NAME
+  if ([string]::IsNullOrWhiteSpace($exactParentName) -or $exactParentName -ceq $exactName) {
+    Stop-Sanitized 20 'invalid-parent-name'
+  }
+  $exactDocumentName = $env:ATD_UIA_EXACT_DOCUMENT_NAME
+  if ([string]::IsNullOrWhiteSpace($exactDocumentName)) {
+    Stop-Sanitized 20 'invalid-document-name'
+  }
+
+  Add-Type -AssemblyName UIAutomationClient
+  Add-Type -AssemblyName UIAutomationTypes
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class AtdNativePointer {
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern bool BringWindowToTop(IntPtr hWnd);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetForegroundWindow();
+
+  [DllImport("user32.dll")]
+  public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+  [DllImport("user32.dll")]
+  public static extern bool IsWindow(IntPtr hWnd);
+
+  [DllImport("kernel32.dll")]
+  public static extern uint GetCurrentThreadId();
+
+  [DllImport("user32.dll")]
+  public static extern bool SetCursorPos(int x, int y);
+
+  [DllImport("user32.dll")]
+  public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+}
+'@
+
+  $nameCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty,
+    $exactName
+  )
+  $parentNameCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty,
+    $exactParentName
+  )
+  $documentNameCondition = [System.Windows.Automation.PropertyCondition]::new(
+    [System.Windows.Automation.AutomationElement]::NameProperty,
+    $exactDocumentName
+  )
+
+  # Locate only the exact selected document inside the authoritative CDP
+  # browser process tree. Top-level window names are never read or emitted.
+  $documentDeadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_POINTER_TIMEOUT_MS})
+  $documentTarget = $null
+  $lastDocumentMatchCount = 0
+  do {
+    $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction Stop)
+    $allowed = [System.Collections.Generic.HashSet[int]]::new()
+    [void] $allowed.Add($rootProcessId)
+    do {
+      $added = $false
+      foreach ($process in $processes) {
+        $processId = [int] $process.ProcessId
+        $parentId = [int] $process.ParentProcessId
+        if ($allowed.Contains($parentId) -and $allowed.Add($processId)) {
+          $added = $true
+        }
+      }
+    } while ($added)
+
+    $documents = @{}
+    $topLevel = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+      [System.Windows.Automation.TreeScope]::Children,
+      [System.Windows.Automation.Condition]::TrueCondition
+    )
+    foreach ($root in $topLevel) {
+      try {
+        $rootCurrent = $root.Current
+        if (!$allowed.Contains([int] $rootCurrent.ProcessId) -or
+            [long] $rootCurrent.NativeWindowHandle -le 0) {
+          continue
+        }
+        $matches = $root.FindAll(
+          [System.Windows.Automation.TreeScope]::Subtree,
+          $documentNameCondition
+        )
+        foreach ($element in $matches) {
+          $current = $element.Current
+          if (!$allowed.Contains([int] $current.ProcessId) -or
+              $current.Name -cne $exactDocumentName -or
+              !$current.IsEnabled -or $current.IsOffscreen) {
+            continue
+          }
+          $isDocument = $current.ControlType -eq [System.Windows.Automation.ControlType]::Document
+          if (!$isDocument) {
+            $legacyDocument = $null
+            if ($element.TryGetCurrentPattern(
+                [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,
+                [ref] $legacyDocument)) {
+              # MSAA ROLE_SYSTEM_DOCUMENT is the RootWebArea fallback exposed
+              # by some Chromium accessibility providers.
+              $isDocument = [int] $legacyDocument.Current.Role -eq 15
+            }
+          }
+          if (!$isDocument) {
+            continue
+          }
+          $rect = $current.BoundingRectangle
+          if ([double]::IsNaN($rect.X) -or [double]::IsInfinity($rect.X) -or
+              [double]::IsNaN($rect.Y) -or [double]::IsInfinity($rect.Y) -or
+              [double]::IsNaN($rect.Width) -or [double]::IsInfinity($rect.Width) -or
+              [double]::IsNaN($rect.Height) -or [double]::IsInfinity($rect.Height) -or
+              $rect.Width -lt 48 -or $rect.Height -lt 48) {
+            continue
+          }
+          $runtimeId = [string]::Join('.', $element.GetRuntimeId())
+          $documents[$runtimeId] = [pscustomobject] @{
+            Rectangle = $rect
+            TopLevelHandle = [long] $rootCurrent.NativeWindowHandle
+            TopLevelProcessId = [int] $rootCurrent.ProcessId
+          }
+        }
+      }
+      catch {
+        # The exact disposable window can refresh its accessibility tree while
+        # the fixture settles; the next bounded poll obtains a fresh element.
+      }
+    }
+    $lastDocumentMatchCount = $documents.Count
+    if ($lastDocumentMatchCount -eq 1) {
+      $documentTarget = @($documents.Values)[0]
+      break
+    }
+    Start-Sleep -Milliseconds 50
+  } while ([DateTime]::UtcNow -lt $documentDeadline)
+
+  if ($lastDocumentMatchCount -gt 1) {
+    Stop-Sanitized 27 'ambiguous-document-match'
+  }
+  if ($null -eq $documentTarget) {
+    Stop-Sanitized 27 'exact-document-not-found'
+  }
+
+  $targetWindow = [IntPtr]::new([long] $documentTarget.TopLevelHandle)
+  if ($targetWindow -eq [IntPtr]::Zero -or
+      ![AtdNativePointer]::IsWindow($targetWindow)) {
+    Stop-Sanitized 28 'invalid-document-window'
+  }
+  $targetProcessId = [uint32] 0
+  $targetThreadId = [AtdNativePointer]::GetWindowThreadProcessId(
+    $targetWindow, [ref] $targetProcessId)
+  if ($targetThreadId -eq 0 -or $targetProcessId -eq 0 -or
+      [int] $targetProcessId -ne [int] $documentTarget.TopLevelProcessId -or
+      !$allowed.Contains([int] $targetProcessId)) {
+    Stop-Sanitized 28 'document-window-outside-process-scope'
+  }
+
+  # SetForegroundWindow is intentionally attempted only for the exact HWND
+  # that owns the one exact document match. When Windows foreground locking
+  # rejects the direct call, temporarily join this helper thread to the live
+  # foreground and target input queues. Every successful attachment is
+  # detached in the same iteration's finally block, including error paths.
+  $foregroundDeadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_FOREGROUND_TIMEOUT_MS})
+  do {
+    $foregroundWindow = [AtdNativePointer]::GetForegroundWindow()
+    if ($foregroundWindow -eq $targetWindow) {
+      break
+    }
+    $foregroundProcessId = [uint32] 0
+    $foregroundThreadId = [uint32] 0
+    if ($foregroundWindow -ne [IntPtr]::Zero) {
+      $foregroundThreadId = [AtdNativePointer]::GetWindowThreadProcessId(
+        $foregroundWindow, [ref] $foregroundProcessId)
+    }
+    $currentThreadId = [AtdNativePointer]::GetCurrentThreadId()
+    $attachedToForeground = $false
+    $attachedToTarget = $false
+    try {
+      if ($foregroundThreadId -ne 0 -and $foregroundThreadId -ne $currentThreadId) {
+        $attachedToForeground = [AtdNativePointer]::AttachThreadInput(
+          $currentThreadId, $foregroundThreadId, $true)
+      }
+      if ($targetThreadId -ne $currentThreadId -and
+          $targetThreadId -ne $foregroundThreadId) {
+        $attachedToTarget = [AtdNativePointer]::AttachThreadInput(
+          $currentThreadId, $targetThreadId, $true)
+      }
+      [void] [AtdNativePointer]::BringWindowToTop($targetWindow)
+      [void] [AtdNativePointer]::SetForegroundWindow($targetWindow)
+    }
+    finally {
+      if ($attachedToTarget) {
+        [void] [AtdNativePointer]::AttachThreadInput(
+          $currentThreadId, $targetThreadId, $false)
+      }
+      if ($attachedToForeground) {
+        [void] [AtdNativePointer]::AttachThreadInput(
+          $currentThreadId, $foregroundThreadId, $false)
+      }
+    }
+    if ([AtdNativePointer]::GetForegroundWindow() -eq $targetWindow) {
+      break
+    }
+    Start-Sleep -Milliseconds 25
+  } while ([DateTime]::UtcNow -lt $foregroundDeadline)
+
+  $foregroundWindow = [AtdNativePointer]::GetForegroundWindow()
+  $foregroundProcessId = [uint32] 0
+  [void] [AtdNativePointer]::GetWindowThreadProcessId(
+    $foregroundWindow, [ref] $foregroundProcessId)
+  $foregroundIsExactTarget = $foregroundWindow -eq $targetWindow
+  $foregroundIsIsolatedBrowser = $foregroundWindow -ne [IntPtr]::Zero -and
+    $allowed.Contains([int] $foregroundProcessId)
+  if ($foregroundWindow -eq [IntPtr]::Zero -or
+      (!$foregroundIsExactTarget -and !$foregroundIsIsolatedBrowser)) {
+    Stop-Sanitized 28 'foreground-outside-process-scope'
+  }
+
+  # Re-resolve the exact document HWND immediately before pointer input. A
+  # destroyed/reused handle or process-tree escape fails closed even if another
+  # isolated browser window happened to own foreground at the final poll.
+  $verifiedTargetProcessId = [uint32] 0
+  $verifiedTargetThreadId = [AtdNativePointer]::GetWindowThreadProcessId(
+    $targetWindow, [ref] $verifiedTargetProcessId)
+  if ($verifiedTargetThreadId -eq 0 -or
+      [int] $verifiedTargetProcessId -ne [int] $targetProcessId -or
+      !$allowed.Contains([int] $verifiedTargetProcessId)) {
+    Stop-Sanitized 28 'document-window-became-stale'
+  }
+
+  $clickX = [int] [Math]::Floor($documentTarget.Rectangle.X + 24)
+  $clickY = [int] [Math]::Floor(
+    $documentTarget.Rectangle.Y + $documentTarget.Rectangle.Height - 24)
+  if (![AtdNativePointer]::SetCursorPos($clickX, $clickY)) {
+    Stop-Sanitized 28 'pointer-position-failed'
+  }
+
+  [AtdNativePointer]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)
+  try {
+    Start-Sleep -Milliseconds 30
+  }
+  finally {
+    [AtdNativePointer]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)
+  }
+  [Console]::Out.WriteLine('ATD_UIA_POINTER_RESULT:ProcessScopedRightClick')
+
+  $deadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_MENU_TIMEOUT_MS})
+  $lastMatchCount = 0
+  $lastParentMatchCount = 0
+  $parentExpansionAttempted = $false
+  $sawUnsupportedExactMatch = $false
+
+  do {
+    # Refresh the transitive process tree on every bounded poll. Chromium can
+    # create its native UI host after the page's right click, so a one-time
+    # child snapshot can incorrectly exclude the real menu provider.
+    $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction Stop)
+    $allowed = [System.Collections.Generic.HashSet[int]]::new()
+    [void] $allowed.Add($rootProcessId)
+    do {
+      $added = $false
+      foreach ($process in $processes) {
+        $processId = [int] $process.ProcessId
+        $parentId = [int] $process.ParentProcessId
+        if ($allowed.Contains($parentId) -and $allowed.Add($processId)) {
+          $added = $true
+        }
+      }
+    } while ($added)
+
+    $preferred = @{}
+    $fallbacks = @{}
+    $exactChildObserved = $false
+    $topLevel = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+      [System.Windows.Automation.TreeScope]::Children,
+      [System.Windows.Automation.Condition]::TrueCondition
+    )
+    foreach ($root in $topLevel) {
+      try {
+        # Reject unrelated top-level windows before reading any descendant
+        # accessibility tree. This prevents a personal browser or another app
+        # with the same menu label from ever entering the candidate set.
+        if (!$allowed.Contains([int] $root.Current.ProcessId)) {
+          continue
+        }
+        $matches = $root.FindAll(
+          [System.Windows.Automation.TreeScope]::Subtree,
+          $nameCondition
+        )
+        foreach ($element in $matches) {
+          $current = $element.Current
+          if ($allowed.Contains([int] $current.ProcessId) -and
+              $current.Name -ceq $exactName) {
+            $exactChildObserved = $true
+            if (!$current.IsEnabled) {
+              continue
+            }
+            # Edge can report an actionable native menu item as offscreen when
+            # its context menu is long or scrollable. UIA pattern invocation
+            # does not require a screen coordinate, so retain the exact-name,
+            # enabled-state, process-scope, and uniqueness gates without
+            # treating that provider-specific visibility flag as authority.
+            $method = $null
+            $pattern = $null
+            if ($element.TryGetCurrentPattern(
+                [System.Windows.Automation.InvokePattern]::Pattern,
+                [ref] $pattern)) {
+              $method = 'InvokePattern'
+            }
+            else {
+              $legacy = $null
+              if ($element.TryGetCurrentPattern(
+                  [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,
+                  [ref] $legacy) -and
+                  ![string]::IsNullOrWhiteSpace($legacy.Current.DefaultAction)) {
+                $method = 'LegacyIAccessiblePattern'
+                $pattern = $legacy
+              }
+            }
+            # Chromium-family providers can expose both an actionable parent
+            # and a same-name Text child. Eliminate non-actionable duplicates
+            # before runtime-ID uniqueness is evaluated.
+            if ($null -eq $method) {
+              $sawUnsupportedExactMatch = $true
+              continue
+            }
+            $runtimeId = [string]::Join('.', $element.GetRuntimeId())
+            $candidate = [pscustomobject] @{
+              Method = $method
+              Pattern = $pattern
+            }
+            if ($current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem) {
+              $preferred[$runtimeId] = $candidate
+            }
+            else {
+              $fallbacks[$runtimeId] = $candidate
+            }
+          }
+        }
+      }
+      catch {
+        # A transient native-menu element can disappear while its properties
+        # are read. The next bounded poll obtains a fresh UIA element.
+      }
+    }
+    # Prefer the browser-neutral MenuItem contract when a provider exposes it.
+    # Edge's native popup may instead expose the exact entry as another
+    # actionable control type; only that pattern-proven fallback is eligible.
+    $scoped = $fallbacks
+    if ($preferred.Count -gt 0) {
+      $scoped = $preferred
+    }
+    $lastMatchCount = $scoped.Count
+
+    if ($lastMatchCount -eq 1) {
+      $target = @($scoped.Values)[0]
+      if ($target.Method -eq 'InvokePattern') {
+        $target.Pattern.Invoke()
+        [Console]::Out.WriteLine('ATD_UIA_RESULT:InvokePattern')
+        exit 0
+      }
+      if ($target.Method -eq 'LegacyIAccessiblePattern') {
+        $target.Pattern.DoDefaultAction()
+        [Console]::Out.WriteLine('ATD_UIA_RESULT:LegacyIAccessiblePattern')
+        exit 0
+      }
+      Stop-Sanitized 23 'unsupported-menu-pattern'
+    }
+
+    if ($lastMatchCount -eq 0 -and !$exactChildObserved -and !$parentExpansionAttempted) {
+      $parents = @{}
+      foreach ($root in $topLevel) {
+        try {
+          if (!$allowed.Contains([int] $root.Current.ProcessId)) {
+            continue
+          }
+          # Query only the exact manifest-derived extension parent. No other
+          # accessible names are read into the candidate set or output.
+          $parentMatches = $root.FindAll(
+            [System.Windows.Automation.TreeScope]::Subtree,
+            $parentNameCondition
+          )
+          foreach ($element in $parentMatches) {
+            $current = $element.Current
+            if (!$allowed.Contains([int] $current.ProcessId) -or
+                $current.Name -cne $exactParentName -or
+                !$current.IsEnabled) {
+              continue
+            }
+            $parentMethod = $null
+            $parentPattern = $null
+            if ($element.TryGetCurrentPattern(
+                [System.Windows.Automation.ExpandCollapsePattern]::Pattern,
+                [ref] $parentPattern) -and
+                $parentPattern.Current.ExpandCollapseState -ne
+                  [System.Windows.Automation.ExpandCollapseState]::LeafNode) {
+              $parentMethod = 'ExpandCollapsePattern'
+            }
+            else {
+              $legacy = $null
+              if ($element.TryGetCurrentPattern(
+                  [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,
+                  [ref] $legacy)) {
+                $defaultAction = $legacy.Current.DefaultAction
+                if (![string]::IsNullOrWhiteSpace($defaultAction) -and
+                    $defaultAction -match '(?i)\b(expand|open|show)\b') {
+                  $parentMethod = 'LegacyIAccessiblePattern'
+                  $parentPattern = $legacy
+                }
+              }
+            }
+            # Same-name non-actionable Text descendants are excluded before
+            # the unique runtime-ID safety decision.
+            if ($null -eq $parentMethod) {
+              continue
+            }
+            $runtimeId = [string]::Join('.', $element.GetRuntimeId())
+            $parents[$runtimeId] = [pscustomobject] @{
+              Method = $parentMethod
+              Pattern = $parentPattern
+            }
+          }
+        }
+        catch {
+          # A disappearing native-menu parent is retried by the next poll.
+        }
+      }
+      $lastParentMatchCount = $parents.Count
+      if ($lastParentMatchCount -eq 1) {
+        $parent = @($parents.Values)[0]
+        $parentExpansionAttempted = $true
+        if ($parent.Method -eq 'ExpandCollapsePattern') {
+          $parent.Pattern.Expand()
+        }
+        elseif ($parent.Method -eq 'LegacyIAccessiblePattern') {
+          $parent.Pattern.DoDefaultAction()
+        }
+        else {
+          Stop-Sanitized 25 'unsupported-parent-pattern'
+        }
+        [Console]::Out.WriteLine('ATD_UIA_PARENT_RESULT:' + $parent.Method)
+        Start-Sleep -Milliseconds 100
+        continue
+      }
+    }
+
+    Start-Sleep -Milliseconds 50
+  } while ([DateTime]::UtcNow -lt $deadline)
+
+  if ($lastMatchCount -gt 1) {
+    Stop-Sanitized 22 'ambiguous-exact-match'
+  }
+  if ($lastParentMatchCount -gt 1) {
+    Stop-Sanitized 25 'ambiguous-parent-match'
+  }
+  if ($sawUnsupportedExactMatch) {
+    Stop-Sanitized 23 'unsupported-menu-pattern'
+  }
+  if ($parentExpansionAttempted) {
+    Stop-Sanitized 26 'expanded-parent-child-not-found'
+  }
+  Stop-Sanitized 21 'exact-item-not-found'
+}
+catch {
+  Stop-Sanitized 24 'automation-failure'
+}
+`;
+const startNativeContextMenuSelector = (
+  exactName, browserPid, exactParentName, exactDocumentName
+) => {
+  if (process.platform !== 'win32' || !powershellPath || !fs.existsSync(powershellPath)) {
+    throw Error('native context-menu UI Automation is unavailable');
+  }
+  if (typeof exactName !== 'string' || exactName.length === 0 || exactName.length > 128) {
+    throw Error('native context-menu selection requires one exact accessible name');
+  }
+  if (typeof exactParentName !== 'string' || exactParentName.length === 0 ||
+      exactParentName.length > 128 || exactParentName === exactName) {
+    throw Error('native context-menu selection requires one exact accessible parent name');
+  }
+  if (typeof exactDocumentName !== 'string' || exactDocumentName.trim().length === 0 ||
+      exactDocumentName.length > 256) {
+    throw Error('native context-menu selection requires one exact accessible document name');
+  }
+  if (!Number.isInteger(browserPid) || browserPid <= 0) {
+    throw Error('native context-menu selection requires an isolated browser process scope');
+  }
+  const child = spawn(powershellPath, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-STA',
+    '-Command',
+    '& ([scriptblock]::Create([Console]::In.ReadToEnd()))'
+  ], {
+    env: {
+      ...process.env,
+      ATD_UIA_EXACT_MENU_NAME: exactName,
+      ATD_UIA_EXACT_PARENT_NAME: exactParentName,
+      ATD_UIA_EXACT_DOCUMENT_NAME: exactDocumentName,
+      ATD_UIA_ROOT_PROCESS_ID: String(browserPid)
+    },
+    shell: false,
+    stdio: ['pipe', 'pipe', 'ignore'],
+    windowsHide: true
+  });
+  child.stdout.setEncoding('utf8');
+  let output = '';
+  child.stdout.on('data', chunk => output = (output + chunk).slice(-4096));
+
+  let cancelled = false;
+  let settled = false;
+  let timer;
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  // A failed pointer action can delay the caller's await until cleanup. Mark
+  // the original promise handled immediately while preserving its rejection
+  // for the later explicit await.
+  completion.catch(() => {});
+  const finishError = reason => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timer);
+    rejectCompletion(Error(`native context-menu UI Automation failed (${reason})`));
+  };
+  const finishSuccess = value => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timer);
+    resolveCompletion(value);
+  };
+  const closed = new Promise(resolve => child.once('close', () => resolve(true)));
+  child.once('error', () => finishError('helper-failure'));
+  child.stdin.once('error', () => {
+    finishError('helper-input-failure');
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+    }
+  });
+  child.once('close', code => {
+    const result = output.match(
+      /ATD_UIA_RESULT:(InvokePattern|LegacyIAccessiblePattern)/)?.[1];
+    const parentExpansionMethod = output.match(
+      /ATD_UIA_PARENT_RESULT:(ExpandCollapsePattern|LegacyIAccessiblePattern)/)?.[1];
+    const pointerMethod = output.match(
+      /ATD_UIA_POINTER_RESULT:(ProcessScopedRightClick)/)?.[1];
+    if (!cancelled && code === 0 && result) {
+      finishSuccess({
+        method: result,
+        parentExpansionMethod,
+        pointerMethod,
+        scope: 'cdp-browser-process-tree'
+      });
+      return;
+    }
+    const reason = output.match(/ATD_UIA_ERROR:([a-z-]+)/)?.[1] ||
+      (cancelled ? 'selector-cancelled' : 'helper-failure');
+    finishError(reason);
+  });
+  timer = setTimeout(() => {
+    finishError('bounded-timeout');
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+    }
+  }, NATIVE_POINTER_TIMEOUT_MS + NATIVE_FOREGROUND_TIMEOUT_MS +
+    NATIVE_MENU_TIMEOUT_MS + 2000);
+  // Stream the exact in-memory script over this child's private stdin. This
+  // avoids Windows command-line length and quoting limits without a shell or
+  // a shared/global temporary file.
+  child.stdin.end(NATIVE_MENU_UIA_SCRIPT, 'utf8');
+
+  const cancel = async () => {
+    const needed = child.exitCode === null && child.signalCode === null;
+    if (needed) {
+      cancelled = true;
+      finishError('selector-cancelled');
+      child.kill('SIGKILL');
+    }
+    let exited = await Promise.race([closed, sleep(2000).then(() => false)]);
+    if (!exited && child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      exited = await Promise.race([closed, sleep(2000).then(() => false)]);
+    }
+    if (!exited) {
+      throw Error('native context-menu selector cleanup timed out');
+    }
+    return {needed};
+  };
+
+  return {cancel, completion};
+};
 const killProcessTreeSync = child => {
   if (!child || child.exitCode !== null || !Number.isInteger(child.pid)) {
     return {needed: false};
@@ -48,9 +706,8 @@ const killProcessTreeSync = child => {
     });
     return {
       needed: true,
-      status: outcome.status,
-      stderr: outcome.stderr?.trim(),
-      stdout: outcome.stdout?.trim()
+      method: 'taskkill-process-tree',
+      status: outcome.status
     };
   }
   return {needed: true, signal: child.kill('SIGKILL')};
@@ -78,7 +735,7 @@ const settleWithin = async (operation, timeout = 5000) => {
   try {
     return await Promise.race([
       Promise.resolve(operation).then(value => ({status: 'fulfilled', value}), error => ({
-        error: error?.message || String(error),
+        reasonCode: publicFailureReason(error),
         status: 'rejected'
       })),
       new Promise(resolve => timer = setTimeout(() => resolve({status: 'timeout'}), timeout))
@@ -113,14 +770,39 @@ const PRIMARY_BACKGROUND = [
 ];
 const OTHER_BACKGROUND = ['a-bg-1', 'a-bg-2', 'b-bg-1', 'b-bg-2'];
 const ALL_BACKGROUND = [...PRIMARY_BACKGROUND, ...OTHER_BACKGROUND];
+const ALL_SCOPED_TABS = [
+  ...PRIMARY_BACKGROUND,
+  'p-selected',
+  ...OTHER_BACKGROUND,
+  'a-active',
+  'b-active'
+];
 const SETUP_EXTERNAL = new Set(['p-left-near', 'p-right-mid', 'a-bg-2', 'b-bg-2']);
 const DISCARD_SPECS = {
   'discard-window': PRIMARY_BACKGROUND,
   'discard-rights': ['p-right-near', 'p-right-mid', 'p-right-far'],
   'discard-lefts': ['p-left-far', 'p-left-near'],
-  'discard-other-windows': OTHER_BACKGROUND,
-  'discard-tabs': ALL_BACKGROUND
+  // The blank-tab safety plug-in moves focus to bg-1 in each other window so
+  // the formerly active tab can be discarded without leaving a window with no
+  // live keeper.
+  'discard-other-windows': ['a-active', 'a-bg-2', 'b-active', 'b-bg-2'],
+  // The all-windows form performs the same keeper swap in every window.
+  'discard-tabs': [
+    ...PRIMARY_BACKGROUND,
+    'a-active',
+    'a-bg-2',
+    'b-active',
+    'b-bg-2'
+  ]
 };
+const SCOPED_SHIFT_PROTECTED = {
+  'discard-window': 'p-right-far',
+  'discard-rights': 'p-right-far',
+  'discard-lefts': 'p-left-far',
+  'discard-other-windows': 'a-active',
+  'discard-tabs': 'p-right-far'
+};
+const ROTATED_OTHER_WINDOW_KEEPERS = ['a-bg-1', 'b-bg-1'];
 const RELEASE_SPECS = {
   'release-window': PRIMARY_BACKGROUND,
   'release-rights': ['p-right-near', 'p-right-mid', 'p-right-far'],
@@ -172,10 +854,53 @@ const POPUP_COMMANDS = [
   ...Object.keys(RELEASE_SPECS)
 ];
 
+const minimalPdf = () => {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R ' +
+      '/Resources << /Font << /F1 5 0 R >> >> >>',
+    '<< /Length 46 >>\nstream\nBT /F1 18 Tf 36 72 Td (ATD PDF fixture) Tj ET\nendstream',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+  ];
+  let body = '%PDF-1.4\n';
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body, 'ascii'));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(body, 'ascii');
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  body += offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body, 'ascii');
+};
+const PDF_FIXTURE = minimalPdf();
+
 const startFixtureServer = async () => {
   const requests = [];
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
+    if (url.pathname === '/favicon.svg') {
+      response.writeHead(200, {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Content-Type': 'image/svg+xml'
+      });
+      response.end('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+        '<rect width="32" height="32" rx="6" fill="#3267d6"/>' +
+        '<circle cx="16" cy="16" r="7" fill="#fff"/></svg>');
+      return;
+    }
+    if (url.pathname === '/document.pdf') {
+      response.writeHead(200, {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Content-Disposition': 'inline; filename="atd-e2e.pdf"',
+        'Content-Length': PDF_FIXTURE.length,
+        'Content-Type': 'application/pdf'
+      });
+      response.end(PDF_FIXTURE);
+      return;
+    }
     if (url.pathname !== '/tab') {
       response.writeHead(404, {'Content-Type': 'text/plain'});
       response.end('not found');
@@ -220,6 +945,7 @@ const startFixtureServer = async () => {
     response.write(`<!doctype html>
 <meta charset="utf-8">
 <title>ATD E2E ${id}</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?id=${encodeURIComponent(id)}">
 <body data-id="${id}">ATD E2E ${id}</body>
 <script>
   const key = 'atd-e2e-loads-${id}';
@@ -344,7 +1070,7 @@ const findCrashDumps = root => {
       }
       else if (entry.name.toLowerCase().endsWith('.dmp')) {
         const stat = fs.statSync(target);
-        found.push({path: target, size: stat.size, updatedAt: stat.mtimeMs});
+        found.push({size: stat.size, updatedAt: stat.mtimeMs});
       }
     }
   };
@@ -433,6 +1159,24 @@ const sampleMemory = async cdp => {
   };
 };
 
+const resolveNativeMenuBrowserProcessId = async cdp => {
+  let processInfo;
+  try {
+    ({processInfo = []} = await cdp.send('SystemInfo.getProcessInfo'));
+  }
+  catch {
+    throw Error('CDP browser process scope is unavailable');
+  }
+  const browserProcessIds = [...new Set(processInfo
+    .filter(info => info?.type === 'browser')
+    .map(info => Number(info.id))
+    .filter(id => Number.isInteger(id) && id > 0))];
+  if (browserProcessIds.length !== 1) {
+    throw Error('CDP browser process scope is missing or ambiguous');
+  }
+  return browserProcessIds[0];
+};
+
 const browserSnapshot = (driver, ids) => driver.evaluate(async tabIds => {
   const tabs = [];
   for (const id of tabIds) {
@@ -443,8 +1187,12 @@ const browserSnapshot = (driver, ids) => driver.evaluate(async tabIds => {
       tabs.push({id, missing: true, error: error.message});
     }
   }
-  const stored = await chrome.storage.session.get('__discardOwnership');
-  return {ownership: stored.__discardOwnership || {}, tabs};
+  const stored = await chrome.storage.session.get(null);
+  const prefix = '__discardOwnership:tab:';
+  const ownership = Object.fromEntries(Object.entries(stored)
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, value]) => [key.slice(prefix.length), value?.marker]));
+  return {ownership, tabs};
 }, ids);
 
 const main = async () => {
@@ -462,7 +1210,7 @@ const main = async () => {
   const extensionPath = path.resolve(arg('extension', path.join(__dirname, '..', 'v3')));
   const profileRoot = path.resolve(arg('profile-root', path.join(__dirname, '.profiles')));
   const resultsRoot = path.resolve(arg('results', path.join(__dirname, 'results')));
-  const runId = `matrix-${Date.now()}-${process.pid}`;
+  const runId = `matrix-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const profile = path.join(profileRoot, runId);
   const resultPath = path.join(resultsRoot, `${runId}.json`);
   for (const [label, target] of [['browser executable', executablePath], ['extension', extensionPath]]) {
@@ -472,6 +1220,10 @@ const main = async () => {
   }
   fs.mkdirSync(profile, {recursive: true});
   fs.mkdirSync(resultsRoot, {recursive: true});
+  const restrictedFilePath = path.join(profile, 'restricted-file.html');
+  fs.writeFileSync(restrictedFilePath, '<!doctype html><meta charset="utf-8">' +
+    '<title>ATD restricted file fixture</title><body>ATD restricted file fixture</body>', 'utf8');
+  const restrictedFileUrl = pathToFileURL(restrictedFilePath).href;
   const removeIsolatedProfile = () => {
     fs.rmSync(profile, {force: true, maxRetries: 3, recursive: true, retryDelay: 250});
     if (fs.existsSync(profile)) {
@@ -514,8 +1266,10 @@ const main = async () => {
   }
   const {browser, browserProcess, context} = launched;
   let cdp;
+  let nativeMenuBrowserProcessId;
   try {
     cdp = await browser.newBrowserCDPSession();
+    nativeMenuBrowserProcessId = await resolveNativeMenuBrowserProcessId(cdp);
   }
   catch (error) {
     await settleWithin(browser.close(), 5000);
@@ -539,6 +1293,42 @@ const main = async () => {
   const replacementIds = new Map();
   const lineageById = new Map();
   const trackedLayouts = new Set();
+  const reportOmittedKeys = new Set([
+    'executablePath',
+    'parentProcessId',
+    'path',
+    'pid',
+    'processId',
+    'processIds',
+    'processInfo',
+    'processes',
+    'stack',
+    'stderr',
+    'stdout'
+  ]);
+  const sanitizeReportString = value => value
+    .replace(/file:\/{2,3}[^\s"'<>]+/gi, 'file://<isolated-fixture>')
+    .replace(/\b[A-Za-z]:[\\/][^\r\n"'<>|]*/g, '<local-path>')
+    .replace(/\b(?:PID|process(?:\s+|-)id)\s*[:=]?\s*\d+\b/gi, 'process-id:<redacted>')
+    .replace(/(?:chrome|edge)-extension:\/\/[^/\s"'<>]+/gi, 'extension://<isolated>')
+    .replace(/https?:\/\/(?:127\.0\.0\.1|localhost):\d+/gi, 'http://<fixture>');
+  const sanitizeReportValue = value => {
+    if (typeof value === 'string') {
+      return sanitizeReportString(value);
+    }
+    if (Array.isArray(value)) {
+      return value.map(sanitizeReportValue);
+    }
+    if (!value || typeof value !== 'object') {
+      return value;
+    }
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !reportOmittedKeys.has(key))
+      .map(([key, entry]) => [key, sanitizeReportValue(entry)]));
+  };
+  const persistReport = () => {
+    fs.writeFileSync(resultPath, `${JSON.stringify(sanitizeReportValue(report), null, 2)}\n`);
+  };
 
   const resolveTabId = id => {
     const visited = [];
@@ -604,26 +1394,21 @@ const main = async () => {
 
   const writeReport = (ok, error) => {
     report = {
-      browser: {executablePath, version: browser.version()},
+      browser: {family: allowEdge ? 'edge' : 'chromium', version: browser.version()},
       crashes: findCrashDumps(profile),
-      error: error ? {message: error.message, stack: error.stack} : undefined,
+      error: error ? {reasonCode: publicFailureReason(error)} : undefined,
       extension: extensionId ? {
-        id: extensionId,
-        path: extensionPath,
         treeSha256: hashDirectory(extensionPath),
         version: manifest?.version
       } : undefined,
       fixtureRequests: fixture.requests,
       memory,
       ok,
-      profile,
-      runId,
+      reportFormat: 'sanitized-v1',
       scenarios,
-      stderr: allowEdge ? undefined : launched.stderr(),
-      stderrSuppressed: allowEdge,
       timeline
     };
-    fs.writeFileSync(resultPath, `${JSON.stringify(report, null, 2)}\n`);
+    persistReport();
   };
 
   try {
@@ -642,7 +1427,8 @@ const main = async () => {
     await driver.evaluate(async token => {
       globalThis.__atdE2ETelemetryToken = token;
       await chrome.storage.local.set({
-        './plugins/blank/core.js': false,
+        favicon: true,
+        'favicon-delay': 100,
         log: false,
         number: 0,
         period: 86400,
@@ -704,12 +1490,15 @@ const main = async () => {
           removedId
         }));
         chrome.storage.onChanged.addListener((changes, areaName) => {
-          if (changes.__discardOwnership) {
-            emit({
-              areaName,
-              event: 'storage.ownership',
-              value: changes.__discardOwnership
-            });
+          for (const [key, value] of Object.entries(changes)) {
+            if (key === '__discardOwnership' || key.startsWith('__discardOwnership:tab:')) {
+              emit({
+                areaName,
+                event: 'storage.ownership',
+                key,
+                value
+              });
+            }
           }
         });
         chrome.runtime.onMessage.addListener(request => {
@@ -1085,6 +1874,153 @@ const main = async () => {
       return layout;
     };
 
+    const restrictedCreationCode = message => {
+      const value = String(message || '');
+      if (/not allowed|cannot access|blocked|disallowed|unsafe/i.test(value)) {
+        return 'browser-policy-rejected';
+      }
+      if (/invalid|malformed|unsupported/i.test(value)) {
+        return 'browser-url-rejected';
+      }
+      return 'tabs-create-rejected';
+    };
+    const buildRestrictedScope = async prefix => {
+      await reset();
+      const selectedEntry = fixtureUrl(prefix, 'restricted-keeper');
+      const primary = await createWindow([selectedEntry], selectedEntry.key);
+      const layout = {prefix, tabs: {}, windowIds: []};
+      mergeWindow(layout, primary, [selectedEntry]);
+      layout.primaryWindowId = primary.windowId;
+      layout.selectedId = layout.tabs[selectedEntry.key].id;
+
+      const specifications = [{
+        expectedProtocols: ['file:'],
+        key: 'restricted-file',
+        scheme: 'file',
+        url: restrictedFileUrl
+      }, {
+        expectedProtocols: ['data:'],
+        key: 'restricted-data',
+        scheme: 'data',
+        url: 'data:text/html;charset=utf-8,%3Ctitle%3EATD%20data%20fixture%3C%2Ftitle%3EATD'
+      }, {
+        expectedProtocols: ['http:', 'chrome-extension:', 'edge-extension:'],
+        key: 'restricted-pdf',
+        scheme: 'pdf',
+        url: `${fixture.baseUrl}/document.pdf?case=${encodeURIComponent(prefix)}`
+      }, {
+        expectedProtocols: allowEdge ? ['edge:', 'chrome:'] : ['chrome:'],
+        key: 'restricted-internal',
+        scheme: 'internal',
+        url: allowEdge ? 'edge://version/' : 'chrome://version/'
+      }, {
+        expectedProtocols: ['chrome-extension:', 'edge-extension:'],
+        key: 'restricted-extension',
+        scheme: 'extension',
+        url: `chrome-extension://${extensionId}/data/options/index.html#restricted-${prefix}`
+      }];
+      const capabilities = [];
+
+      for (const specification of specifications) {
+        const creation = await driver.evaluate(async ({url, windowId}) => {
+          try {
+            const tab = await chrome.tabs.create({active: false, url, windowId});
+            return {ok: true, tab};
+          }
+          catch (error) {
+            return {message: error?.message || String(error), ok: false};
+          }
+        }, {url: specification.url, windowId: primary.windowId});
+        if (creation?.ok !== true || !Number.isInteger(creation.tab?.id)) {
+          capabilities.push({
+            availability: 'unavailable',
+            creation: 'rejected',
+            reasonCode: restrictedCreationCode(creation?.message),
+            scheme: specification.scheme
+          });
+          continue;
+        }
+
+        let current = creation.tab;
+        try {
+          current = await waitFor(async () => {
+            const value = await driver.evaluate(id => chrome.tabs.get(id).catch(() => undefined), creation.tab.id);
+            return value && value.status !== 'loading' ? value : false;
+          }, `${specification.scheme} restricted fixture to settle`, 10000, 100);
+        }
+        catch (error) {
+          current = await driver.evaluate(id => chrome.tabs.get(id).catch(() => undefined), creation.tab.id);
+          if (current) {
+            await driver.evaluate(id => chrome.tabs.remove(id).catch(() => {}), current.id);
+          }
+          capabilities.push({
+            availability: 'unavailable',
+            creation: 'created-but-not-ready',
+            reasonCode: 'readiness-timeout',
+            scheme: specification.scheme
+          });
+          continue;
+        }
+        if (!current) {
+          capabilities.push({
+            availability: 'unavailable',
+            creation: 'created-then-removed',
+            reasonCode: 'tab-disappeared',
+            scheme: specification.scheme
+          });
+          continue;
+        }
+
+        const exposedUrl = current.url || current.pendingUrl || '';
+        let observedProtocol = 'redacted';
+        if (exposedUrl) {
+          try {
+            observedProtocol = new URL(exposedUrl).protocol.toLowerCase();
+          }
+          catch (error) {
+            observedProtocol = 'invalid';
+          }
+        }
+        if (observedProtocol !== 'redacted' &&
+            specification.expectedProtocols.includes(observedProtocol) === false) {
+          await driver.evaluate(id => chrome.tabs.remove(id).catch(() => {}), current.id);
+          capabilities.push({
+            availability: 'unavailable',
+            creation: 'substituted',
+            observedProtocol,
+            reasonCode: 'requested-scheme-not-preserved',
+            scheme: specification.scheme
+          });
+          continue;
+        }
+
+        layout.tabs[specification.key] = {
+          ...current,
+          idHistory: [current.id],
+          key: specification.key,
+          label: `${prefix}-${specification.key}`,
+          url: specification.url
+        };
+        capabilities.push({
+          availability: 'available',
+          creation: 'created',
+          key: specification.key,
+          observedProtocol,
+          readiness: 'ready',
+          scheme: specification.scheme
+        });
+      }
+
+      trackLayout(layout);
+      await focusSelected(layout);
+      const expectedIds = tabIds(layout).sort((left, right) => left - right);
+      const actualIds = (await driver.evaluate(windowId => chrome.tabs.query({windowId}), primary.windowId))
+        .map(tab => tab.id).sort((left, right) => left - right);
+      assert.deepEqual(actualIds, expectedIds,
+        'restricted-scheme setup must not leave a substituted or rejected tab outside the capability report');
+      return {capabilities, layout};
+    };
+
     function tabIds(layout, keys = Object.keys(layout.tabs)) {
       syncLayoutLineage(layout);
       return keys.map(key => layout.tabs[key].id);
@@ -1107,6 +2043,10 @@ const main = async () => {
         tabs: Object.fromEntries(keys.map((key, index) => [key, snapshot.tabs[index]]))
       };
     };
+    const outcomeForTabLineage = (outcomes, tab) => {
+      const ids = [...new Set([...(tab.idHistory || []), tab.id])].reverse();
+      return ids.map(id => outcomes[String(id)]).find(Boolean);
+    };
     const assertOwnershipKeys = (snapshot, layout, expectedKeys, label) => {
       const expectedIds = [...new Set(expectedKeys.map(key => String(layout.tabs[key].id)))].sort();
       const actualIds = Object.keys(snapshot.ownership).sort();
@@ -1114,6 +2054,48 @@ const main = async () => {
       for (const id of expectedIds) {
         assert.equal(snapshot.ownership[id]?.state, 'owned', `${label}: marker ${id} must be settled owned state`);
       }
+    };
+    const sleepVisual = tab => ({
+      favicon: tab.favIconUrl || '',
+      title: tab.title || ''
+    });
+    const assertSleepVisual = (tab, marker, label) => {
+      const visual = sleepVisual(tab);
+      assert.match(visual.title, /^💤\s/, `${label}: sleep title prefix is missing`);
+      assert.equal((visual.title.match(/💤\s/g) || []).length, 1,
+        `${label}: sleep title prefix must appear exactly once`);
+      assert.equal(marker?.visual?.favicon, true,
+        `${label}: ownership marker must confirm favicon preparation`);
+      assert.equal(marker?.visual?.title, true,
+        `${label}: ownership marker must confirm title preparation`);
+      assert.equal(marker?.visual?.titleMarker, '\u{1F4A4}',
+        `${label}: ownership marker must retain the configured title indicator`);
+      assert.equal(marker?.visual?.complete, true,
+        `${label}: ownership marker must confirm complete visual preparation`);
+      return visual;
+    };
+    const assertFaviconOnlyVisual = (tab, marker, label) => {
+      const visual = sleepVisual(tab);
+      assert.doesNotMatch(visual.title, /^\u{1F4A4}\s/u,
+        `${label}: favicon-only mode must not add the sleep title prefix`);
+      assert.equal(marker?.visual?.title, true,
+        `${label}: favicon-only ownership must confirm its no-title requirement`);
+      assert.equal(marker?.visual?.titleMarker, undefined,
+        `${label}: favicon-only ownership must not persist a title marker`);
+      assert.equal(marker?.visual?.favicon, true,
+        `${label}: favicon-only ownership must confirm favicon preparation`);
+      assert.equal(marker?.visual?.complete, true,
+        `${label}: favicon-only ownership must confirm complete visual preparation`);
+      return visual;
+    };
+    const assertReleasedVisual = (tab, label) => {
+      const visual = sleepVisual(tab);
+      assert.doesNotMatch(visual.title, /^💤\s/, `${label}: stale sleep title survived release`);
+      assert.doesNotMatch(visual.favicon, /^data:image\/png/i,
+        `${label}: stale generated sleep favicon survived release`);
+      assert.match(visual.favicon, /\/favicon\.svg(?:\?|$)/i,
+        `${label}: fixture favicon was not restored after release`);
+      return visual;
     };
 
     async function externalDiscard(layout, keys) {
@@ -1146,13 +2128,43 @@ const main = async () => {
       await page.waitForSelector('[data-cmd="discard-tab"]');
       await page.waitForFunction(() =>
         document.querySelector('[data-cmd="discard-tab"]')?.textContent.trim().length > 0);
-      return {created, page};
+      await page.waitForFunction(({tabId, windowId}) =>
+        document.documentElement.dataset.popupReady === 'true' &&
+        document.documentElement.dataset.selectedTabId === String(tabId) &&
+        document.documentElement.dataset.selectedWindowId === String(windowId), {
+        tabId: layout.selectedId,
+        windowId: layout.primaryWindowId
+      });
+      const hostWindow = await driver.evaluate(tabId => chrome.windows.create({
+        focused: false,
+        tabId,
+        type: 'normal'
+      }), created.id);
+      assert.ok(Number.isInteger(hostWindow?.id) && hostWindow.id !== layout.primaryWindowId,
+        'popup surrogate must move into a dedicated out-of-scope window');
+      await waitFor(async () => {
+        const host = await driver.evaluate(id => chrome.tabs.get(id).catch(() => undefined), created.id);
+        return host?.active === true && host.windowId === hostWindow.id;
+      }, `popup surrogate ${nonce} to become active out of scope`, 10000);
+      return {created, hostWindowId: hostWindow.id, page};
     };
 
     const removePopup = async popup => {
-      if (!popup.page.isClosed()) {
-        await driver.evaluate(id => chrome.tabs.remove(id).catch(() => {}), popup.created.id);
+      const lineage = [...lineageFor(popup.created.id)];
+      const current = resolveTabId(popup.created.id);
+      if (!lineage.includes(current)) {
+        lineage.push(current);
       }
+      const removeIndividually = ids => Promise.all(ids.map(id =>
+        chrome.tabs.remove(id).catch(() => {})));
+      await driver.evaluate(removeIndividually, lineage);
+      await waitFor(async () => {
+        const currentLineage = [...lineageFor(popup.created.id)];
+        await driver.evaluate(removeIndividually, currentLineage);
+        const snapshot = await readSnapshot(currentLineage);
+        return snapshot.tabs.every(tab => tab.missing === true) &&
+          currentLineage.every(id => snapshot.ownership[id] === undefined);
+      }, `popup host ${popup.created.id} lineage removal and ownership cleanup`, 10000);
     };
 
     const auditPopup = async layout => {
@@ -1183,7 +2195,12 @@ const main = async () => {
       }
     };
 
-    const clickPopup = async (layout, command, shiftKey = false) => {
+    const clickPopup = async (
+      layout,
+      command,
+      shiftKey = false,
+      {expectedStates = ['complete']} = {}
+    ) => {
       const popup = await openPopup(layout);
       await focusSelected(layout);
       await installWorkerApiTelemetry();
@@ -1269,13 +2286,11 @@ const main = async () => {
           await sleep(25);
         }
       })();
+      let commandResult;
       try {
         await popup.page.locator(`[data-cmd="${command}"]`).click({
           modifiers: shiftKey ? ['Shift'] : []
         });
-        const outcome = await waitFor(() => timeline.find(event =>
-          event.event === 'popup-response' && event.token === responseToken),
-        `${command} popup response`, 30000);
         const popupRequest = await waitFor(() => timeline.find(event =>
           event.event === 'popup-request' && event.token === responseToken),
         `${command} popup request`, 5000);
@@ -1284,8 +2299,44 @@ const main = async () => {
           method: 'popup',
           shiftKey
         }, `${command}: the real popup click must forward its modifier state`);
-        assert.equal(outcome.error, undefined, `${command} popup runtime error`);
-        assert.equal(outcome.response?.ok, true, `${command} failed: ${outcome.response?.error}`);
+        const delivery = await waitFor(async () => {
+          const outcome = timeline.find(event =>
+            event.event === 'popup-response' && event.token === responseToken);
+          if (outcome) {
+            return {kind: 'response', outcome};
+          }
+          const host = await driver.evaluate(id => chrome.tabs.get(id).catch(() => undefined), popup.created.id);
+          return !host || host.discarded === true ? {kind: 'host-discarded'} : undefined;
+        }, `${command} popup response or in-scope host discard`, 30000);
+        if (delivery.kind === 'response') {
+          assert.equal(delivery.outcome.error, undefined, `${command} popup runtime error`);
+          assert.equal(delivery.outcome.response?.ok, true,
+            `${command} failed: ${delivery.outcome.response?.error}`);
+          const progress = delivery.outcome.response?.value;
+          assert.ok(expectedStates.includes(progress?.state),
+            `${command}: progress state ${progress?.state} is not one of ${expectedStates.join(', ')}`);
+          assert.equal(progress?.completed, progress?.total,
+            `${command}: every intended target must have a terminal outcome`);
+          assert.equal((progress?.summary?.success || 0) + (progress?.summary?.skipped || 0) +
+            (progress?.summary?.failed || 0), progress?.total,
+          `${command}: progress summary must account for every intended target`);
+          commandResult = {kind: delivery.kind, progress, response: delivery.outcome.response};
+        }
+        else {
+          // A real browser-action popup is not a tab.  Our stable, tab-hosted
+          // UI surrogate is intentionally in the selected window so
+          // currentWindow resolves exactly as it does for the popup.  A forced
+          // all/window/side command can therefore include that surrogate and
+          // close its response channel.  Record the distinction; the command's
+          // authoritative final-state assertions immediately follow.
+          timeline.push({
+            at: Date.now(),
+            command,
+            event: 'popup-host-discarded-before-response',
+            shiftKey
+          });
+          commandResult = {kind: delivery.kind};
+        }
       }
       finally {
         polling = false;
@@ -1293,19 +2344,156 @@ const main = async () => {
         await removePopup(popup);
         timeline.push({at: Date.now(), command, event: 'command-response', shiftKey});
       }
+      return commandResult;
     };
 
-    const sendPopupCommand = async (layout, command, shiftKey = false) => {
+    const delayNextStopScript = async (tabId, delayMs = 750) => {
+      const workerNow = await currentWorker();
+      return workerNow.evaluate(({delayMs, tabId}) => {
+        const original = chrome.scripting.executeScript.bind(chrome.scripting);
+        const token = crypto.randomUUID();
+        const state = {
+          delayed: false,
+          delayMs,
+          settledAt: 0,
+          startedAt: 0,
+          tabId,
+          token
+        };
+        const hooked = details => {
+          if (state.delayed === false && details?.injectImmediately === true &&
+              details?.target?.tabId === tabId && typeof details.func === 'function') {
+            state.delayed = true;
+            state.startedAt = Date.now();
+            return new Promise(resolve => setTimeout(resolve, delayMs))
+              .then(() => original(details))
+              .finally(() => state.settledAt = Date.now());
+          }
+          return original(details);
+        };
+        chrome.scripting.executeScript = hooked;
+        globalThis.__atdE2EDelayedStop = {hooked, original, state};
+        return token;
+      }, {delayMs, tabId});
+    };
+
+    const delayedStopState = async token => {
+      const workerNow = await currentWorker();
+      return workerNow.evaluate(token => {
+        const current = globalThis.__atdE2EDelayedStop;
+        return current?.state?.token === token ? {...current.state} : undefined;
+      }, token);
+    };
+
+    const restoreDelayedStopHook = async token => {
+      const workerNow = await currentWorker();
+      return workerNow.evaluate(token => {
+        const current = globalThis.__atdE2EDelayedStop;
+        if (current?.state?.token !== token) {
+          return false;
+        }
+        if (chrome.scripting.executeScript === current.hooked) {
+          chrome.scripting.executeScript = current.original;
+        }
+        delete globalThis.__atdE2EDelayedStop;
+        return true;
+      }, token);
+    };
+
+    const popupProgressSnapshot = (popup, layout) => popup.page.evaluate(windowId =>
+      new Promise(resolve => chrome.runtime.sendMessage({
+        method: 'popup-progress-snapshot',
+        windowId
+      }, response => resolve(chrome.runtime.lastError ? undefined : response?.value))),
+    layout.primaryWindowId);
+
+    const invokeNativeContextMenu = async layout => {
       await focusSelected(layout);
-      await installWorkerApiTelemetry();
-      const outcome = await driver.evaluate(({cmd, shifted}) => new Promise(resolve => {
-        chrome.runtime.sendMessage({method: 'popup', cmd, shiftKey: shifted}, response => resolve({
-          error: chrome.runtime.lastError?.message,
-          response
+      const selected = Object.values(layout.tabs).find(tab => tab.id === layout.selectedId);
+      const targetPage = await waitFor(() => context.pages().find(page => page.url() === selected.url),
+        'selected fixture page for native context menu', 10000);
+      const token = `context-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const worker = await currentWorker();
+      const observerInstalled = await worker.evaluate(value => {
+        globalThis.__atdE2EContextEvents ||= [];
+        globalThis.__atdE2EContextTokens ||= new Set();
+        if (globalThis.__atdE2EContextTokens.has(value) === false) {
+          globalThis.__atdE2EContextTokens.add(value);
+          chrome.contextMenus.onClicked.addListener((info, tab) => {
+            globalThis.__atdE2EContextEvents.push({
+              menuItemId: info.menuItemId,
+              tabId: tab?.id,
+              token: value,
+              windowId: tab?.windowId
+            });
+          });
+        }
+        return true;
+      }, token);
+      assert.equal(observerInstalled, true, 'native context-menu observer must install in the live worker');
+
+      await driver.evaluate(async title => {
+        await new Promise(resolve => chrome.contextMenus.removeAll(resolve));
+        await new Promise((resolve, reject) => chrome.contextMenus.create({
+          contexts: ['page'],
+          id: 'discard-tab',
+          title
+        }, () => {
+          const error = chrome.runtime.lastError;
+          error ? reject(Error(error.message)) : resolve();
         }));
-      }), {cmd: command, shifted: shiftKey});
-      assert.equal(outcome.error, undefined, `${command} runtime message must succeed`);
-      assert.equal(outcome.response?.ok, true, `${command} failed: ${outcome.response?.error}`);
+      }, NATIVE_CONTEXT_MENU_TITLE);
+
+      timeline.push({at: Date.now(), command: 'discard-tab', event: 'native-context-menu-start'});
+      let nativeSelector;
+      try {
+        await targetPage.bringToFront();
+        const exactDocumentName = await targetPage.title();
+        nativeSelector = startNativeContextMenuSelector(
+          NATIVE_CONTEXT_MENU_TITLE,
+          nativeMenuBrowserProcessId,
+          manifest.name,
+          exactDocumentName
+        );
+        const selection = await nativeSelector.completion;
+        const observed = await waitFor(() => worker.evaluate(({token, tabId, windowId}) =>
+          globalThis.__atdE2EContextEvents?.find(event => event.token === token &&
+            event.menuItemId === 'discard-tab' && event.tabId === tabId && event.windowId === windowId), {
+          tabId: layout.selectedId,
+          token,
+          windowId: layout.primaryWindowId
+        }), 'browser-generated chrome.contextMenus.onClicked event', 10000, 100);
+        timeline.push({
+          at: Date.now(),
+          command: 'discard-tab',
+          event: 'native-context-menu-clicked',
+          menuItemId: observed.menuItemId,
+          parentExpansionMethod: selection.parentExpansionMethod,
+          pointerMethod: selection.pointerMethod,
+          selectionMethod: selection.method
+        });
+        return {
+          entryEvent: 'chrome.contextMenus.onClicked',
+          menuItemId: observed.menuItemId,
+          parentExpansionMethod: selection.parentExpansionMethod,
+          pointerMethod: selection.pointerMethod,
+          selectionMethod: selection.method,
+          selectionScope: selection.scope
+        };
+      }
+      finally {
+        try {
+          await nativeSelector?.cancel();
+        }
+        finally {
+          await driver.evaluate(() => new Promise(resolve => {
+            chrome.runtime.sendMessage({method: 'build-context'}, () => {
+              void chrome.runtime.lastError;
+              resolve();
+            });
+          }));
+        }
+      }
     };
 
     const assertTakeoverApiOrder = async (checkpoint, id, label) => {
@@ -1355,12 +2543,16 @@ const main = async () => {
       for (const key of Object.keys(layout.tabs)) {
         assert.deepEqual({
           discarded: after.tabs[key].discarded,
+          favicon: after.tabs[key].favIconUrl || '',
           source: after.ownership[layout.tabs[key].id]?.source,
-          status: after.tabs[key].status
+          status: after.tabs[key].status,
+          title: after.tabs[key].title || ''
         }, {
           discarded: before.tabs[key].discarded,
+          favicon: before.tabs[key].favIconUrl || '',
           source: before.ownership[layout.tabs[key].id]?.source,
-          status: before.tabs[key].status
+          status: before.tabs[key].status,
+          title: before.tabs[key].title || ''
         }, `${key} must remain stable during the quiescence dwell`);
       }
       assert.deepEqual(requestAfter, requestBefore, 'quiescence dwell must not issue delayed document requests');
@@ -1389,8 +2581,8 @@ const main = async () => {
       }, `${name} final state`, 20000);
       const after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout, ['d-selected'], name);
-      assert.match(after.tabs['d-selected'].title, /^💤\s/,
-        'a tab physically discarded by the extension must receive the configured sleep title prefix');
+      assertSleepVisual(after.tabs['d-selected'], after.ownership[layout.tabs['d-selected'].id],
+        'a tab physically discarded by the extension');
       assert.equal(after.tabs['d-keeper-near'].active, true, 'nearest eligible keeper must become active');
       for (const key of ['d-keeper-near', 'd-decoy', 'd-keeper-far']) {
         assert.equal(after.tabs[key].discarded, false, `${key} must remain loaded`);
@@ -1400,7 +2592,49 @@ const main = async () => {
       await assertStable(layout);
       await recordMemory(`${name}:discarded`);
       assertNoCrashes(name);
-      scenarios.push({name, ok: true, targets: ['d-selected']});
+      scenarios.push({
+        activeDiscardRepeatCoverage:
+          'not-run: activating an inactive discarded tab to make it the popup target necessarily wakes it',
+        externalTakeoverCoverage: 'group-and-scoped-commands',
+        name,
+        ok: true,
+        targets: ['d-selected']
+      });
+    }
+
+    // This is deliberately not a popup-message surrogate. A single temporary
+    // page context item is selected from the browser's native menu, and an
+    // independent listener in the live worker must observe the browser-created
+    // chrome.contextMenus.onClicked event before final state is accepted.
+    {
+      const name = 'discard-tab-native-context-menu';
+      const layout = await buildDirect(nextPrefix(name));
+      const baseline = counts(layout);
+      const entry = await invokeNativeContextMenu(layout);
+      await waitFor(async () => {
+        const snapshot = await compactSnapshot(layout);
+        return snapshot.tabs['d-selected'].discarded === true &&
+          snapshot.tabs['d-selected'].status === 'unloaded' &&
+          snapshot.ownership[layout.tabs['d-selected'].id]?.source === 'self';
+      }, `${name} final state`, 20000);
+      const after = await compactSnapshot(layout);
+      assertOwnershipKeys(after, layout, ['d-selected'], name);
+      assertSleepVisual(after.tabs['d-selected'], after.ownership[layout.tabs['d-selected'].id], name);
+      assert.equal(after.tabs['d-keeper-near'].active, true,
+        `${name}: the nearest safe keeper must become active`);
+      assert.deepEqual(counts(layout), baseline, `${name} must not reload a document`);
+      await assertStable(layout);
+      assertNoCrashes(name);
+      scenarios.push({
+        entryEvent: entry.entryEvent,
+        menuItemId: entry.menuItemId,
+        name,
+        ok: true,
+        parentExpansionMethod: entry.parentExpansionMethod,
+        pointerMethod: entry.pointerMethod,
+        selectionMethod: entry.selectionMethod,
+        selectionScope: entry.selectionScope
+      });
     }
 
     {
@@ -1416,6 +2650,7 @@ const main = async () => {
       }, `${name} final state`, 20000);
       const after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout, ['d-selected'], name);
+      assertSleepVisual(after.tabs['d-selected'], after.ownership[layout.tabs['d-selected'].id], name);
       for (const key of ['d-keeper-near', 'd-decoy', 'd-keeper-far']) {
         assert.equal(after.tabs[key].discarded, false, `${name} must not include neighboring ungrouped ${key}`);
       }
@@ -1445,7 +2680,7 @@ const main = async () => {
         ['g-selected', 'g-loaded', 'g-external', 'g-out-external'], name);
       for (const key of ['g-selected', 'g-loaded', 'g-external']) {
         assert.equal(after.tabs[key].groupId, layout.groupIds.inside, `${key} must retain the selected group ID`);
-        assert.match(after.tabs[key].title, /^💤\s/, `${key} must show the extension sleep title prefix`);
+        assertSleepVisual(after.tabs[key], after.ownership[layout.tabs[key].id], `${name} ${key}`);
       }
       for (const key of ['g-out-loaded', 'g-out-external']) {
         assert.equal(after.tabs[key].groupId, layout.groupIds.outside, `${key} must retain the outsider group ID`);
@@ -1472,6 +2707,36 @@ const main = async () => {
       await assertStable(layout);
       assertNoCrashes(name);
       scenarios.push({name, ok: true, sources: {external: 'self', loaded: 'self'}, wakeCount: 1});
+    }
+
+    {
+      const name = 'discard-tree-normal-takeover-favicon-only';
+      await driver.evaluate(() => chrome.storage.local.set({favicon: true, prepends: ''}));
+      const layout = await buildGroup(nextPrefix(name));
+      const baseline = counts(layout);
+      await clickPopup(layout, 'discard-tree', false);
+      await waitFor(async () => {
+        const snapshot = await compactSnapshot(layout);
+        return ['g-selected', 'g-loaded', 'g-external'].every(key =>
+          snapshot.tabs[key].discarded === true && snapshot.tabs[key].status === 'unloaded' &&
+          snapshot.ownership[layout.tabs[key].id]?.source === 'self');
+      }, `${name} final state`, 25000);
+      const after = await compactSnapshot(layout);
+      assertOwnershipKeys(after, layout,
+        ['g-selected', 'g-loaded', 'g-external', 'g-out-external'], name);
+      for (const key of ['g-selected', 'g-loaded', 'g-external']) {
+        assertFaviconOnlyVisual(after.tabs[key], after.ownership[layout.tabs[key].id], `${name} ${key}`);
+      }
+      const requestAfter = counts(layout);
+      assert.equal(requestAfter['g-external'], baseline['g-external'] + 1,
+        `${name}: external sleeper must wake exactly once`);
+      for (const key of Object.keys(layout.tabs).filter(key => key !== 'g-external')) {
+        assert.equal(requestAfter[key], baseline[key], `${name}: ${key} must not reload`);
+      }
+      await assertStable(layout);
+      assertNoCrashes(name);
+      scenarios.push({favicon: true, name, ok: true, prepends: '', takeover: 'external'});
+      await driver.evaluate(() => chrome.storage.local.set({favicon: true, prepends: '\u{1F4A4}'}));
     }
 
     {
@@ -1508,8 +2773,8 @@ const main = async () => {
       for (const key of ['g-selected', 'g-loaded', 'g-external']) {
         assert.equal(groupAfter.tabs[key].groupId, layout.groupIds.inside, `${key} must retain its group after Shift`);
       }
-      assert.match(groupAfter.tabs['g-external'].title, /^💤\s/,
-        'physical takeover must add the same visible sleep title prefix as an ordinary extension discard');
+      assertSleepVisual(groupAfter.tabs['g-external'],
+        groupAfter.ownership[layout.tabs['g-external'].id], 'physical takeover');
       for (const key of ['g-out-loaded', 'g-out-external']) {
         assert.equal(groupAfter.tabs[key].groupId, layout.groupIds.outside, `${key} outsider group must remain intact`);
       }
@@ -1543,37 +2808,260 @@ const main = async () => {
       });
     }
 
-    // All five scoped discard rows. A normal real popup click must physically
-    // take over every in-scope external sleeper exactly once, discard eligible
-    // loaded targets, apply the portable marker, and preserve outsiders. Shift
-    // remains only the eligibility override for a loaded protected target.
-    for (const [command, targets] of Object.entries(DISCARD_SPECS)) {
-      const name = `${command}-normal-and-shift`;
-      const inScope = new Set(targets);
-      const layout = await buildScoped(nextPrefix(name), {holdKeys: SETUP_EXTERNAL});
-      const protectedKey = command === 'discard-tabs' ? 'p-right-far' : undefined;
-      if (protectedKey) {
-        await driver.evaluate(id => chrome.tabs.update(id, {autoDiscardable: false}),
-          layout.tabs[protectedKey].id);
+    // Reproduce the original spinner/RAM complaint at the costly point: a
+    // discarded target has started its second, deliberately held document
+    // request, but marker preparation has not settled.  The real popup Cancel
+    // control must stop that request and leave the target awake and stable.
+    {
+      const name = 'discard-tree-cancel-during-slow-wake';
+      const layout = await buildGroup(nextPrefix(name), {slowExternal: true});
+      const target = layout.tabs['g-external'];
+      const baseline = counts(layout);
+      const memoryBefore = await recordMemory(`${name}:before`);
+      await installWorkerApiTelemetry();
+      const stopToken = await delayNextStopScript(target.id);
+      const checkpoint = await telemetryCheckpoint();
+      const popup = await openPopup(layout);
+      let terminal;
+      try {
+        await focusSelected(layout);
+        await popup.page.locator('[data-cmd="discard-tree"]').click();
+        await waitFor(async () => {
+          const delayed = await delayedStopState(stopToken);
+          const snapshot = await compactSnapshot(layout);
+          return delayed?.startedAt > 0 && fixture.entries(target.label)[1] &&
+            snapshot.tabs['g-external'].discarded === false &&
+            snapshot.tabs['g-external'].status === 'loading';
+        }, `${name}: held wake request and delayed stop preparation`, 5000, 10);
+        await popup.page.waitForFunction(() => {
+          const cancel = document.getElementById('activity-cancel');
+          return cancel && cancel.hidden === false && cancel.disabled === false;
+        });
+        const running = await popupProgressSnapshot(popup, layout);
+        assert.equal(running?.state, 'running', `${name}: popup job must be cancellable while waking`);
+        assert.ok(running?.jobId && running.jobId !== 'pending', `${name}: popup must expose a real job ID`);
+        await popup.page.locator('#activity-cancel').click();
+
+        terminal = await waitFor(async () => {
+          const snapshot = await popupProgressSnapshot(popup, layout);
+          return snapshot?.state === 'cancelled' ? snapshot : false;
+        }, `${name}: popup cancellation to settle`, 15000);
+        assert.equal(terminal.completed, terminal.total,
+          `${name}: cancellation must produce one terminal outcome per intended tab`);
+        await waitFor(async () => (await delayedStopState(stopToken))?.settledAt > 0,
+          `${name}: delayed preparation call to settle`, 5000);
+        await waitFor(async () => {
+          const snapshot = await compactSnapshot(layout);
+          const tab = snapshot.tabs['g-external'];
+          return tab.discarded === false && tab.status === 'complete' &&
+            snapshot.ownership[target.id] === undefined ? snapshot : false;
+        }, `${name}: cancelled target to become stably awake and unowned`, 10000);
+
+        const secondRequest = fixture.entries(target.label)[1];
+        assert.ok(secondRequest, `${name}: takeover must start one wake request before cancellation`);
+        await waitFor(() => secondRequest.closedAt, `${name}: cancelled response to close`, 5000);
+        assert.equal(secondRequest.aborted, true, `${name}: cancellation must abort the held response`);
+        assert.equal(secondRequest.writableFinished, false,
+          `${name}: held response must not finish naturally after cancellation`);
+        const immediate = await compactSnapshot(layout);
+        assert.equal(immediate.ownership[target.id], undefined,
+          `${name}: cancelled takeover must not retain ownership`);
+        assertReleasedVisual(immediate.tabs['g-external'], `${name}: cancelled target`);
+        const memoryImmediate = await recordMemory(`${name}:immediate`);
+        const requestsBeforeDwell = fixture.entries(target.label).length;
+        const dwellCheckpoint = await telemetryCheckpoint();
+        await sleep(3000);
+        const after = await compactSnapshot(layout);
+        const dwellEvents = await telemetrySince(dwellCheckpoint);
+        const lineage = lineageFor(target.id);
+        assert.equal(fixture.entries(target.label).length, requestsBeforeDwell,
+          `${name}: no delayed document request may start during dwell`);
+        assert.equal(dwellEvents.some(event => event.event === 'tabs.onUpdated' &&
+          lineage.has(event.id) && (event.changeInfo?.status === 'loading' ||
+            event.tab?.status === 'loading' || event.tab?.discarded === true)), false,
+        `${name}: no delayed loading or rediscard transition may occur during dwell`);
+        assert.equal(after.tabs['g-external'].discarded, false);
+        assert.equal(after.tabs['g-external'].status, 'complete');
+        assert.equal(after.ownership[target.id], undefined);
+        assertReleasedVisual(after.tabs['g-external'], `${name}: post-dwell target`);
+        const memoryAfter = await recordMemory(`${name}:after`);
+        const memoryCeiling = Math.max(memoryBefore.privateBytes, memoryImmediate.privateBytes) +
+          64 * 1024 * 1024;
+        assert.ok(memoryAfter.privateBytes <= memoryCeiling,
+          `${name}: private memory must not keep climbing after cancellation`);
+        assert.equal(counts(layout)['g-external'], baseline['g-external'] + 1,
+          `${name}: cancellation must perform exactly one wake request`);
+        const commandEvents = await telemetrySince(checkpoint);
+        assert.equal(commandEvents.some(event => event.event === 'tabs.onUpdated' &&
+          lineage.has(event.id) && event.tab?.discarded === true), false,
+        `${name}: cancelled target must never be rediscarded`);
+        assertNoCrashes(name);
+        scenarios.push({
+          cancellation: 'real-popup-control',
+          dwellMilliseconds: 3000,
+          name,
+          ok: true,
+          requestDelta: 1,
+          terminalState: terminal.state
+        });
       }
+      finally {
+        await restoreDelayedStopHook(stopToken).catch(() => false);
+        await removePopup(popup);
+      }
+    }
+
+    // Non-HTTP geometry is queried without a URL filter. Normal commands must
+    // give every physically-only target a precise protected outcome; Shift
+    // then either handles it through native discard or gives the target an
+    // explicit terminal failure. Browser-rejected creations are capability
+    // results, never synthetic passes.
+    {
+      const name = 'restricted-scheme-bulk-scope';
+      const {capabilities, layout} = await buildRestrictedScope(nextPrefix(name));
+      const available = capabilities.filter(entry => entry.availability === 'available');
+      assert.ok(available.length > 0, `${name}: the browser exposed none of the requested scheme fixtures`);
+      const terminalStates = {expectedStates: ['complete', 'partial', 'failed']};
+      const normal = await clickPopup(layout, 'discard-window', false, terminalStates);
+      assert.equal(normal?.kind, 'response', `${name}: normal command must retain its response channel`);
+      const normalOutcomes = normal.progress?.outcomes || {};
+      for (const capability of available) {
+        const tab = layout.tabs[capability.key];
+        const outcome = outcomeForTabLineage(normalOutcomes, tab);
+        assert.ok(outcome, `${name}: normal ${capability.scheme} target silently disappeared`);
+        if (outcome.code === 'TAB_DISCARDED') {
+          assert.equal(outcome.status, 'success');
+          capability.normal = {
+            code: outcome.code,
+            disposition: 'handled',
+            status: outcome.status
+          };
+        }
+        else if (outcome.code === 'TAB_PROTECTED') {
+          assert.equal(outcome.status, 'skipped');
+          capability.normal = {
+            code: outcome.code,
+            disposition: 'protected',
+            status: outcome.status
+          };
+        }
+        else if (outcome.code === 'TAB_SUSPENSION_UNKNOWN') {
+          // Chromium redacts file/data/internal/extension URLs unless the user
+          // grants broader optional access and can simultaneously expose the
+          // optional frozen field as null. That is not proof of either a loaded
+          // tab or a frozen sleeper, so both normal and forced commands must
+          // fail closed with this precise capability result.
+          assert.equal(outcome.status, 'failed');
+          capability.normal = {
+            code: outcome.code,
+            disposition: 'unknown-suspension',
+            status: outcome.status
+          };
+        }
+        else {
+          assert.deepEqual(outcome, {
+            code: 'TAB_UNSUPPORTED',
+            status: 'failed',
+            tabId: tab.id
+          }, `${name}: normal ${capability.scheme} failure must be explicit`);
+          capability.normal = {
+            code: outcome.code,
+            disposition: 'unsupported',
+            status: outcome.status
+          };
+        }
+      }
+
+      const forced = await clickPopup(layout, 'discard-window', true, terminalStates);
+      assert.equal(forced?.kind, 'response', `${name}: Shift command must retain its response channel`);
+      const forcedOutcomes = forced.progress?.outcomes || {};
+      const final = await compactSnapshot(layout);
+      for (const capability of available) {
+        const tab = layout.tabs[capability.key];
+        const outcome = outcomeForTabLineage(forcedOutcomes, tab);
+        if (capability.normal.disposition === 'handled') {
+          assert.deepEqual(outcome, {
+            code: 'TAB_ALREADY_OWNED',
+            status: 'skipped',
+            tabId: tab.id
+          }, `${name}: repeat ${capability.scheme} target must stay owned without another discard`);
+          assert.equal(final.tabs[capability.key].discarded, true,
+            `${name}: normal-handled ${capability.scheme} target must remain discarded`);
+          capability.forced = {
+            code: outcome.code,
+            disposition: 'already-handled',
+            status: outcome.status
+          };
+          continue;
+        }
+        if (capability.normal.disposition === 'unknown-suspension') {
+          assert.deepEqual(outcome, {
+            code: 'TAB_SUSPENSION_UNKNOWN',
+            status: 'failed',
+            tabId: tab.id
+          }, `${name}: Shift ${capability.scheme} must fail closed on ambiguous browser state`);
+          assert.equal(final.tabs[capability.key].discarded, false,
+            `${name}: an ambiguous ${capability.scheme} target must not be mutated`);
+          capability.forced = {
+            code: outcome.code,
+            disposition: 'unknown-suspension',
+            status: outcome.status
+          };
+          continue;
+        }
+        assert.ok(outcome && ['success', 'failed'].includes(outcome.status),
+          `${name}: Shift ${capability.scheme} target silently disappeared`);
+        assert.ok(['TAB_DISCARDED', 'TAB_FAILED', 'TAB_UNSUPPORTED'].includes(outcome.code),
+          `${name}: Shift ${capability.scheme} target has no precise terminal code`);
+        const current = final.tabs[capability.key];
+        if (outcome.status === 'success') {
+          assert.equal(current.discarded, true,
+            `${name}: successful ${capability.scheme} target must be physically discarded`);
+          capability.forced = {code: outcome.code, disposition: 'handled', status: outcome.status};
+        }
+        else {
+          assert.ok(['TAB_FAILED', 'TAB_UNSUPPORTED'].includes(outcome.code));
+          assert.equal(current.discarded, false,
+            `${name}: unsupported ${capability.scheme} target must not be reported as discarded`);
+          capability.forced = {code: outcome.code, disposition: 'unsupported', status: outcome.status};
+        }
+      }
+      assert.equal(capabilities.every(entry => entry.availability === 'unavailable' ||
+        (entry.normal?.disposition && entry.forced?.disposition)), true,
+      `${name}: every requested scheme must be capability-reported and reconciled`);
+      await assertStable(layout);
+      assertNoCrashes(name);
+      scenarios.push({capabilities, command: 'discard-window', name, ok: true});
+    }
+
+    // Every scoped command gets two independent fixtures. The normal fixture
+    // proves external-sleeper takeover. The fresh Shift fixture begins with a
+    // still-loaded autoDiscardable:false target, so Shift cannot pass merely
+    // because a previous normal invocation already self-owned the scope.
+    for (const [command, targets] of Object.entries(DISCARD_SPECS)) {
+      const name = `${command}-normal-and-fresh-shift`;
+      const inScope = new Set(targets);
+      const dynamicKeepers = ['discard-other-windows', 'discard-tabs'].includes(command) ?
+        ROTATED_OTHER_WINDOW_KEEPERS : [];
+
+      const layout = await buildScoped(nextPrefix(`${command}-normal`), {holdKeys: SETUP_EXTERNAL});
       await externalDiscard(layout, [...SETUP_EXTERNAL]);
       const baseline = counts(layout);
       const normalStart = await telemetryCheckpoint();
       await clickPopup(layout, command, false);
-      const normalTargets = targets.filter(key => key !== protectedKey);
-      const normalTakeovers = normalTargets.filter(key => SETUP_EXTERNAL.has(key));
+      const normalTakeovers = targets.filter(key => SETUP_EXTERNAL.has(key));
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
-        return normalTargets.every(key => snapshot.tabs[key].discarded === true &&
+        return targets.every(key => snapshot.tabs[key].discarded === true &&
           snapshot.tabs[key].status === 'unloaded' &&
           snapshot.ownership[layout.tabs[key].id]?.source === 'self');
       }, `${command} normal final state`, 25000);
       let after = await compactSnapshot(layout);
-      assertOwnershipKeys(after, layout, [...normalTargets, ...SETUP_EXTERNAL], `${command} normal`);
-      for (const key of normalTargets) {
-        assert.match(after.tabs[key].title, /^💤\s/, `${command} must visibly mark ${key} as extension-discarded`);
-      }
-      for (const key of ALL_BACKGROUND.filter(key => !inScope.has(key))) {
+      assertOwnershipKeys(after, layout, [...targets, ...SETUP_EXTERNAL], `${command} normal`);
+      const normalVisuals = Object.fromEntries(targets.map(key => [key,
+        assertSleepVisual(after.tabs[key], after.ownership[layout.tabs[key].id],
+          `${command} normal ${key}`)]));
+      for (const key of ALL_SCOPED_TABS.filter(key => !inScope.has(key))) {
         if (SETUP_EXTERNAL.has(key)) {
           assert.equal(after.tabs[key].discarded, true, `${command} must keep ${key} asleep`);
           assert.equal(after.ownership[layout.tabs[key].id]?.source, 'claimed',
@@ -1584,15 +3072,6 @@ const main = async () => {
           assert.equal(after.ownership[layout.tabs[key].id], undefined,
             `${command} must not own out-of-scope ${key}`);
         }
-      }
-      for (const key of ['p-selected', 'a-active', 'b-active']) {
-        assert.equal(after.tabs[key].discarded, false, `${command} must exclude active tab ${key}`);
-      }
-      if (protectedKey) {
-        assert.equal(after.tabs[protectedKey].discarded, false,
-          `${command} normal path must respect autoDiscardable:false`);
-        assert.equal(after.ownership[layout.tabs[protectedKey].id], undefined,
-          `${command} normal path must not own the protected tab`);
       }
       const normalAfter = counts(layout);
       for (const key of Object.keys(layout.tabs)) {
@@ -1623,52 +3102,133 @@ const main = async () => {
 
       const normalRepeatBaseline = counts(layout);
       const normalRepeatStart = await telemetryCheckpoint();
-      await sendPopupCommand(layout, command, false);
-      assert.deepEqual(counts(layout), normalRepeatBaseline, `${command} repeat normal command must be a no-op`);
-      for (const key of targets.filter(key => SETUP_EXTERNAL.has(key))) {
-        const id = layout.tabs[key].id;
-        const idLineage = lineageFor(id);
-        assert.equal((await telemetrySince(normalRepeatStart)).some(event => event.event === 'tabs.onUpdated' &&
+      await clickPopup(layout, command, false);
+      assert.deepEqual(counts(layout), normalRepeatBaseline,
+        `${command} repeat normal command must not reload any fixture`);
+      const normalRepeat = await compactSnapshot(layout);
+      for (const key of targets) {
+        assert.equal(normalRepeat.tabs[key].discarded, true, `${command} repeat must keep ${key} discarded`);
+        assert.equal(normalRepeat.ownership[layout.tabs[key].id]?.source, 'self');
+        assert.deepEqual(assertSleepVisual(normalRepeat.tabs[key],
+          normalRepeat.ownership[layout.tabs[key].id], `${command} repeat normal ${key}`),
+          normalVisuals[key], `${command} repeat normal must not mutate ${key}'s visual marker`);
+      }
+      const normalDynamicOwned = dynamicKeepers.filter(key =>
+        normalRepeat.ownership[layout.tabs[key].id]?.source === 'self');
+      assertOwnershipKeys(normalRepeat, layout,
+        [...targets, ...SETUP_EXTERNAL, ...normalDynamicOwned], `${command} repeat normal`);
+      const normalRepeatEvents = await telemetrySince(normalRepeatStart);
+      for (const key of targets) {
+        const idLineage = lineageFor(layout.tabs[key].id);
+        assert.equal(normalRepeatEvents.some(event => event.event === 'tabs.onUpdated' &&
           idLineage.has(event.id) && (event.tab?.discarded === false || event.tab?.status === 'loading')), false,
         `${command} repeat normal command must not wake self-owned ${key}`);
       }
+      for (const key of dynamicKeepers) {
+        const marker = normalRepeat.ownership[layout.tabs[key].id];
+        if (marker?.source === 'self') {
+          assertSleepVisual(normalRepeat.tabs[key], marker, `${command} rotated keeper ${key}`);
+        }
+        else {
+          assert.equal(normalRepeat.tabs[key].discarded, false,
+            `${command} uncommitted keeper ${key} must remain loaded and unowned`);
+        }
+      }
+      await assertStable(layout);
 
-      const shiftBaseline = counts(layout);
-      await clickPopup(layout, command, true);
+      const shiftLayout = await buildScoped(nextPrefix(`${command}-fresh-shift`));
+      const protectedKey = SCOPED_SHIFT_PROTECTED[command];
+      assert.ok(targets.includes(protectedKey), `${command}: Shift protection fixture must be in scope`);
+      await driver.evaluate(id => chrome.tabs.update(id, {autoDiscardable: false}),
+        shiftLayout.tabs[protectedKey].id);
+      await externalDiscard(shiftLayout, [...SETUP_EXTERNAL]);
+      const protectedBefore = await compactSnapshot(shiftLayout);
+      assert.equal(protectedBefore.tabs[protectedKey].discarded, false,
+        `${command}: protected Shift target must begin loaded`);
+      assert.equal(protectedBefore.tabs[protectedKey].autoDiscardable, false,
+        `${command}: protected Shift target must begin autoDiscardable:false`);
+      assert.equal(protectedBefore.ownership[shiftLayout.tabs[protectedKey].id], undefined,
+        `${command}: protected Shift target must begin unowned`);
+
+      const shiftBaseline = counts(shiftLayout);
+      await clickPopup(shiftLayout, command, true);
       await waitFor(async () => {
-        const snapshot = await compactSnapshot(layout);
+        const snapshot = await compactSnapshot(shiftLayout);
         return targets.every(key => snapshot.tabs[key].discarded === true &&
           snapshot.tabs[key].status === 'unloaded' &&
-          snapshot.ownership[layout.tabs[key].id]?.source === 'self');
-      }, `${command} Shift final state`, 30000);
-      after = await compactSnapshot(layout);
-      assertOwnershipKeys(after, layout, [...targets, ...SETUP_EXTERNAL], `${command} Shift`);
-      const shiftAfter = counts(layout);
-      for (const key of targets) {
-        assert.equal(shiftAfter[key], shiftBaseline[key], `${command} Shift must not reload ${key}`);
-        assert.equal(after.ownership[layout.tabs[key].id]?.source, 'self');
-        assert.match(after.tabs[key].title, /^💤\s/, `${command} Shift must visibly mark ${key}`);
+          snapshot.ownership[shiftLayout.tabs[key].id]?.source === 'self');
+      }, `${command} fresh Shift final state`, 30000);
+      after = await compactSnapshot(shiftLayout);
+      assertOwnershipKeys(after, shiftLayout, [...targets, ...SETUP_EXTERNAL], `${command} fresh Shift`);
+      const shiftVisuals = Object.fromEntries(targets.map(key => [key,
+        assertSleepVisual(after.tabs[key], after.ownership[shiftLayout.tabs[key].id],
+          `${command} fresh Shift ${key}`)]));
+      assert.equal(after.tabs[protectedKey].autoDiscardable, false,
+        `${command}: Shift must override eligibility without rewriting autoDiscardable`);
+      const shiftAfter = counts(shiftLayout);
+      const shiftTakeovers = targets.filter(key => SETUP_EXTERNAL.has(key));
+      for (const key of Object.keys(shiftLayout.tabs)) {
+        const expectedDelta = shiftTakeovers.includes(key) ? 1 : 0;
+        assert.equal(shiftAfter[key], shiftBaseline[key] + expectedDelta,
+          `${command} fresh Shift request delta for ${key}`);
       }
-      for (const key of ALL_BACKGROUND.filter(key => !inScope.has(key))) {
-        assert.equal(shiftAfter[key], shiftBaseline[key], `${command} Shift must not reload ${key}`);
+      for (const key of ALL_SCOPED_TABS.filter(key => !inScope.has(key))) {
         if (SETUP_EXTERNAL.has(key)) {
-          assert.equal(after.ownership[layout.tabs[key].id]?.source, 'claimed',
-          `${command} Shift must not take over out-of-scope ${key}`);
+          assert.equal(after.ownership[shiftLayout.tabs[key].id]?.source, 'claimed',
+            `${command} fresh Shift must not take over out-of-scope ${key}`);
+        }
+        else {
+          assert.equal(after.tabs[key].discarded, false,
+            `${command} fresh Shift must keep out-of-scope ${key} loaded`);
+          assert.equal(after.ownership[shiftLayout.tabs[key].id], undefined);
         }
       }
 
-      const repeatBaseline = counts(layout);
-      await sendPopupCommand(layout, command, true);
-      assert.deepEqual(counts(layout), repeatBaseline, `${command} repeat Shift must be a no-op`);
-      await assertStable(layout);
+      const shiftRepeatBaseline = counts(shiftLayout);
+      const shiftRepeatStart = await telemetryCheckpoint();
+      await clickPopup(shiftLayout, command, true);
+      assert.deepEqual(counts(shiftLayout), shiftRepeatBaseline,
+        `${command} repeat Shift command must not reload any fixture`);
+      const shiftRepeat = await compactSnapshot(shiftLayout);
+      const shiftDynamicOwned = dynamicKeepers.filter(key =>
+        shiftRepeat.ownership[shiftLayout.tabs[key].id]?.source === 'self');
+      assertOwnershipKeys(shiftRepeat, shiftLayout,
+        [...targets, ...SETUP_EXTERNAL, ...shiftDynamicOwned], `${command} repeat Shift`);
+      const shiftRepeatEvents = await telemetrySince(shiftRepeatStart);
+      for (const key of targets) {
+        assert.equal(shiftRepeat.ownership[shiftLayout.tabs[key].id]?.source, 'self');
+        assert.deepEqual(assertSleepVisual(shiftRepeat.tabs[key],
+          shiftRepeat.ownership[shiftLayout.tabs[key].id], `${command} repeat Shift ${key}`),
+          shiftVisuals[key], `${command} repeat Shift must not mutate ${key}'s visual marker`);
+        const idLineage = lineageFor(shiftLayout.tabs[key].id);
+        assert.equal(shiftRepeatEvents.some(event => event.event === 'tabs.onUpdated' &&
+          idLineage.has(event.id) && (event.tab?.discarded === false || event.tab?.status === 'loading')), false,
+        `${command} repeat Shift must not wake self-owned ${key}`);
+      }
+      for (const key of dynamicKeepers) {
+        const marker = shiftRepeat.ownership[shiftLayout.tabs[key].id];
+        if (marker?.source === 'self') {
+          assertSleepVisual(shiftRepeat.tabs[key], marker, `${command} Shift rotated keeper ${key}`);
+        }
+        else {
+          assert.equal(shiftRepeat.tabs[key].discarded, false,
+            `${command} uncommitted Shift keeper ${key} must remain loaded and unowned`);
+        }
+      }
+      await assertStable(shiftLayout);
       assertNoCrashes(name);
       scenarios.push({
+        dynamicRepeatScope: {
+          normalOwned: normalDynamicOwned,
+          shiftOwned: shiftDynamicOwned
+        },
         name,
-        normalTargets,
-        ok: true,
         normalTakeovers,
+        normalTargets: targets,
+        ok: true,
         protectedShiftOverride: protectedKey,
-        shiftTakeovers: []
+        shiftFixtureStartedLoadedAndProtected: true,
+        shiftTakeovers
       });
     }
 
@@ -1722,6 +3282,12 @@ const main = async () => {
           'b-bg-1': 'claimed',
           'b-bg-2': 'claimed'
         }, `${command}: release fixture must contain the expected ownership sources`);
+        for (const [key, source] of Object.entries(sourcesBefore)) {
+          if (source === 'self') {
+            assertSleepVisual(prepared.tabs[key], prepared.ownership[layout.tabs[key].id],
+              `${command} setup ${key}`);
+          }
+        }
         const setupAfter = counts(layout);
         for (const key of Object.keys(layout.tabs)) {
           assert.equal(setupAfter[key], setupBaseline[key] + (key === 'p-right-mid' ? 1 : 0),
@@ -1740,7 +3306,9 @@ const main = async () => {
         const snapshot = await compactSnapshot(layout);
         return targets.every(key => snapshot.tabs[key].discarded === false &&
           snapshot.tabs[key].status === 'complete' &&
-          snapshot.ownership[layout.tabs[key].id] === undefined);
+          snapshot.ownership[layout.tabs[key].id] === undefined &&
+          !snapshot.tabs[key].title?.startsWith('💤 ') &&
+          /\/favicon\.svg(?:\?|$)/i.test(snapshot.tabs[key].favIconUrl || ''));
       }, `${command} targets to finish reloading`, 25000);
       const after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout, ALL_BACKGROUND.filter(key => !inScope.has(key)), command);
@@ -1750,6 +3318,7 @@ const main = async () => {
         assert.equal(after.tabs[key].discarded, false);
         assert.equal(after.tabs[key].status, 'complete');
         assert.equal(after.ownership[layout.tabs[key].id], undefined);
+        assertReleasedVisual(after.tabs[key], `${command} released ${key}`);
       }
       for (const key of ALL_BACKGROUND.filter(key => !inScope.has(key))) {
         assert.equal(requestAfter[key], baseline[key], `${command} must not reload out-of-scope ${key}`);
@@ -1766,9 +3335,24 @@ const main = async () => {
       assert.deepEqual(availableAfter, RELEASE_AVAILABILITY_AFTER[command],
         `${command}: popup release availability must match the live scopes`);
       const repeatBaseline = counts(layout);
-      await sendPopupCommand(layout, command, shiftKey);
+      assert.equal(availableAfter[command], false,
+        `${command}: its own control must disable once its scope is empty`);
       await sleep(500);
-      assert.deepEqual(counts(layout), repeatBaseline, `${command} repeat must issue no document requests`);
+      assert.deepEqual(counts(layout), repeatBaseline,
+        `${command} disabled repeat control must issue no document requests`);
+      const repeatAfter = await compactSnapshot(layout);
+      for (const key of targets) {
+        assert.equal(repeatAfter.tabs[key].discarded, false,
+          `${command}: disabled repeat must keep released ${key} loaded`);
+        assert.equal(repeatAfter.tabs[key].status, 'complete');
+        assert.equal(repeatAfter.ownership[layout.tabs[key].id], undefined,
+          `${command}: disabled repeat must not recreate ownership for ${key}`);
+        assert.deepEqual(assertReleasedVisual(repeatAfter.tabs[key], `${command} repeat ${key}`),
+          assertReleasedVisual(after.tabs[key], `${command} final ${key}`),
+        `${command}: disabled repeat must not mutate ${key}'s restored visual state`);
+      }
+      assertOwnershipKeys(repeatAfter, layout,
+        ALL_BACKGROUND.filter(key => !inScope.has(key)), `${command} disabled repeat`);
       await assertStable(layout);
       assertNoCrashes(name);
       scenarios.push({
@@ -1776,10 +3360,30 @@ const main = async () => {
         bypassCache: shiftKey,
         name,
         ok: true,
+        repeatPreventedByDisabledControl: true,
         released: targets,
         sourcesBefore
       });
     }
+
+    await flushTelemetry();
+    const replacementEvents = timeline.filter(event => event.event === 'tabs.onReplaced' &&
+      Number.isInteger(event.addedId) && Number.isInteger(event.removedId));
+    for (const event of replacementEvents) {
+      assert.equal(resolveTabId(event.removedId), resolveTabId(event.addedId),
+        `replacement ${event.removedId} -> ${event.addedId} must resolve to one current identity`);
+      const lineage = lineageFor(event.removedId);
+      assert.equal(lineage.has(event.removedId) && lineage.has(event.addedId), true,
+        `replacement ${event.removedId} -> ${event.addedId} must retain both lineage IDs`);
+    }
+    scenarios.push({
+      coverage: allowEdge ?
+        (replacementEvents.length ? 'observed-and-asserted' : 'not-observed-by-this-edge-run') :
+        'edge-only-observation-not-applicable',
+      name: 'edge-replacement-lineage-observation',
+      observed: replacementEvents.length,
+      ok: true
+    });
 
     await reset();
     await recordMemory('final-clean-profile');
@@ -1803,44 +3407,40 @@ const main = async () => {
     }
     report.cleanup = cleanup;
     report.crashes = crashes;
-    report.stderr = allowEdge ? undefined : launched.stderr();
-    report.stderrSuppressed = allowEdge;
     if (crashes.length && !runError) {
       runError = Error(`browser produced ${crashes.length} crash dump(s)`);
-      report.error = {message: runError.message, stack: runError.stack};
+      report.error = {reasonCode: publicFailureReason(runError)};
       report.ok = false;
     }
     if ((!processCleanup.exited || fixtureCleanup.status !== 'fulfilled') && !runError) {
       runError = Error('isolated browser or fixture server did not clean up completely');
-      report.error = {message: runError.message, stack: runError.stack};
+      report.error = {reasonCode: publicFailureReason(runError)};
       report.ok = false;
     }
     if (!retainProfile) {
       try {
         removeIsolatedProfile();
-        cleanup.profile = {path: profile, removed: true, retained: false};
+        cleanup.profile = {removed: true, retained: false};
       }
       catch (error) {
         cleanup.profile = {
-          error: error?.message || String(error),
-          path: profile,
+          reasonCode: publicFailureReason(error),
           removed: false,
           retained: fs.existsSync(profile)
         };
-        const cleanupError = Error(`isolated browser profile cleanup failed: ${cleanup.profile.error}`);
+        const cleanupError = Error('isolated browser profile cleanup failed');
         runError ||= cleanupError;
-        report.error ||= {message: cleanupError.message, stack: cleanupError.stack};
+        report.error ||= {reasonCode: publicFailureReason(cleanupError)};
         report.ok = false;
       }
     }
     else {
-      cleanup.profile = {explicit: true, path: profile, removed: false, retained: true};
+      cleanup.profile = {explicit: true, removed: false, retained: true};
     }
-    fs.writeFileSync(resultPath, `${JSON.stringify(report, null, 2)}\n`);
+    persistReport();
   }
 
   if (runError) {
-    runError.message = `${runError.message}\nFull failure report: ${resultPath}`;
     throw runError;
   }
   process.stdout.write(`${JSON.stringify({
@@ -1849,11 +3449,11 @@ const main = async () => {
     crashes: report.crashes,
     extension: report.extension,
     matrix: scenarios.map(scenario => ({name: scenario.name, ok: scenario.ok})),
-    resultPath
+    resultFile: path.basename(resultPath)
   }, null, 2)}\n`);
 };
 
 main().catch(error => {
-  console.error(error.stack || error);
+  console.error(JSON.stringify({ok: false, reasonCode: publicFailureReason(error)}));
   process.exitCode = 1;
 });

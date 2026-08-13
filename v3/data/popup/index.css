@@ -3,6 +3,7 @@
   --clr: #4d5156;
   --dark: #d9d9d9;
   --button: #f0f0f0;
+  --focus: #005fcc;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -11,6 +12,7 @@
     --clr: #b1b1b1;
     --dark: #202124;
     --button: #202124;
+    --focus: #8ab4f8;
 
     color-scheme: dark;
   }
@@ -24,6 +26,10 @@ body {
   min-width: 350px;
   background-color: var(--bg);
   color: var(--clr);
+  overflow-wrap: anywhere;
+}
+[hidden] {
+  display: none !important;
 }
 
 /* FF overflow menu */
@@ -33,15 +39,37 @@ body {
     overflow: hidden;
   }
   header {
-    display: none;
+    block-size: 1px;
+    border: 0;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    inline-size: 1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    white-space: nowrap;
   }
 }
 
 header {
   border-bottom: solid 1px var(--dark);
-  font-size: 140%;
   text-align: center;
   padding: 15px;
+}
+header h1 {
+  font-size: 140%;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.visually-hidden {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
 }
 ul {
   padding: 0;
@@ -49,27 +77,82 @@ ul {
 li {
   list-style: none;
   margin: 0;
-  padding: 5px 0 5px 10px;
+  padding: 0;
+}
+#activity {
+  border-bottom: solid 1px var(--dark);
+  padding: 10px;
+}
+#activity[hidden] {
+  display: none;
+}
+#activity-status,
+#activity-summary {
+  line-height: 1.35;
+  min-width: 0;
+  white-space: normal;
+}
+#activity-progress {
+  box-sizing: border-box;
+  display: block;
+  inline-size: 100%;
+  margin-block: 8px;
+}
+#activity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
+  margin-block-start: 8px;
+}
+#activity-cancel,
+#activity-retry {
+  background-color: var(--button);
+  border: solid 1px var(--dark);
+  border-radius: 3px;
+  min-block-size: 30px;
+  padding: 5px 12px;
+}
+#activity-cancel:hover,
+#activity-retry:hover {
+  background-color: var(--dark);
+}
+button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  margin: 0;
+  text-align: start;
+}
+button.row,
+li.group > button:first-child {
+  box-sizing: border-box;
+  display: block;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  padding: 5px 10px;
+  white-space: normal;
+  width: 100%;
 }
 input[type=checkbox] {
   outline: none;
 }
 li.group {
   display: grid;
-  grid-template-columns: 1fr min-content;
+  grid-template-columns: minmax(0, 1fr) min-content;
   padding: 0;
 }
-li.group span {
-  padding: 5px 0 5px 10px;
-}
-li span[data-cmd^="release"] {
+li button[data-cmd^="release"] {
   width: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0 3px;
 }
-li span[data-cmd^="release"] svg {
+li button[data-cmd^="release"] svg {
   pointer-events: none;
   width: 22px;
   fill: var(--clr);
@@ -83,10 +166,13 @@ li span[data-cmd^="release"] svg {
 }
 
 .button {
+  border: 0;
+  display: block;
   background-color: var(--button);
   height: 42px;
   line-height: 42px;
   text-align: center;
+  width: 100%;
 }
 .button:hover {
   background-color: var(--dark);
@@ -112,7 +198,7 @@ li span[data-cmd^="release"] svg {
   white-space: nowrap;
   padding: 10px 0;
 }
-.nav > div {
+.nav > button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -120,21 +206,21 @@ li span[data-cmd^="release"] svg {
   background-color: var(--button);
   cursor: pointer;
 }
-.nav > div:hover {
+.nav > button:hover {
   background-color: var(--dark);
 }
-.nav > div * {
+.nav > button * {
   pointer-events: none;
 }
-.nav > div > span {
+.nav > button > span {
   padding: 10px 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .mlt {
   display: grid;
-  grid-template-columns: 1fr repeat(4, min-content);
-  white-space: nowrap;
+  grid-template-columns: minmax(0, 1fr) repeat(4, min-content);
+  white-space: normal;
   align-items: center;
   grid-gap: 5px;
   margin: 10px;
@@ -143,7 +229,13 @@ li span[data-cmd^="release"] svg {
   display: contents;
 }
 .mlt input[type=checkbox] {
-  margin: 0 0 0 5px;
+  margin-block: 0;
+  margin-inline: 5px 0;
+}
+.mlt > span,
+.ald > label {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
 }
 
 .ald {
@@ -176,16 +268,36 @@ li span[data-cmd^="release"] svg {
   opacity: 0.4;
   pointer-events: none;
 }
+[data-cmd]:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+@media (forced-colors: active) {
+  [data-cmd]:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible {
+    outline-color: CanvasText;
+  }
+}
 [data-cmd=move-next] *,
 [data-cmd=move-previous] * {
   pointer-events: none;
 }
 [data-cmd=move-next] svg {
-  margin-left: 5px;
+  margin-inline-start: 5px;
   stroke: var(--clr);
 }
 [data-cmd=move-previous] svg {
-  margin-right: 5px;
+  margin-inline-end: 5px;
   stroke: var(--clr);
 }
 [data-cmd=move-next]::after,
