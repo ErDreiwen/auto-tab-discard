@@ -65,6 +65,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
   let releaseHeldActivation;
   let holdMarkerPreparation;
   let markerPreparationReached;
+  let delayedFinalPreparation;
   let holdGetId;
   let releaseHeldGet;
   let holdLocalStorage = false;
@@ -157,6 +158,23 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
         const tab = liveTabs.get(target.tabId);
         const preparationCall = (preparationCalls.get(target.tabId) || 0) + 1;
         preparationCalls.set(target.tabId, preparationCall);
+        if (delayedFinalPreparation?.id === target.tabId && preparationCall === 2) {
+          const delay = delayedFinalPreparation.delay;
+          delayedFinalPreparation = undefined;
+          if (tab) {
+            tab.status = 'complete';
+            tab.title = `${args?.[0]?.prepends || ''} test`.trim();
+            tab.visualMarked = Boolean(args?.[0]?.prepends);
+            tab.faviconMarked = args?.[0]?.favicon === true;
+            emitUpdated(target.tabId, {status: 'complete', title: tab.title});
+          }
+          return new Promise(resolve => setTimeout(resolve, delay, [{result: {
+            faviconApplied: true,
+            stopped: true,
+            title: tab?.title,
+            titleApplied: true
+          }}]));
+        }
         if (holdMarkerPreparation?.id === target.tabId &&
             holdMarkerPreparation.call === preparationCall) {
           holdMarkerPreparation = undefined;
@@ -1603,6 +1621,58 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     finishNative();
     assert.equal(await finalFrameTakeover, true);
     assert.equal(listeners.updated.length, updatedListenerBaseline);
+
+    // Final visual preparation is not the short reload-stop operation. Hidden
+    // Chromium renderers can delay favicon work past stopTimeout even though it
+    // remains safely inside prepareTimeout and the overall takeover deadline.
+    const delayedFinalMarker = await claimedTakeoverTab(131, 'https://delayed-final-marker.example/');
+    localState.favicon = true;
+    preparationCalls.delete(delayedFinalMarker.id);
+    delayedFinalPreparation = {delay: 30, id: delayedFinalMarker.id};
+    discard.stopTimeout = 10;
+    discard.prepareTimeout = 100;
+    discard.takeoverTimeout = 200;
+    callStart = calls.length;
+    const delayedFinalTakeover = discard.takeover(clone(delayedFinalMarker), {manual: true});
+    await waitForNative('delayed final marker takeover');
+    assert.deepEqual(calls.slice(callStart), [
+      'reload:131:false', 'stop:131', 'stop:131', 'discard:131'
+    ]);
+    finishNative();
+    assert.equal(await delayedFinalTakeover, true);
+    const delayedFinalOwnership = (await ownership.status(delayedFinalMarker.id)).marker;
+    assert.equal(delayedFinalOwnership.source, 'self');
+    assert.equal(delayedFinalOwnership.visual.complete, true);
+    assert.equal(delayedFinalOwnership.visual.favicon, true);
+    assert.equal(delayedFinalOwnership.visual.title, true);
+    delete localState.favicon;
+    discard.stopTimeout = 1000;
+    discard.prepareTimeout = 5000;
+
+    // A final pass that never resolves is still bounded by prepareTimeout,
+    // never reaches native discard, and invokes exact-token rollback once.
+    const expiredFinalMarker = await claimedTakeoverTab(132, 'https://expired-final-marker.example/');
+    localState.favicon = true;
+    preparationCalls.delete(expiredFinalMarker.id);
+    holdMarkerPreparation = {call: 2, id: expiredFinalMarker.id};
+    discard.stopTimeout = 10;
+    discard.prepareTimeout = 30;
+    discard.takeoverTimeout = 100;
+    const expiredRollbackBaseline = markerRollbacks;
+    callStart = calls.length;
+    await assert.rejects(
+      discard.takeover(clone(expiredFinalMarker), {manual: true}),
+      /timed out preparing/
+    );
+    assert.deepEqual(calls.slice(callStart), [
+      'reload:132:false', 'stop:132', 'stop:132'
+    ]);
+    assert.equal(markerRollbacks, expiredRollbackBaseline + 1);
+    await assertFailedTakeoverClean(expiredFinalMarker.id);
+    delete localState.favicon;
+    discard.stopTimeout = 1000;
+    discard.prepareTimeout = 5000;
+    discard.takeoverTimeout = 200;
 
     // Transient retries are capped, while an error-page injection failure is
     // deliberately outside the whitelist and remains immediately fatal.

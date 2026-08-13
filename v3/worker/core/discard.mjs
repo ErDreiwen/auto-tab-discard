@@ -715,7 +715,13 @@ const prepareAwakeTab = async (
     // ordinary extension discard. If Chrome swaps the main frame here, return
     // through quiescence and retry against the replacement renderer.
     const prepareTimeout = {};
-    const prepareLimit = Math.min(discard.stopTimeout, remainingTime(deadline));
+    // The reload-stop pass above is deliberately short, but this final visual
+    // pass also loads and rasterizes the favicon and honors faviconDelay.
+    // Hidden Chromium renderers can throttle that timer to roughly one second,
+    // so reusing stopTimeout races a valid marker result after its title write.
+    // Give visual preparation its ordinary bounded budget while retaining the
+    // single takeover deadline as the outer limit.
+    const prepareLimit = Math.min(discard.prepareTimeout, remainingTime(deadline));
     const attempt = markerAttempt(Math.max(0, prepareLimit));
     // The injected function can write the exact-attempt title/favicon before
     // executeScript's result Promise settles. Publish its rollback authority
@@ -1496,7 +1502,11 @@ discard.cancellationStableDwell = 100;
 discard.activationEventGrace = 50;
 discard.transientFocusStartGrace = 100;
 discard.transientFocusReturnTimeout = 2000;
-discard.markerRollbackTimeout = 1000;
+// Rollback can queue behind the same bounded visual preparation it revokes.
+// Match that operation's budget so a timeout after a renderer-side title write
+// still has time to run the exact-token cleanup; this never authorizes a retry
+// or a second native discard.
+discard.markerRollbackTimeout = 5000;
 discard.sideEffectProbeTimeout = 1000;
 discard.takeoverSnapshot = takeoverSnapshot;
 discard.takeoverScheduler = takeoverScheduler;

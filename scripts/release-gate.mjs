@@ -73,15 +73,36 @@ const run = async (file, arguments_, cwd = repositoryRoot) => {
   }
 };
 
+export const sanitizeCommandEvidenceText = value => String(value || '')
+    .replace(/file:\/{2,3}[^\s"'<>]+/gi, '<local-path>')
+    .replace(/\\\\[^\\/\s]+[\\/][^\r\n"'<>|]*/g, '<local-path>')
+    .replace(/(?<![A-Za-z])\b[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>|]*/g, '<local-path>')
+    .replace(/(?:^|[\s"'(:=])\/(?:Users|home|tmp|private|var\/folders)\/[^\s"'<>]*/gi,
+      match => `${match[0]}<local-path>`)
+    .replace(/(?:(?:https?|wss?):\/\/)?(?:127\.0\.0\.1|localhost):\d+[^\s"'<>)}\]]*/gi,
+      '<fixture-url>')
+    .replace(/\b(?:https?|wss?|ftp|file|blob|data|about|chrome|edge|moz-extension|chrome-extension|edge-extension):[^\s"'<>)}\]]+/gi,
+      '<url>')
+    .replace(/\b[a-p]{32}\b/gi, '<extension-id>')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi,
+      '<opaque-id>')
+    .replace(/\b(?:secret|private|sensitive)[-_ ]?canary(?:[-_:][A-Za-z0-9%._~+/=]+)*/gi,
+      '<secret-canary>')
+    .replace(/("(?:id|tabId|windowId|groupId|keeperId|targetId|processId|pid)"\s*:\s*)-?\d+/gi,
+      '$1"<redacted-id>"')
+    .replace(/\b((?:tab|window|group|target|keeper|process)(?:\s+(?:with\s+)?)?(?:id)?\s*[:=#]?\s*)-?\d+\b/gi,
+      '$1<redacted-id>')
+    .replace(/\b(PID\s*[:=#]?\s*)-?\d+\b/gi, '$1<redacted-id>');
+
 const writeCommandEvidence = async (target, result) => {
   await writeFile(target, [
     `exit: ${result.ok ? 'passed' : `failed (${result.code ?? 'unknown'})`}`,
     '',
     'stdout:',
-    result.stdout || '',
+    sanitizeCommandEvidenceText(result.stdout),
     '',
     'stderr:',
-    result.stderr || ''
+    sanitizeCommandEvidenceText(result.stderr)
   ].join('\n').replace(/\r\n?/g, '\n'), 'utf8');
 };
 
@@ -97,6 +118,66 @@ const exactOrderedReportValues = (records, key, expected) =>
   Array.isArray(records) && records.length === expected.length &&
   records.every((record, index) => record?.[key] === expected[index]);
 
+export const reportPrivacyError = report => {
+  const text = JSON.stringify(report);
+  if (/(?:(?:https?|wss?):\/\/)?(?:127\.0\.0\.1|localhost):\d+/i.test(text)) {
+    return 'shareable report contains a loopback endpoint';
+  }
+  if (/(?:chrome|edge|moz)-extension:\/\/(?!<(?:redacted|isolated)>)[^/\s"']+/i.test(text)) {
+    return 'shareable report contains an extension origin';
+  }
+  if (/(?<![A-Za-z])\b[A-Za-z]:[\\/]|(?:^|[\s"'(:=])\/(?:Users|home|tmp|private|var\/folders)\//i.test(text)) {
+    return 'shareable report contains a local filesystem path';
+  }
+  if (/\b[a-p]{32}\b|[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|(?:secret|private|sensitive)[-_ ]?canary(?:[-_:][A-Za-z0-9%._~+/=]+)+/i.test(text)) {
+    return 'shareable report contains an opaque or secret identity';
+  }
+  const sensitiveIdKey = key => key === 'id' || key === 'pid' || /(?:Id|Ids|ID|IDs)$/.test(key);
+  const inspect = value => {
+    if (Array.isArray(value)) {
+      return value.some(inspect);
+    }
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    return Object.entries(value).some(([key, entry]) => /^-?\d+$/.test(key) ||
+      (sensitiveIdKey(key) && (typeof entry === 'number' ||
+        (typeof entry === 'string' && /^-?\d+$/.test(entry)) ||
+        (Array.isArray(entry) && entry.some(item => typeof item === 'number' ||
+          (typeof item === 'string' && /^-?\d+$/.test(item)))))) || inspect(entry));
+  };
+  return inspect(report) ? 'shareable report contains a raw browser identifier' : undefined;
+};
+
+export const quarantineUnsafeBrowserReports = async directory => {
+  const files = (await readdir(directory, {withFileTypes: true}))
+    .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
+    .map(entry => entry.name)
+    .sort(binaryCompare);
+  const reasons = [];
+  let removed = 0;
+  let retained = 0;
+  for (const file of files) {
+    const reportPath = path.join(directory, file);
+    let reason;
+    try {
+      reason = reportPrivacyError(JSON.parse(await readFile(reportPath, 'utf8')));
+    }
+    catch (error) {
+      reason = 'shareable report is malformed';
+    }
+    if (reason) {
+      await rm(reportPath, {force: true});
+      removed += 1;
+      reasons.push(reason);
+    }
+    else {
+      retained += 1;
+    }
+  }
+  return {reasons: [...new Set(reasons)].sort(binaryCompare), removed, retained};
+};
+
 const runBrowser = async ({id, executable, script, arguments_, reportDirectory, validate}) => {
   await rm(reportDirectory, {recursive: true, force: true});
   await mkdir(reportDirectory, {recursive: true});
@@ -104,11 +185,13 @@ const runBrowser = async ({id, executable, script, arguments_, reportDirectory, 
   const commandPath = path.join(reportDirectory, 'command.txt');
   await writeCommandEvidence(commandPath, command);
   if (!command.ok) {
-    return {id, blocker: `${id} failed against the extracted artifact`, commandPath};
+    const quarantine = await quarantineUnsafeBrowserReports(reportDirectory);
+    const suffix = quarantine.removed > 0 ? '; unsafe failed report removed' : '';
+    return {id, blocker: `${id} failed against the extracted artifact${suffix}`, commandPath};
   }
   const reportPath = await newestJson(reportDirectory);
   const report = JSON.parse(await readFile(reportPath, 'utf8'));
-  const error = validate(report);
+  const error = reportPrivacyError(report) || validate(report);
   return error ? {id, blocker: `${id}: ${error}`, commandPath, reportPath} : {
     id,
     evidence: {id, path: relativeEvidencePath(reportPath), status: 'passed'},
@@ -376,7 +459,10 @@ export const releaseGate = async ({
     if (frozen.ok) {
       await copyFile(generated, copied);
       const report = JSON.parse(await readFile(copied, 'utf8'));
-      browserRuns.push(report.outcome !== 'passed' ?
+      const privacyError = reportPrivacyError(report);
+      browserRuns.push(privacyError ?
+        {id: 'edge-frozen-smoke', blocker: `edge-frozen-smoke: ${privacyError}`} :
+        report.outcome !== 'passed' ?
         {id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke report did not pass'} :
         report.extension?.treeSha256 !== archiveInventory.treeSha256 ?
           {id: 'edge-frozen-smoke', blocker: 'edge-frozen-smoke tested tree digest does not match the release artifact'} : {

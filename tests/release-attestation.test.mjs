@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -10,6 +10,11 @@ import {promisify} from 'node:util';
 import {inspectArchive} from '../scripts/archive-inventory.mjs';
 import {inventorySha256} from '../scripts/cross-builder-provenance.mjs';
 import {packageRelease} from '../scripts/package-release.mjs';
+import {
+  quarantineUnsafeBrowserReports,
+  reportPrivacyError,
+  sanitizeCommandEvidenceText
+} from '../scripts/release-gate.mjs';
 import {
   createReleasePredicate,
   ghVerifyArguments,
@@ -383,6 +388,86 @@ test('release gate exposes a deterministic candidate but cannot pass without att
   assert.match(source, /if \(report\.blockers\.length\) \{\s*report\.status = 'blocked'/);
   assert.doesNotMatch(source, /--gh-executable|ghExecutable/);
   assert.doesNotMatch(source, /verifyReleaseAttestationForTest/);
+});
+
+test('release gate rejects browser evidence with raw local identity or endpoints', () => {
+  assert.equal(reportPrivacyError({
+    extensionTree: [{path: 'data/icons/tmp/16.png'}],
+    identity: {
+      tabId: '<tab-id-1>',
+      targetIds: ['<tab-id-1>', '<tab-id-2>'],
+      windowId: '<window-id-3>'
+    },
+    origin: '<url>',
+    secret: '<secret-canary>'
+  }), undefined);
+
+  for (const report of [
+    {title: '127.0.0.1:9222/private'},
+    {origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/worker/core.mjs'},
+    {path: String.raw`C:\Users\alice\private\report.json`},
+    {path: '/home/alice/private/report.json'},
+    {extensionId: 'abcdefghijklmnopabcdefghijklmnop'},
+    {operationId: '123e4567-e89b-42d3-a456-426614174000'},
+    {message: 'SECRET-CANARY-50-REPORT-7c2a188e'},
+    {tabId: 717171},
+    {tabId: '717171'},
+    {targetIds: [717171, 717172]},
+    {outcomes: {'717171': {status: 'succeeded'}}}
+  ]) {
+    assert.match(reportPrivacyError(report), /^shareable report contains /);
+  }
+});
+
+test('release gate sanitizes stdout and stderr before retaining command evidence', () => {
+  const canary = 'SECRET-CANARY-50-COMMAND-7c2a188e';
+  const sanitized = sanitizeCommandEvidenceText([
+    String.raw`C:\Users\alice\private\failure.log`,
+    String.raw`\\host\share\private.log`,
+    '/home/alice/private.log',
+    `http://127.0.0.1:9222/private?token=${canary}`,
+    'chrome-extension://abcdefghijklmnopabcdefghijklmnop/worker/core.mjs',
+    `tab with id 717171 PID=919191 ${canary}`
+  ].join('\n'));
+
+  for (const forbidden of [
+    'C:\\Users\\alice', '\\\\host\\share', '/home/alice', '127.0.0.1:9222',
+    'abcdefghijklmnopabcdefghijklmnop', '717171', '919191', canary
+  ]) {
+    assert.equal(sanitized.includes(forbidden), false, `command evidence leaked ${forbidden}`);
+  }
+  assert.match(sanitized, /<local-path>/);
+  assert.match(sanitized, /<fixture-url>|<url>/);
+  assert.match(sanitized, /<redacted-id>/);
+  assert.match(sanitized, /<secret-canary>/);
+});
+
+test('release gate removes unsafe or malformed JSON left by a failed browser harness', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'failed-browser-evidence-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  await mkdir(root, {recursive: true});
+  await writeFile(path.join(root, 'safe.json'), JSON.stringify({
+    outcome: 'failed',
+    tabId: '<tab-id-1>',
+    title: '<url>'
+  }));
+  await writeFile(path.join(root, 'unsafe.json'), JSON.stringify({
+    outcome: 'failed',
+    tabId: 717171,
+    title: '127.0.0.1:9222/private'
+  }));
+  await writeFile(path.join(root, 'malformed.json'), '{');
+
+  const result = await quarantineUnsafeBrowserReports(root);
+  assert.deepEqual(result, {
+    reasons: [
+      'shareable report contains a loopback endpoint',
+      'shareable report is malformed'
+    ],
+    removed: 2,
+    retained: 1
+  });
+  assert.deepEqual((await readdir(root)).sort(), ['safe.json']);
 });
 
 test('production CLIs reject verifier-executable substitution', async () => {

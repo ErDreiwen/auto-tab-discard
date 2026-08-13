@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
 import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 
+const require = createRequire(import.meta.url);
+const {sanitizePopupReport} = require('../e2e/popup-matrix.cjs');
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
 
@@ -369,7 +372,7 @@ test('popup matrix reports sanitize local and process identity at the write boun
   ]) {
     assert.match(source, new RegExp(`'${key}'`), `report sanitizer must omit ${key}`);
   }
-  assert.match(source, /JSON\.stringify\(sanitizeReportValue\(report\)/);
+  assert.match(source, /JSON\.stringify\(sanitizePopupReport\(report\)/);
   assert.match(source, /browser: \{family: allowEdge \? 'edge' : 'chromium', version: browser\.version\(\)\}/);
   assert.match(writer, /error: error \? \{reasonCode: publicFailureReason\(error\)\} : undefined/);
   assert.match(writer, /reportFormat: 'sanitized-v1'/);
@@ -381,6 +384,76 @@ test('popup matrix reports sanitize local and process identity at the write boun
   assert.match(source, /cleanup\.profile = \{removed: true, retained: false\}/);
   assert.match(source, /resultFile: path\.basename\(resultPath\)/);
   assert.match(source, /console\.error\(JSON\.stringify\(\{ok: false, reasonCode: publicFailureReason\(error\)\}\)\)/);
+});
+
+test('popup matrix shareable reports redact hostile identity, endpoint, path, and secret canaries', () => {
+  const canary = 'SECRET-CANARY-50-POPUP-7c2a188e';
+  const extensionId = 'abcdefghijklmnopabcdefghijklmnop';
+  const firstTab = 717171;
+  const secondTab = 717172;
+  const windowId = 818181;
+  const groupId = 828282;
+  const sanitized = sanitizePopupReport({
+    [canary]: `private property ${canary}`,
+    id: 'fixture-label-is-not-browser-identity',
+    local: String.raw`C:\Users\alice\ATD Private\popup-profile\failure.log`,
+    timeline: [{
+      addedId: secondTab,
+      attemptId: `attempt-${canary}`,
+      groupId,
+      id: firstTab,
+      jobId: 'job-private-identity',
+      operationId: '123e4567-e89b-42d3-a456-426614174000',
+      removedId: firstTab,
+      targetIds: [firstTab, secondTab],
+      title: `127.0.0.1:9222/tab?token=${canary}#fragment`,
+      url: `https://secret.example/private?token=${canary}#fragment`,
+      windowId
+    }],
+    outcomes: {
+      [firstTab]: {
+        error: new Error(`${canary} /home/alice/private.log PID=919191`),
+        tabId: firstTab,
+        windowId
+      }
+    },
+    origin: `chrome-extension://${extensionId}/worker/core.mjs`
+  });
+  const text = JSON.stringify(sanitized);
+  const first = sanitized.timeline[0];
+  const outcomeKey = Object.keys(sanitized.outcomes)[0];
+
+  assert.equal(sanitized.id, 'fixture-label-is-not-browser-identity');
+  assert.equal(first.id, first.removedId);
+  assert.equal(first.addedId, first.targetIds[1]);
+  assert.equal(first.id, first.targetIds[0]);
+  assert.equal(outcomeKey, first.id);
+  assert.equal(sanitized.outcomes[outcomeKey].tabId, first.id);
+  assert.equal(sanitized.outcomes[outcomeKey].windowId, first.windowId);
+  assert.notEqual(first.targetIds[0], first.targetIds[1]);
+  for (const forbidden of [
+    canary,
+    extensionId,
+    '127.0.0.1:9222',
+    'secret.example',
+    String.raw`C:\Users\alice`,
+    '/home/alice/private.log',
+    '717171',
+    '717172',
+    '818181',
+    '828282',
+    '919191',
+    '123e4567-e89b-42d3-a456-426614174000'
+  ]) {
+    assert.equal(text.includes(forbidden), false, `shareable popup report leaked ${forbidden}`);
+  }
+  assert.match(text, /<tab-id-/);
+  assert.match(text, /<window-id-/);
+  assert.match(text, /<group-id-/);
+  assert.match(text, /<opaque-id-/);
+  assert.match(text, /<fixture-url>|<url>/);
+  assert.match(text, /<local-path>/);
+  assert.match(text, /<secret-canary>/);
 });
 
 test('popup matrix reconciles command outcomes across Edge tab replacement lineage', async () => {

@@ -5,7 +5,6 @@ const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const {pathToFileURL} = require('node:url');
-const {chromium} = require('./playwright-runtime.cjs');
 
 let emergencyBrowserProcess;
 
@@ -36,6 +35,94 @@ const publicFailureReason = error => {
     return 'browser-launch-failed';
   }
   return 'matrix-invariant-failed';
+};
+const reportOmittedKeys = new Set([
+  'executablePath',
+  'parentProcessId',
+  'path',
+  'pid',
+  'processId',
+  'processIds',
+  'processInfo',
+  'processes',
+  'stack',
+  'stderr',
+  'stdout'
+]);
+const reportIdKey = key => key === 'id' || key === 'pid' || /(?:Id|Ids|ID|IDs)$/.test(key);
+const reportIdDomain = key => key.toLowerCase() === 'pid' || /process/i.test(key) ? 'process' :
+  /window/i.test(key) ? 'window' :
+    /group/i.test(key) ? 'group' :
+      /extension/i.test(key) ? 'extension' :
+        /browserContext/i.test(key) ? 'browser-context' :
+          /attempt|job|menuItem|operation/i.test(key) ? 'opaque' : 'tab';
+const sanitizeReportString = value => String(value?.message ?? value ?? '')
+  .replace(/file:\/{2,3}[^\s"'<>]+/gi, '<local-path>')
+  .replace(/\\\\[^\\/\s]+[\\/][^\r\n"'<>|]*/g, '<local-path>')
+  .replace(/(?<![A-Za-z])\b[A-Za-z]:[\\/](?![\\/])[^\r\n"'<>|]*/g, '<local-path>')
+  .replace(/\/(?:Users|home|tmp|private|var\/folders)\/[^\s"'<>]+/gi, '<local-path>')
+  .replace(/\b(?:127\.0\.0\.1|localhost):\d+[^\s"'<>)}\]]*/gi, '<fixture-url>')
+  .replace(/\b(?:https?|wss?|ftp|file|blob|data|about|chrome|edge|moz-extension|chrome-extension|edge-extension):[^\s"'<>)}\]]+/gi,
+    '<url>')
+  .replace(/\b[a-p]{32}\b/gi, '<extension-id>')
+  .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi,
+    '<opaque-id>')
+  .replace(/\b(?:secret|private|sensitive)[-_ ]?canary(?:[-_:][A-Za-z0-9%._~+/=]+)*/gi,
+    '<secret-canary>')
+  .replace(/("(?:id|tabId|windowId|groupId|keeperId|targetId|processId|pid)"\s*:\s*)-?\d+/gi,
+    '$1"<redacted-id>"')
+  .replace(/\b((?:tab|window|group|target|keeper|process)(?:\s+(?:with\s+)?)?(?:id)?\s*[:=#]?\s*)-?\d+\b/gi,
+    '$1<redacted-id>')
+  .replace(/\b(PID\s*[:=#]?\s*)-?\d+\b/gi, '$1<redacted-id>')
+  .replace(/[?#][^\s"'<>]*/g, '<url-component>');
+
+const sanitizePopupReport = value => {
+  const aliases = new Map();
+  const redactId = (entry, domain) => {
+    const identity = `${domain}:${String(entry)}`;
+    if (!aliases.has(identity)) {
+      aliases.set(identity, `<${domain}-id-${aliases.size + 1}>`);
+    }
+    return aliases.get(identity);
+  };
+  const visit = (entry, key = '') => {
+    if (entry instanceof Error) {
+      return {
+        message: sanitizeReportString(entry.message),
+        name: sanitizeReportString(entry.name)
+      };
+    }
+    if (reportIdKey(key) && typeof entry === 'number') {
+      return redactId(entry, reportIdDomain(key));
+    }
+    if (reportIdKey(key) && typeof entry === 'string' &&
+        (key !== 'id' || /^-?\d+$/.test(entry))) {
+      return redactId(entry, reportIdDomain(key));
+    }
+    if (typeof entry === 'string') {
+      return sanitizeReportString(entry);
+    }
+    if (Array.isArray(entry)) {
+      return entry.map(item => reportIdKey(key) && ['number', 'string'].includes(typeof item) ?
+        redactId(item, reportIdDomain(key)) : visit(item));
+    }
+    if (!entry || typeof entry !== 'object') {
+      return entry;
+    }
+    const sanitized = {};
+    for (const [rawKey, item] of Object.entries(entry)) {
+      if (reportOmittedKeys.has(rawKey)) {
+        continue;
+      }
+      let safeKey = /^-?\d+$/.test(rawKey) ? redactId(rawKey, 'tab') : sanitizeReportString(rawKey);
+      while (Object.hasOwn(sanitized, safeKey)) {
+        safeKey += '-duplicate';
+      }
+      sanitized[safeKey] = visit(item, rawKey);
+    }
+    return sanitized;
+  };
+  return visit(value);
 };
 const waitFor = async (task, description, timeout = 15000, interval = 50) => {
   const deadline = Date.now() + timeout;
@@ -996,6 +1083,7 @@ const startFixtureServer = async () => {
 };
 
 const launchOverCDP = async ({edgePrivacy, executablePath, extensionPath, profile}) => {
+  const {chromium} = require('./playwright-runtime.cjs');
   const disabledFeatures = ['OptimizationHints', 'MediaRouter'];
   if (edgePrivacy) {
     disabledFeatures.push('msImplicitSignin', 'msM365LinksImplicitSignin');
@@ -1293,41 +1381,8 @@ const main = async () => {
   const replacementIds = new Map();
   const lineageById = new Map();
   const trackedLayouts = new Set();
-  const reportOmittedKeys = new Set([
-    'executablePath',
-    'parentProcessId',
-    'path',
-    'pid',
-    'processId',
-    'processIds',
-    'processInfo',
-    'processes',
-    'stack',
-    'stderr',
-    'stdout'
-  ]);
-  const sanitizeReportString = value => value
-    .replace(/file:\/{2,3}[^\s"'<>]+/gi, 'file://<isolated-fixture>')
-    .replace(/\b[A-Za-z]:[\\/][^\r\n"'<>|]*/g, '<local-path>')
-    .replace(/\b(?:PID|process(?:\s+|-)id)\s*[:=]?\s*\d+\b/gi, 'process-id:<redacted>')
-    .replace(/(?:chrome|edge)-extension:\/\/[^/\s"'<>]+/gi, 'extension://<isolated>')
-    .replace(/https?:\/\/(?:127\.0\.0\.1|localhost):\d+/gi, 'http://<fixture>');
-  const sanitizeReportValue = value => {
-    if (typeof value === 'string') {
-      return sanitizeReportString(value);
-    }
-    if (Array.isArray(value)) {
-      return value.map(sanitizeReportValue);
-    }
-    if (!value || typeof value !== 'object') {
-      return value;
-    }
-    return Object.fromEntries(Object.entries(value)
-      .filter(([key]) => !reportOmittedKeys.has(key))
-      .map(([key, entry]) => [key, sanitizeReportValue(entry)]));
-  };
   const persistReport = () => {
-    fs.writeFileSync(resultPath, `${JSON.stringify(sanitizeReportValue(report), null, 2)}\n`);
+    fs.writeFileSync(resultPath, `${JSON.stringify(sanitizePopupReport(report), null, 2)}\n`);
   };
 
   const resolveTabId = id => {
@@ -3453,7 +3508,11 @@ const main = async () => {
   }, null, 2)}\n`);
 };
 
-main().catch(error => {
-  console.error(JSON.stringify({ok: false, reasonCode: publicFailureReason(error)}));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch(error => {
+    console.error(JSON.stringify({ok: false, reasonCode: publicFailureReason(error)}));
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {sanitizePopupReport};
