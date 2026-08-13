@@ -67,12 +67,42 @@ test('popup matrix drives a real context-menu event and reconciles every restric
     source.indexOf('const NATIVE_MENU_TIMEOUT_MS'),
     source.indexOf('const killProcessTreeSync')
   );
+  const registrationStart = source.indexOf('const registerNativeContextMenu = async');
+  const invokeStart = source.indexOf('const invokeNativeContextMenu = async');
+  const invokeEnd = source.indexOf('const assertTakeoverApiOrder', invokeStart);
+  const nativeInvocation = source.slice(invokeStart, invokeEnd);
 
   assert.match(source, /const exactDocumentName = await targetPage\.title\(\)/);
   assert.doesNotMatch(source, /targetPage\.mouse\.click/);
   assert.match(source, /const NATIVE_CONTEXT_MENU_TITLE = 'ZATD E2E Discard Tab'/);
   assert.match(source, /chrome\.contextMenus\.create\(\{\s*contexts: \['page'\],\s*id: 'discard-tab',\s*title/);
   assert.match(source, /\}, NATIVE_CONTEXT_MENU_TITLE\)/);
+  assert.ok(registrationStart !== -1 && registrationStart < invokeStart);
+  const removeAt = source.indexOf('chrome.contextMenus.removeAll', registrationStart);
+  const createAt = source.indexOf('chrome.contextMenus.create', registrationStart);
+  const registrationCall = source.indexOf('await registerNativeContextMenu();', invokeEnd);
+  const firstScenario = source.indexOf("const name = 'discard-tab';", registrationCall);
+  const nativeScenario = source.indexOf("const name = 'discard-tab-native-context-menu';", firstScenario);
+  assert.ok(removeAt > registrationStart && removeAt < createAt && createAt < invokeStart,
+    'the unique item must be removed/created only by the early registration helper');
+  assert.ok(registrationCall > invokeEnd && registrationCall < firstScenario && firstScenario < nativeScenario,
+    'registration must complete before scenario 1, well before the native scenario');
+  assert.equal((source.match(/await registerNativeContextMenu\(\);/g) || []).length, 1,
+    'the unique native item must be registered exactly once');
+  assert.match(nativeInvocation,
+    /chrome\.contextMenus\.update\('discard-tab', \{\s*contexts: \['page'\],\s*title\s*\}, \(\) =>/);
+  assert.doesNotMatch(nativeInvocation, /contextMenus\.(?:removeAll|create)/);
+  const updateAt = nativeInvocation.indexOf("chrome.contextMenus.update('discard-tab'");
+  const updateSettleAt = nativeInvocation.indexOf('await sleep(NATIVE_MENU_UPDATE_SETTLE_MS)');
+  const selectorAt = nativeInvocation.indexOf('nativeSelector = startNativeContextMenuSelector(');
+  assert.ok(updateAt > 0 && updateAt < updateSettleAt && updateSettleAt < selectorAt,
+    'the exact-ID update callback and bounded native-model settle must precede native input');
+  assert.match(source,
+    /event: 'native-context-menu-registered',\s*status: 'created'/);
+  assert.match(nativeInvocation,
+    /event: 'native-context-menu-updated',\s*status: 'verified'/);
+  assert.match(nativeInvocation,
+    /await sleep\(NATIVE_MENU_UPDATE_SETTLE_MS\);[\s\S]*event: 'native-context-menu-update-settled',\s*status: 'bounded'/);
   assert.match(source,
     /startNativeContextMenuSelector\(\s*NATIVE_CONTEXT_MENU_TITLE,\s*nativeMenuBrowserProcessId,\s*manifest\.name,\s*exactDocumentName\s*\)/);
   assert.doesNotMatch(source,
@@ -84,8 +114,10 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(source, /finally \{\s*try \{\s*await nativeSelector\?\.cancel\(\)/);
   assert.match(source, /const NATIVE_MENU_TIMEOUT_MS = 5000/);
   assert.match(source, /const NATIVE_MENU_SURFACE_PROBE_MS = 1000/);
+  assert.match(source, /const NATIVE_MENU_UPDATE_SETTLE_MS = 500/);
   assert.match(source, /const NATIVE_POINTER_TIMEOUT_MS = 2000/);
   assert.match(source, /const NATIVE_FOREGROUND_TIMEOUT_MS = 750/);
+  assert.doesNotMatch(source, /NATIVE_FOREGROUND_DWELL_MS/);
   assert.match(source, /const resolveNativeMenuBrowserProcessId = async cdp/);
   assert.match(source, /cdp\.send\('SystemInfo\.getProcessInfo'\)/);
   assert.match(source, /filter\(info => info\?\.type === 'browser'\)/);
@@ -137,10 +169,14 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /IsWindow\(IntPtr hWnd\)/);
   assert.match(nativeHelper, /GetCurrentThreadId\(\)/);
   assert.match(nativeHelper, /SetCursorPos\(int x, int y\)/);
+  assert.match(nativeHelper, /GetCursorPos\(out Point point\)/);
+  assert.match(nativeHelper, /WindowFromPoint\(Point point\)/);
+  assert.match(nativeHelper, /GetAncestor\(IntPtr hWnd, uint flags\)/);
   assert.match(nativeHelper, /private static extern uint SendInput\(uint inputCount, Input\[\] inputs, int inputSize\)/);
-  assert.match(nativeHelper, /Input\[\] inputs = new Input\[2\]/);
-  assert.match(nativeHelper, /MouseInput \{flags = 0x0008\}/);
-  assert.match(nativeHelper, /MouseInput \{flags = 0x0010\}/);
+  assert.match(nativeHelper, /Input\[\] inputs = new Input\[1\]/);
+  assert.match(nativeHelper, /MouseInput \{flags = flags\}/);
+  assert.match(nativeHelper, /SendRightButtonDown\(\)[\s\S]*SendMouseInput\(0x0008\)/);
+  assert.match(nativeHelper, /SendRightButtonUp\(\)[\s\S]*SendMouseInput\(0x0010\)/);
   assert.match(nativeHelper, /SendInput\(\(uint\) inputs\.Length, inputs, Marshal\.SizeOf\(typeof\(Input\)\)\)/);
   assert.match(nativeHelper, /\$targetWindow = \[IntPtr\]::new\(\[long\] \$documentTarget\.TopLevelHandle\)/);
   assert.match(nativeHelper, /TopLevelProcessId = \[int\] \$rootCurrent\.ProcessId/);
@@ -165,12 +201,25 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /document-window-became-stale/);
   const foregroundGate = nativeHelper.indexOf("exact-document-window-not-foreground");
   const pointerPosition = nativeHelper.indexOf('[AtdNativePointer]::SetCursorPos');
-  const pointerBatch = nativeHelper.indexOf('$sentInputCount = [AtdNativePointer]::SendRightClickBatch()');
-  assert.ok(foregroundGate > 0 && foregroundGate < pointerPosition && pointerPosition < pointerBatch,
+  const hitTest = nativeHelper.indexOf('$hitWindow = [AtdNativePointer]::WindowFromPoint($pointerPoint)');
+  const pointerAttempt = nativeHelper.indexOf("ATD_UIA_POINTER_ATTEMPT:CheckedSendInputHeldRightClick");
+  const pointerDown = nativeHelper.indexOf('$sentDownCount = [AtdNativePointer]::SendRightButtonDown()');
+  assert.ok(foregroundGate > 0 && foregroundGate < pointerPosition && pointerPosition < hitTest &&
+      hitTest < pointerAttempt && pointerAttempt < pointerDown,
     'verified foreground/process scope must precede every pointer input');
-  assert.match(nativeHelper, /\$sentInputCount -ne 2/);
-  assert.match(nativeHelper, /checked-send-input-incomplete/);
-  assert.match(nativeHelper, /ATD_UIA_POINTER_RESULT:CheckedSendInputRightClick/);
+  assert.match(nativeHelper, /\$hitRootWindow = \[AtdNativePointer\]::GetAncestor\(\$hitWindow, 2\)/);
+  assert.match(nativeHelper, /\$hitRootOwnerWindow = \[AtdNativePointer\]::GetAncestor\(\$hitWindow, 3\)/);
+  assert.match(nativeHelper, /GetCursorPos\(\[ref\] \$pointerPoint\)[\s\S]*\$pointerPoint\.x -ne \$clickX[\s\S]*\$pointerPoint\.y -ne \$clickY/);
+  assert.match(nativeHelper, /pointer-moved-before-input/);
+  assert.match(nativeHelper, /\$hitRootWindow -ne \$targetWindow/);
+  assert.match(nativeHelper, /\$hitRootOwnerWindow -ne \$targetWindow/);
+  assert.match(nativeHelper, /pointer-hit-test-missed-target/);
+  assert.match(nativeHelper, /\$sentDownCount -ne 1/);
+  assert.match(nativeHelper, /checked-send-input-down-incomplete/);
+  assert.match(nativeHelper, /Start-Sleep -Milliseconds 30[\s\S]*finally \{[\s\S]*\$sentUpCount = \[AtdNativePointer\]::SendRightButtonUp\(\)/);
+  assert.match(nativeHelper, /\$sentUpCount -ne 1/);
+  assert.match(nativeHelper, /checked-send-input-up-incomplete/);
+  assert.match(nativeHelper, /ATD_UIA_POINTER_RESULT:CheckedSendInputHeldRightClick/);
   assert.doesNotMatch(nativeHelper, /mouse_event/);
   for (const status of ['Present', 'Absent', 'Indeterminate']) {
     assert.match(nativeHelper, new RegExp(`ATD_UIA_FIRST_SURFACE_RESULT:${status}`));
@@ -182,8 +231,10 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /\$firstSurfaceProofIntact -and \$firstSurfaceScanCount -gt 0 -and[\s\S]*!\$allowedSurfaceObserved/);
   assert.match(nativeHelper, /diagnostic evidence only[\s\S]*helper remains single-click/);
   assert.doesNotMatch(nativeHelper, /ATD_UIA_RETRY_RESULT|retryForeground|retryTarget/);
-  assert.equal((nativeHelper.match(/\$sentInputCount = \[AtdNativePointer\]::SendRightClickBatch\(\)/g) || []).length, 1,
-    'the native helper must emit exactly one checked two-input right-click batch');
+  assert.equal((nativeHelper.match(/\$sentDownCount = \[AtdNativePointer\]::SendRightButtonDown\(\)/g) || []).length, 1,
+    'the native helper must emit exactly one checked right-button-down');
+  assert.equal((nativeHelper.match(/\$sentUpCount = \[AtdNativePointer\]::SendRightButtonUp\(\)/g) || []).length, 1,
+    'the native helper must emit exactly one checked right-button-up');
   assert.match(nativeHelper, /nativeMenuDiagnosticsFromOutput/);
   assert.match(nativeHelper, /error\.nativeMenuDiagnostics = nativeMenuDiagnosticsFromOutput\(output\)/);
   assert.match(source, /rightClickAttempts: selection\.rightClickAttempts/);
@@ -252,7 +303,8 @@ test('native-menu surface diagnostics expose only fixed sanitized categories', (
   const hostile = 'SECRET-CANARY-C:/Users/alice/private.txt';
   assert.deepEqual(nativeMenuDiagnosticsFromOutput([
     hostile,
-    'ATD_UIA_POINTER_RESULT:CheckedSendInputRightClick',
+    'ATD_UIA_POINTER_ATTEMPT:CheckedSendInputHeldRightClick',
+    'ATD_UIA_POINTER_RESULT:CheckedSendInputHeldRightClick',
     'ATD_UIA_FIRST_SURFACE_RESULT:Absent',
     'ATD_UIA_FINAL_SURFACE_RESULT:Present'
   ].join('\n')), {

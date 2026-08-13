@@ -157,6 +157,7 @@ const powershellPath = process.platform === 'win32' ? path.join(
 const NATIVE_CONTEXT_MENU_TITLE = 'ZATD E2E Discard Tab';
 const NATIVE_MENU_TIMEOUT_MS = 5000;
 const NATIVE_MENU_SURFACE_PROBE_MS = 1000;
+const NATIVE_MENU_UPDATE_SETTLE_MS = 500;
 const NATIVE_POINTER_TIMEOUT_MS = 2000;
 const NATIVE_FOREGROUND_TIMEOUT_MS = 750;
 const NATIVE_MENU_UIA_SCRIPT = String.raw`
@@ -217,6 +218,21 @@ public static class AtdNativePointer {
   public static extern bool SetCursorPos(int x, int y);
 
   [StructLayout(LayoutKind.Sequential)]
+  public struct Point {
+    public int x;
+    public int y;
+  }
+
+  [DllImport("user32.dll")]
+  public static extern bool GetCursorPos(out Point point);
+
+  [DllImport("user32.dll")]
+  public static extern IntPtr WindowFromPoint(Point point);
+
+  [DllImport("user32.dll")]
+  public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+  [StructLayout(LayoutKind.Sequential)]
   public struct MouseInput {
     public int dx;
     public int dy;
@@ -240,17 +256,21 @@ public static class AtdNativePointer {
   [DllImport("user32.dll", SetLastError = true)]
   private static extern uint SendInput(uint inputCount, Input[] inputs, int inputSize);
 
-  public static uint SendRightClickBatch() {
-    Input[] inputs = new Input[2];
+  private static uint SendMouseInput(uint flags) {
+    Input[] inputs = new Input[1];
     inputs[0] = new Input {
       type = 0,
-      value = new InputUnion {mouse = new MouseInput {flags = 0x0008}}
-    };
-    inputs[1] = new Input {
-      type = 0,
-      value = new InputUnion {mouse = new MouseInput {flags = 0x0010}}
+      value = new InputUnion {mouse = new MouseInput {flags = flags}}
     };
     return SendInput((uint) inputs.Length, inputs, Marshal.SizeOf(typeof(Input)));
+  }
+
+  public static uint SendRightButtonDown() {
+    return SendMouseInput(0x0008);
+  }
+
+  public static uint SendRightButtonUp() {
+    return SendMouseInput(0x0010);
   }
 }
 '@
@@ -458,11 +478,55 @@ public static class AtdNativePointer {
     Stop-Sanitized 28 'pointer-position-failed'
   }
 
-  $sentInputCount = [AtdNativePointer]::SendRightClickBatch()
-  if ($sentInputCount -ne 2) {
-    Stop-Sanitized 28 'checked-send-input-incomplete'
+  # Resolve the cursor hit immediately before delivery. Child renderer HWNDs
+  # are accepted only when both GA_ROOT and GA_ROOTOWNER are the exact target
+  # window and every involved process remains inside the isolated tree.
+  $pointerPoint = [AtdNativePointer+Point]::new()
+  if (![AtdNativePointer]::GetCursorPos([ref] $pointerPoint) -or
+      $pointerPoint.x -ne $clickX -or $pointerPoint.y -ne $clickY) {
+    Stop-Sanitized 28 'pointer-moved-before-input'
   }
-  [Console]::Out.WriteLine('ATD_UIA_POINTER_RESULT:CheckedSendInputRightClick')
+  $hitWindow = [AtdNativePointer]::WindowFromPoint($pointerPoint)
+  $hitRootWindow = [AtdNativePointer]::GetAncestor($hitWindow, 2)
+  $hitRootOwnerWindow = [AtdNativePointer]::GetAncestor($hitWindow, 3)
+  $hitProcessId = [uint32] 0
+  $hitThreadId = [AtdNativePointer]::GetWindowThreadProcessId(
+    $hitWindow, [ref] $hitProcessId)
+  $hitRootProcessId = [uint32] 0
+  $hitRootThreadId = [AtdNativePointer]::GetWindowThreadProcessId(
+    $hitRootWindow, [ref] $hitRootProcessId)
+  $hitRootOwnerProcessId = [uint32] 0
+  $hitRootOwnerThreadId = [AtdNativePointer]::GetWindowThreadProcessId(
+    $hitRootOwnerWindow, [ref] $hitRootOwnerProcessId)
+  $deliveryForegroundWindow = [AtdNativePointer]::GetForegroundWindow()
+  if ($hitWindow -eq [IntPtr]::Zero -or
+      $hitRootWindow -ne $targetWindow -or $hitRootOwnerWindow -ne $targetWindow -or
+      $hitThreadId -eq 0 -or $hitRootThreadId -eq 0 -or $hitRootOwnerThreadId -eq 0 -or
+      [int] $hitRootProcessId -ne [int] $targetProcessId -or
+      [int] $hitRootOwnerProcessId -ne [int] $targetProcessId -or
+      !$allowed.Contains([int] $hitProcessId) -or
+      !$allowed.Contains([int] $hitRootProcessId) -or
+      !$allowed.Contains([int] $hitRootOwnerProcessId) -or
+      $deliveryForegroundWindow -ne $targetWindow) {
+    Stop-Sanitized 28 'pointer-hit-test-missed-target'
+  }
+
+  [Console]::Out.WriteLine('ATD_UIA_POINTER_ATTEMPT:CheckedSendInputHeldRightClick')
+  $sentDownCount = [AtdNativePointer]::SendRightButtonDown()
+  if ($sentDownCount -ne 1) {
+    Stop-Sanitized 28 'checked-send-input-down-incomplete'
+  }
+  $sentUpCount = [uint32] 0
+  try {
+    Start-Sleep -Milliseconds 30
+  }
+  finally {
+    $sentUpCount = [AtdNativePointer]::SendRightButtonUp()
+  }
+  if ($sentUpCount -ne 1) {
+    Stop-Sanitized 28 'checked-send-input-up-incomplete'
+  }
+  [Console]::Out.WriteLine('ATD_UIA_POINTER_RESULT:CheckedSendInputHeldRightClick')
 
   $deadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_MENU_TIMEOUT_MS})
   $firstSurfaceDeadline = [DateTime]::UtcNow.AddMilliseconds(${NATIVE_MENU_SURFACE_PROBE_MS})
@@ -770,12 +834,11 @@ const nativeMenuDiagnosticsFromOutput = output => {
   const fixedSurface = marker => output.match(
     new RegExp(`ATD_UIA_${marker}_SURFACE_RESULT:(Present|Absent|Indeterminate)`)
   )?.[1]?.toLowerCase() || 'not-observed';
-  const pointerMethod = output.match(
-    /ATD_UIA_POINTER_RESULT:(CheckedSendInputRightClick)/)?.[1];
+  const pointerAttempted = /ATD_UIA_POINTER_ATTEMPT:CheckedSendInputHeldRightClick/.test(output);
   return {
     finalSurface: fixedSurface('FINAL'),
     firstClickSurface: fixedSurface('FIRST'),
-    rightClickAttempts: pointerMethod ? 1 : 0
+    rightClickAttempts: pointerAttempted ? 1 : 0
   };
 };
 const startNativeContextMenuSelector = (
@@ -866,7 +929,7 @@ const startNativeContextMenuSelector = (
     const parentExpansionMethod = output.match(
       /ATD_UIA_PARENT_RESULT:(ExpandCollapsePattern|LegacyIAccessiblePattern)/)?.[1];
     const pointerMethod = output.match(
-      /ATD_UIA_POINTER_RESULT:(CheckedSendInputRightClick)/)?.[1];
+      /ATD_UIA_POINTER_RESULT:(CheckedSendInputHeldRightClick)/)?.[1];
     if (!cancelled && code === 0 && result) {
       finishSuccess({
         ...nativeMenuDiagnostics,
@@ -2598,6 +2661,30 @@ const main = async () => {
       }, response => resolve(chrome.runtime.lastError ? undefined : response?.value))),
     layout.primaryWindowId);
 
+    const registerNativeContextMenu = async () => {
+      const controller = await ensureDriver();
+      await controller.evaluate(async title => {
+        await new Promise((resolve, reject) => chrome.contextMenus.removeAll(() => {
+          const error = chrome.runtime.lastError;
+          error ? reject(Error(error.message)) : resolve();
+        }));
+        await new Promise((resolve, reject) => chrome.contextMenus.create({
+          contexts: ['page'],
+          id: 'discard-tab',
+          title
+        }, () => {
+          const error = chrome.runtime.lastError;
+          error ? reject(Error(error.message)) : resolve();
+        }));
+      }, NATIVE_CONTEXT_MENU_TITLE);
+      timeline.push({
+        at: Date.now(),
+        contexts: ['page'],
+        event: 'native-context-menu-registered',
+        status: 'created'
+      });
+    };
+
     const invokeNativeContextMenu = async layout => {
       await focusSelected(layout);
       const selected = Object.values(layout.tabs).find(tab => tab.id === layout.selectedId);
@@ -2623,23 +2710,33 @@ const main = async () => {
       }, token);
       assert.equal(observerInstalled, true, 'native context-menu observer must install in the live worker');
 
-      await driver.evaluate(async title => {
-        await new Promise(resolve => chrome.contextMenus.removeAll(resolve));
-        await new Promise((resolve, reject) => chrome.contextMenus.create({
-          contexts: ['page'],
-          id: 'discard-tab',
-          title
-        }, () => {
-          const error = chrome.runtime.lastError;
-          error ? reject(Error(error.message)) : resolve();
-        }));
-      }, NATIVE_CONTEXT_MENU_TITLE);
-
-      timeline.push({at: Date.now(), command: 'discard-tab', event: 'native-context-menu-start'});
       let nativeSelector;
       try {
         await targetPage.bringToFront();
         const exactDocumentName = await targetPage.title();
+        const controller = await ensureDriver();
+        await controller.evaluate(title => new Promise((resolve, reject) => {
+          chrome.contextMenus.update('discard-tab', {
+            contexts: ['page'],
+            title
+          }, () => {
+            const error = chrome.runtime.lastError;
+            error ? reject(Error(error.message)) : resolve();
+          });
+        }), NATIVE_CONTEXT_MENU_TITLE);
+        timeline.push({
+          at: Date.now(),
+          contexts: ['page'],
+          event: 'native-context-menu-updated',
+          status: 'verified'
+        });
+        await sleep(NATIVE_MENU_UPDATE_SETTLE_MS);
+        timeline.push({
+          at: Date.now(),
+          event: 'native-context-menu-update-settled',
+          status: 'bounded'
+        });
+        timeline.push({at: Date.now(), command: 'discard-tab', event: 'native-context-menu-start'});
         nativeSelector = startNativeContextMenuSelector(
           NATIVE_CONTEXT_MENU_TITLE,
           nativeMenuBrowserProcessId,
@@ -2774,6 +2871,11 @@ const main = async () => {
     };
 
     const nextPrefix = name => `${String(++scenarioSequence).padStart(2, '0')}-${name}`;
+
+    // Register once before scenario work gives Edge several seconds to publish
+    // the extension item into its native menu model. The native row later uses
+    // update as an exact-ID existence check and never removes/recreates it.
+    await registerNativeContextMenu();
 
     // Selected-tab row through the real popup DOM.
     {
