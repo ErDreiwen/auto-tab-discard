@@ -151,13 +151,13 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /finally \{[\s\S]*if \(\$attachedToTarget\)[\s\S]*\$currentThreadId, \$targetThreadId, \$false[\s\S]*if \(\$attachedToForeground\)[\s\S]*\$currentThreadId, \$foregroundThreadId, \$false/);
   assert.match(nativeHelper, /while \(\[DateTime\]::UtcNow -lt \$foregroundDeadline\)/);
   assert.match(nativeHelper, /\$foregroundIsExactTarget = \$foregroundWindow -eq \$targetWindow/);
-  assert.match(nativeHelper, /\$foregroundIsIsolatedBrowser = \$foregroundWindow -ne \[IntPtr\]::Zero -and[\s\S]*\$allowed\.Contains\(\[int\] \$foregroundProcessId\)/);
-  assert.match(nativeHelper, /!\$foregroundIsExactTarget -and !\$foregroundIsIsolatedBrowser/);
-  assert.match(nativeHelper, /foreground-outside-process-scope/);
+  assert.match(nativeHelper, /if \(!\$foregroundIsExactTarget -or[\s\S]*\[int\] \$foregroundProcessId -ne \[int\] \$targetProcessId -or[\s\S]*!\$allowed\.Contains\(\[int\] \$foregroundProcessId\)\)/);
+  assert.doesNotMatch(nativeHelper, /foregroundIsIsolatedBrowser/);
+  assert.match(nativeHelper, /exact-document-window-not-foreground/);
   assert.match(nativeHelper, /\$verifiedTargetThreadId = \[AtdNativePointer\]::GetWindowThreadProcessId\([\s\S]*\$targetWindow, \[ref\] \$verifiedTargetProcessId\)/);
   assert.match(nativeHelper, /\[int\] \$verifiedTargetProcessId -ne \[int\] \$targetProcessId/);
   assert.match(nativeHelper, /document-window-became-stale/);
-  const foregroundGate = nativeHelper.indexOf("foreground-outside-process-scope");
+  const foregroundGate = nativeHelper.indexOf("exact-document-window-not-foreground");
   const pointerPosition = nativeHelper.indexOf('[AtdNativePointer]::SetCursorPos');
   const pointerDown = nativeHelper.indexOf('[AtdNativePointer]::mouse_event(0x0008');
   assert.ok(foregroundGate > 0 && foregroundGate < pointerPosition && pointerPosition < pointerDown,

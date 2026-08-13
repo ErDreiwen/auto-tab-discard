@@ -394,11 +394,10 @@ public static class AtdNativePointer {
   [void] [AtdNativePointer]::GetWindowThreadProcessId(
     $foregroundWindow, [ref] $foregroundProcessId)
   $foregroundIsExactTarget = $foregroundWindow -eq $targetWindow
-  $foregroundIsIsolatedBrowser = $foregroundWindow -ne [IntPtr]::Zero -and
-    $allowed.Contains([int] $foregroundProcessId)
-  if ($foregroundWindow -eq [IntPtr]::Zero -or
-      (!$foregroundIsExactTarget -and !$foregroundIsIsolatedBrowser)) {
-    Stop-Sanitized 28 'foreground-outside-process-scope'
+  if (!$foregroundIsExactTarget -or
+      [int] $foregroundProcessId -ne [int] $targetProcessId -or
+      !$allowed.Contains([int] $foregroundProcessId)) {
+    Stop-Sanitized 28 'exact-document-window-not-foreground'
   }
 
   # Re-resolve the exact document HWND immediately before pointer input. A
