@@ -20,8 +20,12 @@ test('declared minimum uses a headed Playwright-managed persistent launch plus p
   assert.match(managed, /executablePath,/);
   assert.match(managed, /headless: false/);
   assert.match(managed, /ignoreDefaultArgs: \['--disable-extensions'\]/);
+  assert.match(managed, /timeout: 90000/);
+  assert.doesNotMatch(managed, /timeout: 30000/);
   assert.match(managed, /chromiumLaunchSafetyArgs\(\{edgePrivacy: false, extensionPath\}\)/);
   assert.match(managed, /'--remote-debugging-port=0'/);
+  assert.match(managed, /'Playwright-managed browser DevTools port', 5000/);
+  assert.match(managed, /connectOverCDP\(`[\s\S]*\{timeout: 10000\}\)/);
   assert.doesNotMatch(managed, /`--user-data-dir=/);
   assert.match(managed, /chromium\.connectOverCDP\(`/);
   assert.doesNotMatch(managed, /context\.browser\(\)|\._browser|\._connection|\._initializer/);

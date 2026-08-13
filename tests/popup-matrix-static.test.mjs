@@ -11,12 +11,52 @@ import {PassThrough} from 'node:stream';
 const require = createRequire(import.meta.url);
 const {
   createEarlyFailureReport,
+  minimalPdf,
   nativeMenuDiagnosticsFromOutput,
   runMemoryProbeProcess,
   sanitizePopupReport
 } = require('../e2e/popup-matrix.cjs');
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
+
+test('popup PDF fixture has exact stream length and byte offsets', () => {
+  const pdf = minimalPdf();
+  const ascii = pdf.toString('ascii');
+
+  const streamHeader = /4 0 obj\n<< \/Length (\d+) >>\nstream\n/.exec(ascii);
+  assert.ok(streamHeader, 'content stream header must declare a byte length');
+  const contentStart = streamHeader.index + Buffer.byteLength(streamHeader[0], 'ascii');
+  const separator = pdf.indexOf(Buffer.from('\nendstream', 'ascii'), contentStart);
+  assert.notEqual(separator, -1, 'content stream must end with a separator LF');
+  const content = pdf.subarray(contentStart, separator);
+  assert.equal(content.toString('ascii'), 'BT /F1 18 Tf 36 72 Td (ATD PDF fixture) Tj ET');
+  assert.equal(Number(streamHeader[1]), content.length,
+    'declared stream length must exclude the separator LF before endstream');
+
+  const xrefOffset = pdf.indexOf(Buffer.from('xref\n', 'ascii'));
+  assert.notEqual(xrefOffset, -1, 'xref table must exist');
+  const trailerOffset = pdf.indexOf(Buffer.from('trailer\n', 'ascii'), xrefOffset);
+  assert.notEqual(trailerOffset, -1, 'trailer must follow the xref table');
+  const xrefTable = pdf.subarray(xrefOffset, trailerOffset).toString('ascii');
+  assert.ok(xrefTable.endsWith('\n'), 'xref table must end on a line boundary');
+  const xrefLines = xrefTable.slice(0, -1).split('\n');
+  assert.deepEqual(xrefLines.slice(0, 2), ['xref', '0 6']);
+  assert.match(xrefLines[2], /^0000000000 65535 f $/);
+  for (let objectNumber = 1; objectNumber <= 5; objectNumber += 1) {
+    const entry = /^(\d{10}) 00000 n $/.exec(xrefLines[objectNumber + 2]);
+    assert.ok(entry, `xref entry ${objectNumber} must be in-use`);
+    const declaredOffset = Number(entry[1]);
+    assert.equal(
+      pdf.subarray(declaredOffset, declaredOffset + `${objectNumber} 0 obj\n`.length).toString('ascii'),
+      `${objectNumber} 0 obj\n`,
+      `xref entry ${objectNumber} must point to its object header`
+    );
+  }
+
+  const startxref = /startxref\n(\d+)\n%%EOF\n$/.exec(ascii);
+  assert.ok(startxref, 'startxref must terminate the PDF');
+  assert.equal(Number(startxref[1]), xrefOffset, 'startxref must point to the xref table');
+});
 
 const memoryProbeChild = () => {
   const child = new EventEmitter();
@@ -74,6 +114,31 @@ test('popup matrix asserts repeat visual stability and release visual cleanup', 
   assert.match(source, /fixture favicon was not restored after release/);
   assert.match(source, /disabled repeat must not recreate ownership/);
   assert.match(source, /assertOwnershipKeys\(repeatAfter/);
+});
+
+test('popup matrix settles original fixture favicons before external discard', async () => {
+  const source = await readMatrix();
+  const createWindow = source.slice(
+    source.indexOf('const createWindow = async'),
+    source.indexOf('const mergeWindow =', source.indexOf('const createWindow = async'))
+  );
+  const buildGroup = source.slice(
+    source.indexOf('const buildGroup = async'),
+    source.indexOf('const buildScoped = async', source.indexOf('const buildGroup = async'))
+  );
+
+  const faviconReady = createWindow.indexOf("/\\/favicon\\.svg(?:\\?|$)/i.test(tab.favIconUrl || '')");
+  const createReturns = createWindow.indexOf('return created;');
+  assert.ok(faviconReady > 0 && faviconReady < createReturns,
+    'fixture creation must await each original favicon before it can return');
+  assert.match(createWindow, /to load with original favicons`, 20000/);
+
+  const createCompletes = buildGroup.indexOf('const primary = await createWindow(entries, \'g-selected\')');
+  const externalDiscard = buildGroup.indexOf(
+    "await externalDiscard(layout, ['g-external', 'g-out-external'])"
+  );
+  assert.ok(createCompletes > 0 && createCompletes < externalDiscard,
+    'favicon-ready fixture creation must complete before group tabs are externally discarded');
 });
 
 test('popup matrix reports replacement evidence without pretending Edge always replaces a tab', async () => {

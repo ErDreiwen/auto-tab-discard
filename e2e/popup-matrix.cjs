@@ -1403,12 +1403,14 @@ const POPUP_COMMANDS = [
 ];
 
 const minimalPdf = () => {
+  const contentStream = 'BT /F1 18 Tf 36 72 Td (ATD PDF fixture) Tj ET';
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R ' +
       '/Resources << /Font << /F1 5 0 R >> >> >>',
-    '<< /Length 46 >>\nstream\nBT /F1 18 Tf 36 72 Td (ATD PDF fixture) Tj ET\nendstream',
+    `<< /Length ${Buffer.byteLength(contentStream, 'ascii')} >>\n` +
+      `stream\n${contentStream}\nendstream`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
   ];
   let body = '%PDF-1.4\n';
@@ -1632,7 +1634,7 @@ const launchPlaywrightManagedOverCDP = async ({executablePath, extensionPath, pr
       executablePath,
       headless: false,
       ignoreDefaultArgs: ['--disable-extensions'],
-      timeout: 30000
+      timeout: 90000
     });
     const portFile = path.join(profile, 'DevToolsActivePort');
     const port = await waitFor(() => {
@@ -2567,8 +2569,9 @@ const main = async () => {
       const ids = Object.values(created.tabs).map(tab => tab.id);
       await waitFor(async () => {
         const snapshot = await readSnapshot(ids);
-        return snapshot.tabs.every(tab => tab.status === 'complete' && tab.discarded === false);
-      }, `${entries.map(entry => entry.key).join(', ')} to load`, 20000);
+        return snapshot.tabs.every(tab => tab.status === 'complete' && tab.discarded === false &&
+          /\/favicon\.svg(?:\?|$)/i.test(tab.favIconUrl || ''));
+      }, `${entries.map(entry => entry.key).join(', ')} to load with original favicons`, 20000);
       return created;
     };
 
@@ -4352,6 +4355,7 @@ if (require.main === module) {
 
 module.exports = {
   createEarlyFailureReport,
+  minimalPdf,
   nativeMenuDiagnosticsFromOutput,
   runMemoryProbeProcess,
   sanitizePopupReport
