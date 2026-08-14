@@ -1402,30 +1402,20 @@ const POPUP_COMMANDS = [
   ...Object.keys(RELEASE_SPECS)
 ];
 
-const minimalPdf = () => {
-  const contentStream = 'BT /F1 18 Tf 36 72 Td (ATD PDF fixture) Tj ET';
-  const objects = [
-    '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R ' +
-      '/Resources << /Font << /F1 5 0 R >> >> >>',
-    `<< /Length ${Buffer.byteLength(contentStream, 'ascii')} >>\n` +
-      `stream\n${contentStream}\nendstream`,
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
-  ];
-  let body = '%PDF-1.4\n';
-  const offsets = [0];
-  objects.forEach((object, index) => {
-    offsets.push(Buffer.byteLength(body, 'ascii'));
-    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
-  });
-  const xref = Buffer.byteLength(body, 'ascii');
-  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  body += offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
-  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(body, 'ascii');
+// Use the exact PDF exercised by Chromium's own extension integration tests.
+// The bytes are pinned to tag 152.0.7977.42, Git blob
+// 8f2eeaf04afccd94651f0c690e154fb12062c630, at
+// chrome/test/data/pdf/test.pdf. Unlike the former hand-built fixture, this
+// document embeds its font and does not depend on hosted Windows font lookup.
+// Its upstream BSD terms are retained in e2e/fixtures/CHROMIUM_LICENSE.txt.
+const loadChromiumPdfFixture = () => {
+  const encoded = fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'chromium-152-test-pdf.base64'),
+    'ascii'
+  );
+  return Buffer.from(encoded.replace(/\s/g, ''), 'base64');
 };
-const PDF_FIXTURE = minimalPdf();
+const PDF_FIXTURE = loadChromiumPdfFixture();
 
 const startFixtureServer = async () => {
   const requests = [];
@@ -4355,7 +4345,7 @@ if (require.main === module) {
 
 module.exports = {
   createEarlyFailureReport,
-  minimalPdf,
+  loadChromiumPdfFixture,
   nativeMenuDiagnosticsFromOutput,
   runMemoryProbeProcess,
   sanitizePopupReport

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
@@ -11,7 +12,7 @@ import {PassThrough} from 'node:stream';
 const require = createRequire(import.meta.url);
 const {
   createEarlyFailureReport,
-  minimalPdf,
+  loadChromiumPdfFixture,
   nativeMenuDiagnosticsFromOutput,
   runMemoryProbeProcess,
   sanitizePopupReport
@@ -19,43 +20,27 @@ const {
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
 
-test('popup PDF fixture has exact stream length and byte offsets', () => {
-  const pdf = minimalPdf();
-  const ascii = pdf.toString('ascii');
+test('popup serves Chromium 152 own pinned PDF extension fixture', async () => {
+  const pdf = loadChromiumPdfFixture();
+  assert.equal(pdf.length, 7984);
+  assert.equal(createHash('sha256').update(pdf).digest('hex'),
+    '445c238dd59dd707838613744ad06eddec8a6faf4b538cf7f3a3df508c2bdd8a');
+  assert.equal(createHash('sha1').update(`blob ${pdf.length}\0`).update(pdf).digest('hex'),
+    '8f2eeaf04afccd94651f0c690e154fb12062c630');
+  assert.equal(pdf.subarray(0, 9).toString('ascii'), '%PDF-1.3\n');
 
-  const streamHeader = /4 0 obj\n<< \/Length (\d+) >>\nstream\n/.exec(ascii);
-  assert.ok(streamHeader, 'content stream header must declare a byte length');
-  const contentStart = streamHeader.index + Buffer.byteLength(streamHeader[0], 'ascii');
-  const separator = pdf.indexOf(Buffer.from('\nendstream', 'ascii'), contentStart);
-  assert.notEqual(separator, -1, 'content stream must end with a separator LF');
-  const content = pdf.subarray(contentStart, separator);
-  assert.equal(content.toString('ascii'), 'BT /F1 18 Tf 36 72 Td (ATD PDF fixture) Tj ET');
-  assert.equal(Number(streamHeader[1]), content.length,
-    'declared stream length must exclude the separator LF before endstream');
+  const tail = pdf.subarray(-128).toString('ascii');
+  const startxref = /startxref\n(\d+)\n%%EOF\n$/.exec(tail);
+  assert.ok(startxref, 'the pinned fixture must retain its terminal xref declaration');
+  const xrefOffset = Number(startxref[1]);
+  assert.equal(pdf.subarray(xrefOffset, xrefOffset + 5).toString('ascii'), 'xref\n');
 
-  const xrefOffset = pdf.indexOf(Buffer.from('xref\n', 'ascii'));
-  assert.notEqual(xrefOffset, -1, 'xref table must exist');
-  const trailerOffset = pdf.indexOf(Buffer.from('trailer\n', 'ascii'), xrefOffset);
-  assert.notEqual(trailerOffset, -1, 'trailer must follow the xref table');
-  const xrefTable = pdf.subarray(xrefOffset, trailerOffset).toString('ascii');
-  assert.ok(xrefTable.endsWith('\n'), 'xref table must end on a line boundary');
-  const xrefLines = xrefTable.slice(0, -1).split('\n');
-  assert.deepEqual(xrefLines.slice(0, 2), ['xref', '0 6']);
-  assert.match(xrefLines[2], /^0000000000 65535 f $/);
-  for (let objectNumber = 1; objectNumber <= 5; objectNumber += 1) {
-    const entry = /^(\d{10}) 00000 n $/.exec(xrefLines[objectNumber + 2]);
-    assert.ok(entry, `xref entry ${objectNumber} must be in-use`);
-    const declaredOffset = Number(entry[1]);
-    assert.equal(
-      pdf.subarray(declaredOffset, declaredOffset + `${objectNumber} 0 obj\n`.length).toString('ascii'),
-      `${objectNumber} 0 obj\n`,
-      `xref entry ${objectNumber} must point to its object header`
-    );
-  }
-
-  const startxref = /startxref\n(\d+)\n%%EOF\n$/.exec(ascii);
-  assert.ok(startxref, 'startxref must terminate the PDF');
-  assert.equal(Number(startxref[1]), xrefOffset, 'startxref must point to the xref table');
+  const source = await readMatrix();
+  assert.match(source, /const PDF_FIXTURE = loadChromiumPdfFixture\(\)/);
+  assert.match(source,
+    /url\.pathname === '\/document\.pdf'[\s\S]*'Content-Type': 'application\/pdf'[\s\S]*response\.end\(PDF_FIXTURE\)/);
+  assert.match(source,
+    /key: 'restricted-pdf',[\s\S]*scheme: 'pdf',[\s\S]*url: `\$\{fixture\.baseUrl\}\/document\.pdf/);
 });
 
 const memoryProbeChild = () => {
