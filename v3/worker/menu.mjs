@@ -4,6 +4,33 @@ import {navigate} from './core/navigate.mjs';
 import {discard, inprogress} from './core/discard.mjs';
 import {query, notify, match} from './core/utils.mjs';
 import {starters} from './core/startup.mjs';
+import {actionCommand} from './core/action.mjs';
+import {isNativeGroup, tabsForGroupCommand} from './core/group.mjs';
+import {runEntryCommand} from './core/entry.mjs';
+import {
+  filterScopeTabs,
+  runDirectDiscardCommand,
+  runScopedCommand
+} from './core/command-scope.mjs';
+import {
+  createPopupProgressManager,
+  POPUP_CODES,
+  trackPopupTabTask as trackTabTask
+} from './core/popup-progress.mjs';
+import {createDiagnosticJournal} from './core/diagnostic-journal.mjs';
+import {FAILURE_CAUSES, safeFailureCause} from './core/failure-causes.mjs';
+import {releaseTab} from './core/release.mjs';
+import {ownership} from './core/ownership.mjs';
+import {SUSPENDED_POLICY_DEFAULTS} from './core/suspended-protection.mjs';
+import {attachWindowScope, createWindowScope} from './core/window-scope.mjs';
+import {
+  authorizeDiagnosticAccess,
+  authorizePopupRequest,
+  dispatchPopup,
+  filterPopupTakeoverSnapshot,
+  respondAsync
+} from './core/respond.mjs';
+import {resolveTreeStyleTabTargets} from './core/tree-style-tab.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
 // Context Menu
@@ -25,14 +52,12 @@ import {interrupts} from './plugins/loader.mjs';
     create([{
       id: 'discard-tab',
       title: chrome.i18n.getMessage('menu_discard_tab'),
-      contexts,
-      documentUrlPatterns: ['*://*/*']
+      contexts
     },
     {
       id: 'discard-tree',
       title: chrome.i18n.getMessage('menu_discard_tree'),
-      contexts,
-      documentUrlPatterns: ['*://*/*']
+      contexts
     },
     {
       id: 'discard-other-windows',
@@ -96,21 +121,115 @@ import {interrupts} from './plugins/loader.mjs';
   };
   starters.push(onStartup);
 
+  const setStorage = (area, values) => new Promise((resolve, reject) => area.set(values, () => {
+    const error = chrome.runtime.lastError;
+    if (error) {
+      reject(Error(error.message));
+    }
+    else {
+      resolve();
+    }
+  }));
+
+  const suspendedPolicy = async () => Object.assign(
+    await storage(SUSPENDED_POLICY_DEFAULTS),
+    number.IGNORE,
+    await storage({'whitelist.session': []}, 'session')
+  );
+
+  const scopedCommands = new Set([
+    'discard-tab', 'discard-tree', 'discard-tabs', 'discard-window',
+    'discard-other-windows', 'discard-lefts', 'discard-rights',
+    'release-tabs', 'release-window', 'release-other-windows',
+    'release-lefts', 'release-rights'
+  ]);
+  const publishPopupProgress = snapshot => new Promise(resolve => {
+    try {
+      chrome.runtime.sendMessage({
+        method: 'popup-progress-update',
+        snapshot
+      }, () => {
+        void chrome.runtime.lastError;
+        resolve();
+      });
+    }
+    catch (error) {
+      resolve();
+    }
+  });
+  const diagnosticJournal = createDiagnosticJournal();
+  const popupProgress = createPopupProgressManager({
+    publish: publishPopupProgress,
+    recordDiagnostic: snapshot => diagnosticJournal.record(snapshot),
+    resolveId: ownership.resolveId
+  });
+  const trackCheck = (progress, task) => async tabs => {
+    if (!progress) {
+      return task(tabs);
+    }
+    await progress.addTargets(tabs);
+    progress.throwIfCancelled();
+    const result = await task(tabs);
+    await progress.mergeCheckResult(result, tabs);
+    return result;
+  };
+  const resolveWindowScopedTab = tab => new Promise((resolve, reject) => {
+    chrome.windows.get(tab.windowId, windowInfo => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(Object.assign(Error(error.message), {
+          failureCause: FAILURE_CAUSES.SCOPE_QUERY_FAILED
+        }));
+        return;
+      }
+      try {
+        resolve(attachWindowScope(tab, createWindowScope(tab, windowInfo)));
+      }
+      catch (error) {
+        reject(error);
+      }
+    });
+  });
+  const diagnosticAccess = (request, sender) => authorizeDiagnosticAccess(request, sender, {
+    expectedExtensionId: chrome.runtime.id,
+    expectedPopupUrl: chrome.runtime.getURL('data/popup/index.html'),
+    query,
+    resolveWindowScopedTab
+  });
+
   const onClicked = async (info, tab) => {
+    const {menuItemId, shiftKey, checked, progress} = info;
+    const selectedTab = scopedCommands.has(menuItemId) ? await resolveWindowScopedTab(tab) : tab;
+    let pluginTransaction;
     if (typeof interrupts !== 'undefined') {
       // wait for plug-in to be ready
       await interrupts['before-action']();
       // wait for plug-in manipulations
-      await interrupts['before-menu-click'](info, tab);
+      pluginTransaction = await interrupts['before-menu-click'](info, tab);
     }
     else {
       console.warn('plugins module is not loaded');
     }
     //
-    const {menuItemId, shiftKey, checked} = info;
+    const runCommandTransaction = async task => {
+      try {
+        const result = await task();
+        await pluginTransaction?.commit?.(result);
+        return result;
+      }
+      catch (error) {
+        try {
+          await pluginTransaction?.rollback?.(error);
+        }
+        catch (rollbackError) {
+          console.warn('plugin transaction rollback failed', rollbackError);
+        }
+        throw error;
+      }
+    };
 
     if (menuItemId === 'whitelist-domain' || menuItemId === 'whitelist-session') {
-      storage(prefs).then(async prefs => {
+      return storage(prefs).then(async prefs => {
         Object.assign(prefs, await storage({
           'whitelist.session': []
         }, 'session'));
@@ -158,13 +277,14 @@ import {interrupts} from './plugins/loader.mjs';
           }, 'menu/1');
 
           if (d) {
-            chrome.storage.local.set({whitelist}, check);
+            await setStorage(chrome.storage.local, {whitelist});
           }
           else {
-            chrome.storage.session.set({
+            await setStorage(chrome.storage.session, {
               'whitelist.session': whitelist
-            }, check);
+            });
           }
+          await check();
         }
         else {
           notify(`"${protocol}" ${chrome.i18n.getMessage('menu_msg2')}`);
@@ -173,201 +293,306 @@ import {interrupts} from './plugins/loader.mjs';
     }
     else if (menuItemId === 'discard-tab' || menuItemId === 'discard-tree') {
       // it is possible to have multiple highlighted tabs. Let's discard all of them
-      const tabs = await query({
-        windowId: tab.windowId
-      });
+      let tabs;
+      try {
+        tabs = await query({
+          windowId: selectedTab.windowId,
+          windowType: 'normal'
+        });
+      }
+      catch (error) {
+        if (error && typeof error === 'object' && !safeFailureCause(error.failureCause)) {
+          error.failureCause = FAILURE_CAUSES.SCOPE_QUERY_FAILED;
+        }
+        throw error;
+      }
 
       const htabs = []; // these are tabs that will be discarded
       // discard-tree for Tree Style Tab
       if (menuItemId === 'discard-tree' && info.viewType === 'sidebar') {
-        htabs.push(tab);
-        await new Promise(resolve => chrome.runtime.sendMessage('treestyletab@piro.sakura.ne.jp', {
-          type: 'get-tree',
-          tab: tab.id
-        }, tab => {
-          const add = tab => {
-            htabs.push(...tab.children);
-            tab.children.filter(t => t.children).forEach(add);
-          };
-          add(tab);
-          resolve();
+        htabs.push(...await resolveTreeStyleTabTargets({
+          runtime: chrome.runtime,
+          selectedTab,
+          tabs
         }));
       }
-      // discard-tree for native
-      else if (tab.highlighted && menuItemId === 'discard-tree') { // if a single not-active tab is called
-        const tbs = tabs.filter(t => t.highlighted);
-        if (tbs.length > 1) {
-          htabs.push(...tbs);
-        }
-        else if (tab.groupId && tab.groupId > -1) {
-          htabs.push(...tabs.filter(t => t.groupId === tab.groupId));
-        }
-        else {
-          htabs.push(tab);
-        }
+      // Chromium/Edge native tab groups. Group membership is the only selector:
+      // highlighted tabs outside this group must never be included.
+      else if (menuItemId === 'discard-tree') {
+        htabs.push(...tabsForGroupCommand(tabs, selectedTab));
       }
       else {
-        htabs.push(tab);
+        htabs.push(selectedTab);
       }
-      if (htabs.filter(t => t.active).length) {
-        // ids to be discarded
-        const ids = htabs.map(t => t.id);
-
-        const otab = tabs
-          .filter(t => {
-            return t.discarded === false && t.highlighted === false && t.status !== 'unloaded' &&
-              ids.indexOf(t.id) === -1 &&
-              inprogress.has(t.id) === false;
-          })
-          .sort((a, b) => Math.abs(a.index - tab.index) - Math.abs(b.index - tab.index))
-          .shift();
-
-        if (otab) {
-          chrome.tabs.update(otab.id, {
-            active: true
-          }, () => {
-            // at the time we record htabs, one tab was active. Let's mark it as inactive
-            htabs.forEach(t => t.active = false);
-            htabs.forEach(discard);
-          });
-        }
-        else {
-          notify(chrome.i18n.getMessage('menu_msg3'));
-        }
-      }
-      else {
-        htabs.forEach(discard);
-      }
+      await progress?.addTargets(htabs);
+      const groupScope = menuItemId === 'discard-tree' && info.viewType !== 'sidebar' &&
+        isNativeGroup(selectedTab) ? {
+          groupId: selectedTab.groupId,
+          selectedId: selectedTab.id,
+          targetIds: htabs.map(target => target.id),
+          windowId: selectedTab.windowId
+        } : undefined;
+      return runCommandTransaction(() => runDirectDiscardCommand({
+        activate: keeper => ownership.withNativeMutationGuard(() =>
+          chrome.tabs.update(keeper.id, {active: true}),
+        keeper.id),
+        allTabs: tabs,
+        command: menuItemId,
+        commitScope: groupScope ? async () => {
+          const selected = await new Promise(resolve => chrome.tabs.get(
+            ownership.resolveId(groupScope.selectedId),
+            current => resolve(chrome.runtime.lastError ? undefined : current)
+          ));
+          if (!selected || selected.active !== true || selected.windowId !== groupScope.windowId ||
+              selected.groupId !== groupScope.groupId) {
+            return {valid: false, reason: 'selected tab moved or changed group before discard'};
+          }
+          const allTabs = await query({windowId: groupScope.windowId, windowType: 'normal'});
+          const targets = tabsForGroupCommand(allTabs, selected);
+          const expected = groupScope.targetIds.map(id => ownership.resolveId(id)).sort((a, b) => a - b);
+          const current = targets.map(target => target.id).sort((a, b) => a - b);
+          if (expected.length !== current.length || expected.some((id, index) => id !== current[index])) {
+            return {valid: false, reason: 'tab-group membership changed before discard'};
+          }
+          return {allTabs, selected, targets, valid: true};
+        } : undefined,
+        discard: trackTabTask(progress, discard, POPUP_CODES.TAB_DISCARDED),
+        hasBlockingNativeIntent: ownership.hasBlockingNativeIntent,
+        inProgress: id => inprogress.has(id),
+        notifyNoKeeper: () => notify(chrome.i18n.getMessage('menu_msg3')),
+        refresh: target => new Promise(resolve => chrome.tabs.get(ownership.resolveId(target.id), current => {
+          const error = chrome.runtime.lastError;
+          resolve(error ? undefined : current);
+        })),
+        resolveFresh: ownership.resolveFresh,
+        selected: selectedTab,
+        shiftKey,
+        suspendedPolicy,
+        takeover: trackTabTask(
+          progress,
+          target => discard.takeover(target, {manual: true}),
+          POPUP_CODES.TAB_DISCARDED,
+          FAILURE_CAUSES.TAKEOVER_FAILED
+        ),
+        targets: htabs,
+        waitForTakeover: discard.waitForTakeover
+      }));
     }
     else if (menuItemId === 'open-tab-then-discard') {
       if (/Firefox/.test(navigator.userAgent)) {
-        chrome.tabs.create({
+        await chrome.tabs.create({
           active: false,
           url: info.linkUrl,
           discarded: true
         });
       }
       else {
-        chrome.tabs.create({
+        const created = await chrome.tabs.create({
           active: false,
           url: info.linkUrl
-        }, tab => chrome.scripting.executeScript({
-          target: {tabId: tab.id},
+        });
+        await chrome.scripting.executeScript({
+          target: {tabId: created.id},
           func: () => window.stop()
-        }).then(() => chrome.scripting.executeScript({
-          target: {tabId: tab.id},
+        });
+        await chrome.scripting.executeScript({
+          target: {tabId: created.id},
           files: ['data/lazy.js']
-        })));
+        });
       }
     }
     else if (menuItemId === 'auto-discardable') {
       const autoDiscardable = info.value || false; // when called from page context menu, there is no value
-      chrome.tabs.update(tab.id, {
+      await chrome.tabs.update(tab.id, {
         autoDiscardable
       });
     }
     else if (menuItemId === 'toggle-allowed') {
-      chrome.tabs.update({
+      await chrome.tabs.update(tab.id, {
         autoDiscardable: tab.autoDiscardable === false
       });
     }
     // discard-tabs, discard-window, discard-other-windows, discard-rights, discard-lefts
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
-      const info = {
-        url: '*://*/*',
-        discarded: menuItemId.startsWith('release'),
-        active: false
+      let initialScopeRead = true;
+      const progressQuery = async options => {
+        const tabs = await query(options);
+        if (progress && initialScopeRead) {
+          initialScopeRead = false;
+          await progress.addTargets(filterScopeTabs(menuItemId, tabs, selectedTab));
+        }
+        return tabs;
       };
-      if (
-        ['discard-window', 'discard-rights', 'discard-lefts', 'release-window', 'release-rights', 'release-lefts']
-          .some(k => k === menuItemId)
-      ) {
-        info.currentWindow = true;
-      }
-      else if (menuItemId === 'discard-other-windows' || menuItemId === 'release-other-windows') {
-        info.currentWindow = false;
-      }
-      let tabs = await query(info);
-
-      if (menuItemId.endsWith('rights') || menuItemId.endsWith('lefts')) {
-        if (menuItemId.endsWith('lefts')) {
-          tabs = tabs.filter(t => t.index < tab.index);
-        }
-        else {
-          tabs = tabs.filter(t => t.index > tab.index);
-        }
-      }
-      if (menuItemId.startsWith('discard')) {
-        if (shiftKey) {
-          tabs.forEach(discard);
-        }
-        else {
-          // make sure to only discard possible tabs not all of them
-          number.check(tabs, number.IGNORE, 'menu/2');
-        }
-      }
-      // release
-      else {
-        for (const tab of tabs) {
-          chrome.tabs.reload(tab.id, {
-            bypassCache: shiftKey ? true : false
-          });
-        }
-      }
+      return runCommandTransaction(() => runScopedCommand({
+        cancelTakeover: tab => discard.cancelTakeover(tab.id),
+        command: menuItemId,
+        selected: selectedTab,
+        shiftKey,
+        suspendedPolicy,
+        query: progressQuery,
+        discard: trackTabTask(progress, discard, POPUP_CODES.TAB_DISCARDED),
+        // Make sure normal clicks only discard eligible tabs; Shift remains forced.
+        check: trackCheck(progress, tabs => number.check(tabs, number.IGNORE, 'menu/2')),
+        reload: trackTabTask(
+          progress,
+          (tab, options) => chrome.tabs.reload(ownership.resolveId(tab.id), options),
+          POPUP_CODES.TAB_RELEASED
+        ),
+        refresh: tab => new Promise(resolve => chrome.tabs.get(ownership.resolveId(tab.id), current => {
+          const error = chrome.runtime.lastError;
+          resolve(error ? undefined : current);
+        })),
+        release: trackTabTask(progress, releaseTab, POPUP_CODES.TAB_RELEASED),
+        hasBlockingNativeIntent: ownership.hasBlockingNativeIntent,
+        resolveFresh: ownership.resolveFresh,
+        takeoverSnapshot: discard.takeoverSnapshot,
+        takeover: trackTabTask(
+          progress,
+          target => discard.takeover(target, {manual: true}),
+          POPUP_CODES.TAB_DISCARDED,
+          FAILURE_CAUSES.TAKEOVER_FAILED
+        )
+      }));
     }
   };
-  chrome.contextMenus.onClicked.addListener(onClicked);
-  chrome.action.onClicked.addListener(tab => onClicked({
-    menuItemId: localStorage.getItem('click')
-  }, tab));
+
+  const handleNavigation = async method => {
+    if (method !== 'close') {
+      return navigate(method);
+    }
+
+    const options = await storage({
+      'discard-protected-on-close': false
+    });
+    if (options['discard-protected-on-close'] !== true) {
+      return navigate(method);
+    }
+
+    const tabs = await query({
+      active: true,
+      currentWindow: true
+    });
+    const active = tabs[0];
+    if (!active) {
+      return false;
+    }
+    const protectedTab = active.pinned === true ||
+      (Number.isInteger(active.groupId) && active.groupId !== -1);
+    if (!protectedTab) {
+      return navigate(method);
+    }
+
+    const result = await onClicked({menuItemId: 'discard-tab'}, active);
+    if (result?.blocked === true) {
+      throw Error('cannot discard the protected active tab without a safe keeper');
+    }
+    return result;
+  };
+
+  const runEntry = (command, task) => runEntryCommand(command, task, ({command, message}) => {
+    notify(`${command}: ${message}`);
+  });
+
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    void runEntry(info.menuItemId, () => onClicked(info, tab));
+  });
+  chrome.action.onClicked.addListener(async tab => {
+    return await runEntry('toolbar', async () => {
+      const menuItemId = await actionCommand(storage);
+      if (menuItemId === 'popup') {
+        await chrome.action.setPopup({popup: '/data/popup/index.html'});
+        if (chrome.action.openPopup) {
+          await chrome.action.openPopup();
+        }
+      }
+      else {
+        return onClicked({menuItemId}, tab);
+      }
+    });
+  });
   // commands
   chrome.commands.onCommand.addListener(async command => {
-    if (command.startsWith('move-') || command === 'close') {
-      navigate(command);
-    }
-    else {
-      const tabs = await query({
-        active: true,
-        currentWindow: true
-      });
-      if (tabs.length) {
-        onClicked({
-          menuItemId: command
-        }, tabs[0]);
+    return await runEntry(command, async () => {
+      if (command.startsWith('move-') || command === 'close') {
+        return handleNavigation(command);
       }
-    }
-  });
-  chrome.runtime.onMessage.addListener((request, sender) => {
-    if (request.method === 'popup') {
-      query({
-        active: true,
-        currentWindow: true
-      }).then(tabs => {
+      else {
+        const tabs = await query({
+          active: true,
+          currentWindow: true
+        });
         if (tabs.length) {
-          onClicked({
-            menuItemId: request.cmd,
-            value: request.value,
-            checked: request.checked,
-            shiftKey: request.shiftKey
+          return onClicked({
+            menuItemId: command
           }, tabs[0]);
         }
-      });
+      }
+    });
+  });
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.method === 'popup') {
+      return respondAsync(async () => {
+        const {request: authorized} = await authorizePopupRequest(request, query);
+        return scopedCommands.has(authorized.cmd) ? popupProgress.run(
+          authorized,
+          progress => dispatchPopup({...authorized, progress}, query, onClicked),
+          progress => Promise.all(progress.targetIds().map(id => discard.cancelTakeover(id)))
+        ) : dispatchPopup(authorized, query, onClicked);
+      }, sendResponse);
+    }
+    else if (request.method === 'popup-progress-snapshot') {
+      return respondAsync(() => popupProgress.snapshot(request), sendResponse);
+    }
+    else if (request.method === 'popup-progress-cancel') {
+      return respondAsync(() => popupProgress.cancel(request.jobId), sendResponse);
+    }
+    else if (request.method === 'diagnostics-latest') {
+      return respondAsync(async () => diagnosticJournal.latest(
+        request.incidentId,
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
+    }
+    else if (request.method === 'diagnostics-export') {
+      return respondAsync(async () => diagnosticJournal.exportText(
+        request.incidentId,
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
+    }
+    else if (request.method === 'diagnostics-snapshot') {
+      return respondAsync(async () => diagnosticJournal.snapshot(
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
+    }
+    else if (request.method === 'diagnostics-clear') {
+      return respondAsync(async () => diagnosticJournal.clear(
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
     }
     else if (request.method === 'simulate') {
-      onClicked({
+      return respondAsync(() => onClicked({
         menuItemId: request.cmd
-      }, sender.tab);
+      }, sender.tab), sendResponse);
     }
     else if (request.method === 'build-context') {
-      onStartup();
+      return respondAsync(() => onStartup(), sendResponse);
+    }
+    else if (request.method === 'takeover-snapshot') {
+      return respondAsync(async () => {
+        const {tab} = await authorizePopupRequest(request, query);
+        const selected = await resolveWindowScopedTab(tab);
+        return filterPopupTakeoverSnapshot(discard.takeoverSnapshot(), selected);
+      }, sendResponse);
     }
     else if (request.method === 'run-check-on-action') {
       const tabs = request.ids.map(id => ({id}));
-      number.check(tabs, {
+      return respondAsync(() => number.check(tabs, {
         'exclude-active': false,
         'icon-update': true
-      }, 'menu/3');
+      }, 'menu/3'), sendResponse);
+    }
+    else if (request.method === 'close' || request.method?.startsWith('move-')) {
+      return respondAsync(() => handleNavigation(request.method), sendResponse);
     }
   });
 }

@@ -55,6 +55,10 @@
         "message": "破棄済みタブに記号 (💤や⏻︎など) を挿入する (可能な場合)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "ブラウザまたは拡張機能の起動時に全てのピン留めしていないタブを破棄する",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "ピン留めされているタブは破棄しない",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "分割表示されたタブで、分割されたタブのいずれかがフォーカスされている場合は、タブを破棄しない",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "アップデート完了時にFAQページを開く",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "初期状態にリセット",
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(破棄済みのウィンドウ)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "キャンセル"
+  },
+  "popup_retry": {
+    "message": "再試行"
+  },
+  "popup_progress": {
+    "message": "$TOTAL$ 個中 $COMPLETED$ 個のタブを完了",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ 件成功、$SKIPPED$ 件スキップ、$FAILED$ 件失敗。",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "安全にキャンセル中…"
+  },
+  "popup_status_cancelled": {
+    "message": "キャンセルしました。"
+  },
+  "popup_status_complete": {
+    "message": "完了しました。"
+  },
+  "popup_status_partial": {
+    "message": "完了しましたが、一部のタブは処理されませんでした。"
+  },
+  "popup_status_failed": {
+    "message": "操作を完了できませんでした。"
+  },
+  "popup_status_interrupted": {
+    "message": "ブラウザーが前回の操作を中断しました。"
+  },
+  "popup_error_busy": {
+    "message": "このウィンドウでは別のタブ操作が実行中です。"
+  },
+  "popup_error_command_failed": {
+    "message": "タブ操作に失敗しました。"
+  },
+  "popup_error_no_active_tab": {
+    "message": "利用できるアクティブなタブがありません。"
+  },
+  "popup_error_target_changed": {
+    "message": "操作の実行前に選択したタブが変わりました。"
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ 個のタブを拡張機能管理のネイティブ破棄に切り替えましたが、レンダラーが既にフリーズしていたため、Edge はタイトルまたは favicon に表示を追加できませんでした。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ 個のタブは、安全にアクティブのままにできる別のタブがなかったため読み込まれたままです。別のタブを開くか選択して、再試行してください。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ 個のタブは解放用の再読み込み後もフリーズしたままです。Edge ではアクティブ化せずに復帰できないため、2 回目の再読み込みは行いませんでした。もう一度お試しください。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "診断を表示"
+  },
+  "popup_diagnostics_hide": {
+    "message": "診断を非表示"
+  },
+  "popup_diagnostics_region": {
+    "message": "操作の診断"
+  },
+  "popup_diagnostics_incident": {
+    "message": "インシデント"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "結果のグループ"
+  },
+  "popup_diagnostics_log": {
+    "message": "サニタイズ済み診断ログ"
+  },
+  "popup_diagnostics_copy": {
+    "message": "ログをコピー"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log をダウンロード"
+  },
+  "popup_diagnostics_clear": {
+    "message": "診断を消去"
+  },
+  "popup_diagnostics_copied": {
+    "message": "診断ログをコピーしました。"
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "診断ログをコピーできませんでした。"
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "診断ログのダウンロードを開始しました。"
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "診断ログをダウンロードできませんでした。"
+  },
+  "popup_diagnostics_cleared": {
+    "message": "診断を消去しました。"
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "診断を消去できませんでした。"
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "利用できるサニタイズ済み診断はありません。"
+  },
+  "popup_diagnostics_status_success": {
+    "message": "成功"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "スキップ"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "失敗"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "分類済みの結果"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "診断"
+  },
+  "options_diagnostics_privacy": {
+    "message": "サニタイズ済みログには、URL、タイトル、タブとウィンドウの ID、サイトルール、プライベートウィンドウの操作は含まれません。"
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log をダウンロード"
+  },
+  "options_diagnostics_clear": {
+    "message": "診断を消去"
+  },
+  "options_diagnostics_cleared": {
+    "message": "診断を消去しました。"
+  },
+  "options_frame_access_title": {
+    "message": "フレーム付きページの保護"
+  },
+  "options_frame_access_description": {
+    "message": "任意: Auto Tab Discard にフレーム識別子の列挙を許可すると、厳格な処理上限内ですべてのフレームを確認できます。ブラウザーでは、この権限が「閲覧履歴の読み取り」と表示される場合があります。拡張機能はフレームの URL を保存または記録しません。許可しない場合も、上限内の同一オリジンフレームは確認され、アクセス不能または大きすぎるフレームツリーは保護されたままになります。"
+  },
+  "options_frame_access_enable": {
+    "message": "完全なフレーム保護を有効にする"
+  },
+  "options_frame_access_disable": {
+    "message": "任意のフレームアクセスを無効にする"
+  },
+  "options_frame_access_enabled": {
+    "message": "フレーム付きページの完全な保護が有効です。"
+  },
+  "options_frame_access_limited": {
+    "message": "任意のフレームアクセスは無効です。上限内の同一オリジンフレームは確認され、不明な分岐は保護されたままになります。"
+  },
+  "options_frame_access_unavailable": {
+    "message": "このブラウザーでは任意のフレームアクセスを管理できません。不明なフレーム分岐は保護されたままになります。"
+  },
+  "options_diagnostics_empty": {
+    "message": "利用できるサニタイズ済み診断はありません。"
+  }
 }

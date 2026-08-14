@@ -11,6 +11,16 @@
     paused,
     'permission': typeof Notification !== 'undefined' ? Notification.permission === 'granted' : false,
     'ready': document.readyState === 'complete' || document.readyState === 'loaded',
+    // A boolean is enough to decide whether bounded subframe inspection is
+    // needed. Frame identities and URLs never leave the browser-owned APIs.
+    'subframes': (() => {
+      try {
+        return window.frames.length > 0;
+      }
+      catch (e) {
+        return true;
+      }
+    })(),
     'memory': performance && performance.memory ? performance.memory.totalJSHeapSize : false,
     'forms': window.isReceivingFormInput || false
   } : {

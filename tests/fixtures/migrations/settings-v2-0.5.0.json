@@ -1,0 +1,23 @@
+{
+  "id": "settings-v2-0.5.0",
+  "sourceVersion": "0.5.0",
+  "storageArea": "local",
+  "input": {
+    "number": 12,
+    "period": 1800,
+    "pinned": true,
+    "whitelist": [
+      "example.com",
+      "/^https:\\/\\/mail\\.example\\.invalid\\//"
+    ]
+  },
+  "expected": {
+    "number": 12,
+    "period": 1800,
+    "pinned": true,
+    "whitelist": [
+      "example.com",
+      "/^https:\\/\\/mail\\.example\\.invalid\\//"
+    ]
+  }
+}

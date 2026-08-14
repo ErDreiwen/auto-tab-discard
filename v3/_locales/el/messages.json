@@ -55,6 +55,10 @@
         "message": "Προσθήκη ενός συμβόλου στις καρτέλες που απορρίπτονται (π.χ. 💤 ή ⏻︎) (εάν είναι δυνατόν)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Απόρριψη όλων των ξεκαρφίτσωμένων καρτελών κατά την εκκίνηση ενός περιηγητή ή μιας επέκτασης",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Να μγν γίνει απόρριψη μιας καρτέλας όταν είναι καρφιτσωμένη",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Να μη γίνει απόρριψη μιας καρτέλας αν βρίσκεται σε προβολή διαχωρισμού και κάποια από τις καρτέλες του διαχωρισμού έχει εστίαση",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "Άνοιγμα σελίδας Συχνές Ερωτήσεις σχετικά με τις ενημερώσεις",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "Επαναφορά Εργοστασιακών Ρυθμίσεων",
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Απορριφθέν Παράθυρο)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Ακύρωση"
+  },
+  "popup_retry": {
+    "message": "Επανάληψη"
+  },
+  "popup_progress": {
+    "message": "Ολοκληρώθηκαν $COMPLETED$ από $TOTAL$ καρτέλες",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ επιτυχείς, $SKIPPED$ παραλείφθηκαν, $FAILED$ απέτυχαν.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Ασφαλής ακύρωση…"
+  },
+  "popup_status_cancelled": {
+    "message": "Ακυρώθηκε."
+  },
+  "popup_status_complete": {
+    "message": "Ολοκληρώθηκε."
+  },
+  "popup_status_partial": {
+    "message": "Ολοκληρώθηκε με ορισμένες καρτέλες εκκρεμείς."
+  },
+  "popup_status_failed": {
+    "message": "Η ενέργεια δεν μπόρεσε να ολοκληρωθεί."
+  },
+  "popup_status_interrupted": {
+    "message": "Το πρόγραμμα περιήγησης διέκοψε την προηγούμενη ενέργεια."
+  },
+  "popup_error_busy": {
+    "message": "Μια άλλη ενέργεια καρτελών εκτελείται ήδη σε αυτό το παράθυρο."
+  },
+  "popup_error_command_failed": {
+    "message": "Η ενέργεια καρτελών απέτυχε."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Δεν υπάρχει διαθέσιμη ενεργή καρτέλα."
+  },
+  "popup_error_target_changed": {
+    "message": "Η επιλεγμένη καρτέλα άλλαξε πριν εκτελεστεί η ενέργεια."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ καρτέλα/-ες απορρίφθηκαν εγγενώς από την επέκταση, αλλά το Edge δεν μπόρεσε να προσθέσει ένδειξη στον τίτλο ή στο favicon επειδή η διεργασία απόδοσης ήταν ήδη παγωμένη.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ καρτέλα/-ες παρέμειναν φορτωμένες επειδή δεν υπήρχε διαθέσιμη ασφαλής καρτέλα διατήρησης. Ανοίξτε ή επιλέξτε άλλη καρτέλα και δοκιμάστε ξανά.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ καρτέλα/-ες παρέμειναν παγωμένες μετά την επαναφόρτωση αποδέσμευσης. Το Edge δεν παρείχε αφύπνιση χωρίς ενεργοποίηση, οπότε δεν έγινε δεύτερη επαναφόρτωση. Δοκιμάστε ξανά.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Εμφάνιση διαγνωστικών"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Απόκρυψη διαγνωστικών"
+  },
+  "popup_diagnostics_region": {
+    "message": "Διαγνωστικά ενέργειας"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Συμβάν"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Ομαδοποιημένα αποτελέσματα"
+  },
+  "popup_diagnostics_log": {
+    "message": "Καθαρισμένο αρχείο διαγνωστικών"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Αντιγραφή αρχείου"
+  },
+  "popup_diagnostics_download": {
+    "message": "Λήψη latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Εκκαθάριση διαγνωστικών"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Το αρχείο διαγνωστικών αντιγράφηκε."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Δεν ήταν δυνατή η αντιγραφή του αρχείου διαγνωστικών."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Η λήψη του αρχείου διαγνωστικών ξεκίνησε."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Δεν ήταν δυνατή η λήψη του αρχείου διαγνωστικών."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Τα διαγνωστικά εκκαθαρίστηκαν."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Δεν ήταν δυνατή η εκκαθάριση των διαγνωστικών."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Δεν υπάρχουν καθαρισμένα διαγνωστικά."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "επιτυχείς"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "παραλείφθηκαν"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "απέτυχαν"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Ταξινομημένο αποτέλεσμα"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Διαγνωστικά"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Τα καθαρισμένα αρχεία εξαιρούν URL, τίτλους, αναγνωριστικά καρτελών και παραθύρων, κανόνες ιστοτόπων και δραστηριότητα ιδιωτικών παραθύρων."
+  },
+  "options_diagnostics_download": {
+    "message": "Λήψη latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Εκκαθάριση διαγνωστικών"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Τα διαγνωστικά εκκαθαρίστηκαν."
+  },
+  "options_frame_access_title": {
+    "message": "Προστασία σελίδων με πλαίσια"
+  },
+  "options_frame_access_description": {
+    "message": "Προαιρετικό: επιτρέψτε στο Auto Tab Discard να απαριθμεί αναγνωριστικά πλαισίων, ώστε να ελέγχει κάθε πλαίσιο μέσα σε αυστηρό όριο εργασίας. Το πρόγραμμα περιήγησης μπορεί να περιγράψει την άδεια ως «Ανάγνωση ιστορικού περιήγησης». Η επέκταση δεν αποθηκεύει ούτε καταγράφει διευθύνσεις URL πλαισίων. Χωρίς την άδεια, τα οριοθετημένα πλαίσια ίδιας προέλευσης εξακολουθούν να ελέγχονται· τα μη προσβάσιμα ή υπερβολικά μεγάλα δέντρα παραμένουν προστατευμένα."
+  },
+  "options_frame_access_enable": {
+    "message": "Ενεργοποίηση πλήρους προστασίας πλαισίων"
+  },
+  "options_frame_access_disable": {
+    "message": "Απενεργοποίηση προαιρετικής πρόσβασης σε πλαίσια"
+  },
+  "options_frame_access_enabled": {
+    "message": "Η πλήρης προστασία σελίδων με πλαίσια είναι ενεργοποιημένη."
+  },
+  "options_frame_access_limited": {
+    "message": "Η προαιρετική πρόσβαση σε πλαίσια είναι απενεργοποιημένη. Τα οριοθετημένα πλαίσια ίδιας προέλευσης ελέγχονται· οι άγνωστοι κλάδοι παραμένουν προστατευμένοι."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Αυτό το πρόγραμμα περιήγησης δεν μπορεί να διαχειριστεί προαιρετική πρόσβαση σε πλαίσια. Οι άγνωστοι κλάδοι παραμένουν προστατευμένοι."
+  },
+  "options_diagnostics_empty": {
+    "message": "Δεν υπάρχουν καθαρισμένα διαγνωστικά."
+  }
 }

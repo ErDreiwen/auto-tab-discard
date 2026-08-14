@@ -219,6 +219,36 @@
         "message": "Відкривати ЧаПи при оновленні",
         "description": ""
     },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
+    },
     "options_footnote_1": {
         "message": "Можна використовувати відповідність регулярного виразу з ключовим словом \"re:\". Наприклад, щоб додати до білого списку всі URL-адреси з ключовим словом \"google\", використовуйте \"re:google\".",
         "description": ""
@@ -447,8 +477,319 @@
         "message": "Закрити вкладку",
         "description": ""
     },
+    "options_title": {
+        "message": "Options Page :: Auto Tab Discard"
+    },
+    "options_list": {
+        "message": "Comma-separated list of hostnames"
+    },
+    "options_list_trash": {
+        "message": "Comma-separated list of hostnames, leave blank for all"
+    },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)"
+    },
+    "options_paused": {
+        "message": "Do not discard a tab when there is a paused media player"
+    },
+    "options_split_view": {
+        "message": "Do not discard a tab if it is in a split view and either tab of the split is focused"
+    },
+    "options_plugin_trash01": {
+        "message": "Permanently delete (remove) old discarded tabs if they are inactive for"
+    },
+    "options_plugin_trash02": {
+        "message": "hours"
+    },
+    "options_save_msg": {
+        "message": "Options saved"
+    },
+    "options_read_more": {
+        "message": "(Read More Here)"
+    },
+    "options_save_notice": {
+        "message": "Please be sure to click the \"Save Options\" button at the bottom of this page once you have finished making changes."
+    },
+    "options_rate_desc": {
+        "message": "If you like to rate the extension, click"
+    },
+    "options_rate_btn": {
+        "message": "Rate it"
+    },
+    "options_managed_1": {
+        "message": "This extension has the ability to use managed storage, allowing domain administrators to preconfigure preferences."
+    },
+    "options_managed_2": {
+        "message": "Read more here."
+    },
+    "popup_move_previous_title": {
+        "message": "Go to the previous active tab"
+    },
+    "popup_close_title": {
+        "message": "Close the current tab and switch to the previous active tab"
+    },
+    "popup_move_next_title": {
+        "message": "Go to the next active tab"
+    },
+    "popup_tmp_disable": {
+        "message": "Disable Auto Discarding Globally for"
+    },
+    "popup_tmp_0": {
+        "message": "Off"
+    },
+    "popup_tmp_1": {
+        "message": "1 hour"
+    },
+    "popup_tmp_6": {
+        "message": "6 hours"
+    },
+    "popup_tmp_12": {
+        "message": "12 hours"
+    },
+    "popup_tmp_24": {
+        "message": "1 day"
+    },
+    "bg_msg_2": {
+        "message": "Auto-discarding is disabled for now"
+    },
+    "menu_extra": {
+        "message": "Keep Tabs"
+    },
+    "cmd_discard_rights": {
+        "message": "Discard Tabs to the Right"
+    },
+    "cmd_discard_lefts": {
+        "message": "Discard Tabs to the Left"
+    },
+    "blank_header": {
+        "message": "(Discarded Window)"
+    },
     "blank_msg": {
         "message": "Усі вкладки у цьому вікні скидаються! Клацніть де завгодно, щоб закрити цю вкладку.",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Скасувати"
+  },
+  "popup_retry": {
+    "message": "Повторити"
+  },
+  "popup_progress": {
+    "message": "Завершено $COMPLETED$ із $TOTAL$ вкладок",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ успішно, $SKIPPED$ пропущено, $FAILED$ з помилкою.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Безпечне скасування…"
+  },
+  "popup_status_cancelled": {
+    "message": "Скасовано."
+  },
+  "popup_status_complete": {
+    "message": "Готово."
+  },
+  "popup_status_partial": {
+    "message": "Готово, але деякі вкладки не оброблено."
+  },
+  "popup_status_failed": {
+    "message": "Не вдалося виконати дію."
+  },
+  "popup_status_interrupted": {
+    "message": "Браузер перервав попередню дію."
+  },
+  "popup_error_busy": {
+    "message": "У цьому вікні вже виконується інша дія з вкладками."
+  },
+  "popup_error_command_failed": {
+    "message": "Не вдалося виконати дію з вкладками."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Немає доступної активної вкладки."
+  },
+  "popup_error_target_changed": {
+    "message": "Вибрана вкладка змінилася до запуску дії."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ вкладок було нативно вивантажено розширенням, але Edge не зміг додати індикатор до заголовка чи значка, оскільки процес відображення вже був заморожений.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ вкладок залишилися завантаженими, оскільки не було іншої безпечної вкладки, яку можна залишити активною. Відкрийте або виберіть іншу вкладку та повторіть спробу.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ вкладок залишилися замороженими після перезавантаження для звільнення. Edge не зміг пробудити їх без активації, тому повторне перезавантаження не виконувалося. Повторіть спробу.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Показати діагностику"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Сховати діагностику"
+  },
+  "popup_diagnostics_region": {
+    "message": "Діагностика дії"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Інцидент"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Згруповані результати"
+  },
+  "popup_diagnostics_log": {
+    "message": "Очищений діагностичний журнал"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Копіювати журнал"
+  },
+  "popup_diagnostics_download": {
+    "message": "Завантажити latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Очистити діагностику"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Діагностичний журнал скопійовано."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Не вдалося скопіювати діагностичний журнал."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Завантаження діагностичного журналу розпочато."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Не вдалося завантажити діагностичний журнал."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Діагностику очищено."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Не вдалося очистити діагностику."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Очищена діагностика недоступна."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "успішно"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "пропущено"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "з помилкою"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Класифікований результат"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Діагностика"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Очищені журнали не містять URL, заголовків, ідентифікаторів вкладок і вікон, правил сайтів та активності приватних вікон."
+  },
+  "options_diagnostics_download": {
+    "message": "Завантажити latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Очистити діагностику"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Діагностику очищено."
+  },
+  "options_frame_access_title": {
+    "message": "Захист сторінок із фреймами"
+  },
+  "options_frame_access_description": {
+    "message": "Необов’язково: дозвольте Auto Tab Discard перелічувати ідентифікатори фреймів, щоб перевіряти кожен фрейм у межах суворого ліміту роботи. Браузер може описувати цей дозвіл як «Читання історії переглядів». Розширення не зберігає й не записує URL-адреси фреймів. Без дозволу обмежені фрейми того самого походження все одно перевіряються; недоступні або завеликі дерева фреймів залишаються захищеними."
+  },
+  "options_frame_access_enable": {
+    "message": "Увімкнути повний захист фреймів"
+  },
+  "options_frame_access_disable": {
+    "message": "Вимкнути необов’язковий доступ до фреймів"
+  },
+  "options_frame_access_enabled": {
+    "message": "Повний захист сторінок із фреймами ввімкнено."
+  },
+  "options_frame_access_limited": {
+    "message": "Необов’язковий доступ до фреймів вимкнено. Обмежені фрейми того самого походження перевіряються; невідомі гілки залишаються захищеними."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Цей браузер не може керувати необов’язковим доступом до фреймів. Невідомі гілки фреймів залишаються захищеними."
+  },
+  "options_diagnostics_empty": {
+    "message": "Очищена діагностика недоступна."
+  }
 }

@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Bounded compatibility evidence for browser scripting-error classification. Messages are sanitized templates, not diagnostic logs.",
+  "observations": [
+    {
+      "id": "chrome-151-frame-removed",
+      "browser": {
+        "family": "chromium",
+        "product": "chrome",
+        "version": "151.0.7922.34",
+        "locale": "not-recorded"
+      },
+      "source": {
+        "kind": "passing-sanitized-browser-report",
+        "evidenceId": "release-gate.chrome-popup",
+        "reportSha256": "9a92ec2846667f7486c12a01fffb3aebd72dc6109838ede2c567b987c72114f7",
+        "sourceTreeSha256": "ac7443821639a32dd40c60bbe87ca2ea2e2ff74b7904e96251e6070933652946",
+        "event": "api.scripting.stop-complete",
+        "outcome": "rejected",
+        "sampleCount": 4
+      },
+      "messageTemplate": "Frame with ID {frameId} was removed.",
+      "redactions": [
+        "frameId"
+      ],
+      "expectedCategory": "transient-frame"
+    },
+    {
+      "id": "chrome-152-frame-removed",
+      "browser": {
+        "family": "chromium",
+        "product": "chrome",
+        "version": "152.0.7977.42",
+        "locale": "not-recorded"
+      },
+      "source": {
+        "kind": "passing-sanitized-browser-report",
+        "evidenceId": "local-exact.chrome-popup.final4",
+        "reportSha256": "9e1a109b589d0b3083f1903fa898fd48e2316d4977c15b56fffd4f1b1729c081",
+        "sourceTreeSha256": "e43ae42155ba2d0ab7984a752e5dec2c75a766740690d085f6ed89e65450915e",
+        "event": "api.scripting.stop-complete",
+        "outcome": "rejected",
+        "sampleCount": 6
+      },
+      "messageTemplate": "Frame with ID {frameId} was removed.",
+      "redactions": [
+        "frameId"
+      ],
+      "expectedCategory": "transient-frame"
+    }
+  ],
+  "classifierContractCases": [
+    {
+      "id": "chromium-frame-not-ready",
+      "provenance": "synthetic-classifier-contract",
+      "messageTemplate": "Frame with ID {frameId} is not ready.",
+      "expectedCategory": "transient-frame"
+    },
+    {
+      "id": "chromium-frame-missing-from-tab",
+      "provenance": "synthetic-classifier-contract",
+      "messageTemplate": "No frame with id {frameId} in tab with id {tabId}",
+      "expectedCategory": "transient-frame"
+    },
+    {
+      "id": "missing-host-permission",
+      "provenance": "synthetic-classifier-contract",
+      "messageTemplate": "Missing host permission for the tab.",
+      "expectedCategory": "permission"
+    },
+    {
+      "id": "protected-page-permission",
+      "provenance": "synthetic-classifier-contract",
+      "messageTemplate": "Cannot access contents of url {protectedUrl}.",
+      "expectedCategory": "permission"
+    },
+    {
+      "id": "closed-tab",
+      "provenance": "synthetic-classifier-contract",
+      "messageTemplate": "No tab with id: {tabId}.",
+      "expectedCategory": "tab-closed"
+    },
+    {
+      "id": "enterprise-policy",
+      "provenance": "synthetic-classifier-contract",
+      "messageTemplate": "Blocked by enterprise policy.",
+      "expectedCategory": "policy"
+    }
+  ],
+  "structuredCodeCases": [
+    {
+      "id": "top-level-transient-code",
+      "codeLocation": "code",
+      "code": "FRAME_REMOVED",
+      "message": "Texte localis\u00e9 inconnu",
+      "expectedCategory": "transient-frame"
+    },
+    {
+      "id": "top-level-permission-name",
+      "codeLocation": "name",
+      "code": "MissingHostPermissionError",
+      "message": "Unbekannter lokalisierter Text",
+      "expectedCategory": "permission"
+    },
+    {
+      "id": "nested-policy-code",
+      "codeLocation": "cause.code",
+      "code": "BLOCKED_BY_POLICY",
+      "message": "\u4e0d\u660e\u306a\u30ed\u30fc\u30ab\u30e9\u30a4\u30ba\u6e08\u307f\u30c6\u30ad\u30b9\u30c8",
+      "expectedCategory": "policy"
+    }
+  ],
+  "failClosedCases": [
+    {
+      "id": "unknown-english-frame-state",
+      "provenance": "synthetic-adversarial-vector",
+      "messageTemplate": "Frame with ID {frameId} is showing an error page."
+    },
+    {
+      "id": "german-frame-removed",
+      "provenance": "synthetic-localization-vector",
+      "messageTemplate": "Frame mit der ID {frameId} wurde entfernt."
+    },
+    {
+      "id": "french-frame-removed",
+      "provenance": "synthetic-localization-vector",
+      "messageTemplate": "Le cadre portant l\u2019identifiant {frameId} a \u00e9t\u00e9 supprim\u00e9."
+    },
+    {
+      "id": "japanese-frame-removed",
+      "provenance": "synthetic-localization-vector",
+      "messageTemplate": "\u30d5\u30ec\u30fc\u30e0 ID {frameId} \u306f\u524a\u9664\u3055\u308c\u307e\u3057\u305f\u3002"
+    },
+    {
+      "id": "unfamiliar-localized-error",
+      "provenance": "synthetic-localization-vector",
+      "messageTemplate": "Vollst\u00e4ndig unbekannter lokalisierter Fehler"
+    }
+  ],
+  "coverageNotes": [
+    {
+      "browser": "chrome",
+      "version": "102.0.5005.40",
+      "evidenceId": "minimum-runtime-smoke",
+      "reportSha256": "099b2abee2de6eb9f23b500d658c7cfa541c8b9b4ecb545ddd1f67a5907c2f14",
+      "retainedErrorSamples": 0,
+      "note": "The exact-version smoke did not collect scripting-error messages and is not message provenance."
+    },
+    {
+      "browser": "edge",
+      "version": "151.0.4129.72",
+      "evidenceId": "release-gate.edge-popup",
+      "reportSha256": "23746907f70810b07f9cf088effae931d08365a471c0b3951b9a150413b96cf3",
+      "retainedErrorSamples": 0,
+      "note": "The passing sanitized report contained no scripting-error message and is not message provenance."
+    },
+    {
+      "browser": "firefox",
+      "version": "153.0",
+      "evidenceId": "release-gate.firefox-bidi",
+      "reportSha256": "d3834ead82714d23167142724da2b36bf5e29c83d7f587aa152002633237355a",
+      "retainedErrorSamples": 0,
+      "note": "The passing BiDi smoke contained no scripting-error message and is not message provenance."
+    }
+  ]
+}

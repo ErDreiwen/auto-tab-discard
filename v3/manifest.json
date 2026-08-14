@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
-  "version": "0.6.8.2",
-  "name": "Auto Tab Discard (suspend)",
+  "version": "0.6.9.2",
+  "minimum_chrome_version": "102",
+  "name": "Auto Tab Discard (Hardened)",
   "description": "__MSG_app_description__",
   "default_locale": "en",
   "icons": {
@@ -24,10 +25,14 @@
     "alarms",
     "scripting"
   ],
+  "optional_permissions": [
+    "webNavigation"
+  ],
   "host_permissions": [
     "*://*/*"
   ],
   "background": {
+    "page": "/firefox/background.html",
     "service_worker": "worker/core.mjs",
     "type": "module"
   },
@@ -38,7 +43,7 @@
       "/data/inject/watch.js"
     ],
     "run_at": "document_start",
-    "all_frames": true
+    "all_frames": false
   }],
   "action": {
     "default_popup": "/data/popup/index.html"
@@ -47,7 +52,7 @@
     "page": "/data/options/index.html",
     "open_in_tab": true
   },
-  "homepage_url": "https://webextension.org/listing/tab-discard.html",
+  "homepage_url": "https://github.com/ErDreiwen/auto-tab-discard",
   "commands": {
     "_execute_action": {},
     "discard-tab": {
@@ -84,5 +89,14 @@
   "web_accessible_resources": [{
     "resources": ["/data/page.png"],
     "matches": ["*://*/*"]
-  }]
+  }],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "{b3b398c4-27bc-46b6-9447-f07deec6aeba}",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
 }

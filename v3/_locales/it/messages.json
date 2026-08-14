@@ -3,6 +3,18 @@
         "message": "Aumenta la velocità del browser e riduce il peso sulla memoria  quando hai molte schede aperte",
         "description": ""
     },
+    "options_title": {
+        "message": "Pagina delle Opzioni :: Auto Tab Discard",
+        "description": ""
+    },
+    "options_list": {
+        "message": "Elenco di nomi host separati da virgole",
+        "description": ""
+    },
+    "options_list_trash": {
+        "message": "Elenco di nomi host separati da virgole, lascia vuoto per tutti",
+        "description": ""
+    },
     "options_discarding_options": {
         "message": "Impostazioni di sospensione",
         "description": ""
@@ -43,6 +55,10 @@
         "message": "Aggiungi il simbolo come prefisso alle schede sospese (es. 💤 or ⏻︎) (se possibile)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Sospendi tutte le schede non bloccate all'avvio del browser o di un'estensione",
         "description": ""
@@ -75,8 +91,16 @@
         "message": "Non sospendere la scheda quando i media sono in riproduzione",
         "description": ""
     },
+    "options_paused": {
+        "message": "Non sospendere una scheda quando c'è un lettore multimediale in pausa",
+        "description": ""
+    },
     "options_pinned": {
         "message": "Non sospendere una scheda quando é bloccata",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Non sospendere una scheda se è in una vista divisa e una delle schede della divisione è focalizzata",
         "description": ""
     },
     "options_form": {
@@ -172,19 +196,23 @@
         "description": ""
     },
     "options_plugin_unloaded": {
-        "message": "Sospendi tutte le schede non caricare all'avvio del browser. Questo metodo sospende quasi tutte le schede inattive.",
+        "message": "Sospendi tutte le schede non caricate all'avvio del browser. Questo metodo sospende quasi tutte le schede inattive.",
         "description": ""
     },
-    "options_plugin_trash": {
-        "message": "Elimina in modo permanente (rimozione) le vecchie schede sospese se sono state inattive per (in ore)",
+    "options_plugin_trash01": {
+        "message": "Elimina in modo permanente (rimuovi) le vecchie schede sospese se sono inattive da",
+        "description": ""
+    },
+    "options_plugin_trash02": {
+        "message": "ore",
         "description": ""
     },
     "options_plugin_trash_unloaded": {
-        "message": "Inoltre, considera le vecchie schede sospese",
+        "message": "Considera anche le vecchie schede non caricate",
         "description": ""
     },
     "options_plugin_trash_whitelist": {
-        "message": "Solo le schede che corrispondono al seguente pattern di URL",
+        "message": "Elimina solo le schede che corrispondono ai seguenti modelli di URL",
         "description": ""
     },
     "options_plugin_force": {
@@ -192,11 +220,11 @@
         "description": ""
     },
     "options_plugin_new": {
-        "message": "Sospendi tutte le nuove schede aperte ed inattiva dopo che sono state caricate",
+        "message": "Sospendi tutte le nuove schede inattive aperte dopo che sono state caricate",
         "description": ""
     },
     "options_plugin_youtube": {
-        "message": "Store YouTube's timestamp before discarding",
+        "message": "Memorizza il timestamp di YouTube prima della sospensione",
         "description": ""
     },
     "options_log": {
@@ -207,10 +235,6 @@
         "message": "Sospendi una scheda se è nascosta",
         "description": ""
     },
-    "options_use_cache": {
-        "message": "Usa la Cache: se abilitato, l'estensione controlla solo se una scheda è appuntata o se il PC è alimentato a batteria",
-        "description": ""
-    },
     "options_simultaneous_jobs": {
         "message": "Numero di processi simultanei di sospensione permessi",
         "description": ""
@@ -219,21 +243,35 @@
         "message": "Apri la pagina di FAQ in caso di aggiornamenti",
         "description": ""
     },
-    "options_footnote_1": {
-        "message": "E' possibile utilizzare espressioni regolari che coincidono con la parola chiave \"re:\". Per esempio per mettere in whitelist tutte le URL contenenti la parola-chiave \"google\" si può utilizzare \"re:google\".",
-        "description": ""
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
     },
-    "options_footnote_2": {
-        "message": "Controlla il valore di totalJSHeapSize del documento principale. Se questo valore di memoria supera il valore impostato dall'utente (il minimo accettato è 10MB), la scheda verrà sospesa. Notare che questa opzione è disponibile solo se il tuo browser supporta 'window.performance.memory'",
-        "description": ""
+    "options_export_raw": {
+        "message": "Export Raw Settings"
     },
-    "options_footnote_3": {
-        "message": "Quando il periodo di sospensione per una scheda è finito oppure una nuova scheda viene aggiunta, tutte le schede del browser saranno sospese. Questa opzione forza l'estensione a limitare questi controlli. Il valore minimo accettato è 1 minuto. Il valore consigliato è 10 minuti.",
-        "description": ""
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
     },
-    "options_footnote_4": {
-        "message": "Per usare un tempo peronslizzato per una regola, aggiungi @{number}{unit}  alla fine (es.google.com@3d eliminerà l'URL di google.com dopo 3 giorni). Le unità valide sono (h)ours-ore, (d)ays-giorni, (w)weeks-settimane, e (mo)nths-mesi.",
-        "description": ""
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "Reset alle impostazioni di fabbrica",
@@ -251,16 +289,40 @@
         "message": "Salva le opzioni",
         "description": ""
     },
+    "options_save_msg": {
+        "message": "Opzioni salvate",
+        "description": ""
+    },
     "options_support": {
         "message": "Supporta gli sviluppatori",
         "description": ""
     },
-    "options_check_delay": {
-        "message": "Intervallo minimo tra due controlli consecutivi di sospensione (in secondi)",
-        "description": ""
-    },
     "options_favicon_delay": {
         "message": "Ritardo per il ridisegno dell'icona di sospensione (in millisecondi)",
+        "description": ""
+    },
+    "options_read_more": {
+        "message": "(Leggi di più qui)",
+        "description": ""
+    },
+    "options_save_notice": {
+        "message": "Assicurati di fare clic sul pulsante \"Salva le opzioni\" in fondo a questa pagina dopo aver terminato le modifiche.",
+        "description": ""
+    },
+    "options_rate_desc": {
+        "message": "Se desideri valutare l'estensione, fai clic su",
+        "description": ""
+    },
+    "options_rate_btn": {
+        "message": "Valuta",
+        "description": ""
+    },
+    "options_managed_1": {
+        "message": "Questa estensione ha la capacità di utilizzare lo storage gestito, consentendo agli amministratori di dominio di preconfigurare le preferenze.",
+        "description": ""
+    },
+    "options_managed_2": {
+        "message": "Leggi di più qui.",
         "description": ""
     },
     "popup_discard_tab": {
@@ -295,12 +357,24 @@
         "message": "Scheda a sinistra",
         "description": ""
     },
+    "popup_move_previous_title": {
+        "message": "Vai alla scheda attiva precedente",
+        "description": ""
+    },
     "popup_close": {
         "message": "Chiudi scheda",
         "description": ""
     },
+    "popup_close_title": {
+        "message": "Chiudi la scheda corrente e passa alla scheda attiva precedente",
+        "description": ""
+    },
     "popup_move_next": {
         "message": "Scheda a destra",
+        "description": ""
+    },
+    "popup_move_next_title": {
+        "message": "Vai alla scheda attiva successiva",
         "description": ""
     },
     "popup_whitelist_desc": {
@@ -335,12 +409,40 @@
         "message": "Usa il tasto Shift per ignorare le eccezioni",
         "description": ""
     },
+    "popup_tmp_disable": {
+        "message": "Disabilita globalmente la sospensione automatica per",
+        "description": ""
+    },
+    "popup_tmp_0": {
+        "message": "Disattivato",
+        "description": ""
+    },
+    "popup_tmp_1": {
+        "message": "1 ora",
+        "description": ""
+    },
+    "popup_tmp_6": {
+        "message": "6 ore",
+        "description": ""
+    },
+    "popup_tmp_12": {
+        "message": "12 ore",
+        "description": ""
+    },
+    "popup_tmp_24": {
+        "message": "1 giorno",
+        "description": ""
+    },
     "bg_no_active_tab": {
         "message": "Non è presente nessuna scheda attiva",
         "description": ""
     },
     "bg_msg_1": {
         "message": "L'auto-sospensione è disabilitata per questa scheda",
+        "description": ""
+    },
+    "bg_msg_2": {
+        "message": "La sospensione automatica è disabilitata per ora",
         "description": ""
     },
     "menu_discard_tab": {
@@ -375,6 +477,10 @@
         "message": "Sospendi le schede nelle altre finestre",
         "description": ""
     },
+    "menu_extra": {
+        "message": "Mantieni le schede",
+        "description": ""
+    },
     "menu_whitelist_domain": {
         "message": "Mantieni sempre le schede per questo sito",
         "description": ""
@@ -399,8 +505,16 @@
         "message": "è aggiunta alla whitelist permanente",
         "description": ""
     },
+    "menu_msg5": {
+        "message": "è rimossa dalla whitelist permanente",
+        "description": ""
+    },
     "menu_msg4": {
         "message": "è aggiunta alla whitelist di sessione",
+        "description": ""
+    },
+    "menu_msg6": {
+        "message": "è rimossa dalla whitelist di sessione",
         "description": ""
     },
     "menu_msg2": {
@@ -421,6 +535,14 @@
     },
     "cmd_discard_tabs": {
         "message": "Sospendi tutte le altre schede",
+        "description": ""
+    },
+    "cmd_discard_rights": {
+        "message": "Sospendi le schede a destra",
+        "description": ""
+    },
+    "cmd_discard_lefts": {
+        "message": "Sospendi le schede a sinistra",
         "description": ""
     },
     "cmd_discard_window": {
@@ -450,5 +572,233 @@
     "blank_msg": {
         "message": "Tutte le schede per questa finsetra verranno sospese! Clicca per chiudere questa scheda.",
         "description": ""
+    },
+    "blank_header": {
+        "message": "(Finestra sospesa)",
+        "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Annulla"
+  },
+  "popup_retry": {
+    "message": "Riprova"
+  },
+  "popup_progress": {
+    "message": "$COMPLETED$ schede completate su $TOTAL$",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ riuscite, $SKIPPED$ ignorate, $FAILED$ non riuscite.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Annullamento sicuro…"
+  },
+  "popup_status_cancelled": {
+    "message": "Annullato."
+  },
+  "popup_status_complete": {
+    "message": "Completato."
+  },
+  "popup_status_partial": {
+    "message": "Completato con alcune schede non elaborate."
+  },
+  "popup_status_failed": {
+    "message": "Impossibile completare l’azione."
+  },
+  "popup_status_interrupted": {
+    "message": "Il browser ha interrotto l’azione precedente."
+  },
+  "popup_error_busy": {
+    "message": "In questa finestra è già in corso un’altra azione sulle schede."
+  },
+  "popup_error_command_failed": {
+    "message": "L’azione sulle schede non è riuscita."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Non è disponibile alcuna scheda attiva."
+  },
+  "popup_error_target_changed": {
+    "message": "La scheda selezionata è cambiata prima dell’esecuzione dell’azione."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ scheda/e sono state scartate in modo nativo dall’estensione, ma Edge non ha potuto aggiungere l’indicatore al titolo o alla favicon perché il renderer era già bloccato.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ scheda/e sono rimaste caricate perché non era disponibile una scheda sicura da mantenere attiva. Apri o seleziona un'altra scheda, quindi riprova.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ scheda/e sono rimaste bloccate dopo il ricaricamento di rilascio. Edge non consentiva il risveglio senza attivazione, quindi non è stato tentato un secondo ricaricamento. Riprova.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostra diagnostica"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Nascondi diagnostica"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnostica dell’azione"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Evento"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Risultati raggruppati"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registro diagnostico ripulito"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copia registro"
+  },
+  "popup_diagnostics_download": {
+    "message": "Scarica latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Cancella diagnostica"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registro diagnostico copiato."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Impossibile copiare il registro diagnostico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Download del registro diagnostico avviato."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Impossibile scaricare il registro diagnostico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostica cancellata."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Impossibile cancellare la diagnostica."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Nessuna diagnostica ripulita disponibile."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "riuscite"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "ignorate"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "non riuscite"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Risultato classificato"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostica"
+  },
+  "options_diagnostics_privacy": {
+    "message": "I registri ripuliti escludono URL, titoli, ID di schede e finestre, regole dei siti e attività delle finestre private."
+  },
+  "options_diagnostics_download": {
+    "message": "Scarica latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Cancella diagnostica"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostica cancellata."
+  },
+  "options_frame_access_title": {
+    "message": "Protezione delle pagine con frame"
+  },
+  "options_frame_access_description": {
+    "message": "Facoltativo: consenti ad Auto Tab Discard di enumerare gli identificatori dei frame per controllare ogni frame entro un limite di lavoro rigoroso. Il browser può descrivere questa autorizzazione come «Leggere la cronologia di navigazione». L’estensione non memorizza né registra gli URL dei frame. Senza questa autorizzazione vengono comunque controllati i frame della stessa origine entro il limite; gli alberi inaccessibili o troppo grandi restano protetti."
+  },
+  "options_frame_access_enable": {
+    "message": "Attiva la protezione completa dei frame"
+  },
+  "options_frame_access_disable": {
+    "message": "Disattiva l’accesso facoltativo ai frame"
+  },
+  "options_frame_access_enabled": {
+    "message": "La protezione completa delle pagine con frame è attiva."
+  },
+  "options_frame_access_limited": {
+    "message": "L’accesso facoltativo ai frame è disattivato. I frame della stessa origine entro il limite vengono controllati; i rami sconosciuti restano protetti."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Questo browser non può gestire l’accesso facoltativo ai frame. I rami sconosciuti restano protetti."
+  },
+  "options_diagnostics_empty": {
+    "message": "Nessuna diagnostica ripulita disponibile."
+  }
 }

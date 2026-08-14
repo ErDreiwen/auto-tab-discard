@@ -55,6 +55,10 @@
         "message": "Szimbólum megjelenítése az alvó lapokon (pl. 💤 vagy ⏻︎) (ha lehetséges)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Összes nem rögzített lap altatása a böngésző vagy bővítmény elindulásakor",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Ne altassa a rögzített lapokat",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Ne altassa a lapot, ha a nézet szétválasztott, és a szétválasztás bármelyik lapja fókuszban van",
         "description": ""
     },
     "options_form": {
@@ -235,6 +243,36 @@
         "message": "GyIK megnyitása frissítések után",
         "description": ""
     },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
+    },
     "options_reset": {
         "message": "Gyári visszaállítás",
         "description": ""
@@ -356,7 +394,7 @@
         "description": ""
     },
     "popup_allowed": {
-        "message": "Keep Selected Tabs for This Session",
+        "message": "Kijelölt lapok megtartása ehhez a munkamenethez",
         "description": ""
     },
     "popup_open_options": {
@@ -500,11 +538,11 @@
         "description": ""
     },
     "cmd_discard_rights": {
-        "message": "Discard Tabs to the Right",
+        "message": "Jobbra lévő lapok altatása",
         "description": ""
     },
     "cmd_discard_lefts": {
-        "message": "Discard Tabs to the Left",
+        "message": "Balra lévő lapok altatása",
         "description": ""
     },
     "cmd_discard_window": {
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Altatott ablak)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Mégse"
+  },
+  "popup_retry": {
+    "message": "Újra"
+  },
+  "popup_progress": {
+    "message": "$TOTAL$ lapból $COMPLETED$ kész",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ sikeres, $SKIPPED$ kihagyva, $FAILED$ sikertelen.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Biztonságos megszakítás…"
+  },
+  "popup_status_cancelled": {
+    "message": "Megszakítva."
+  },
+  "popup_status_complete": {
+    "message": "Kész."
+  },
+  "popup_status_partial": {
+    "message": "Kész, néhány lap nem fejeződött be."
+  },
+  "popup_status_failed": {
+    "message": "A műveletet nem sikerült befejezni."
+  },
+  "popup_status_interrupted": {
+    "message": "A böngésző megszakította az előző műveletet."
+  },
+  "popup_error_busy": {
+    "message": "Ebben az ablakban már fut egy másik lapművelet."
+  },
+  "popup_error_command_failed": {
+    "message": "A lapművelet sikertelen."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Nincs elérhető aktív lap."
+  },
+  "popup_error_target_changed": {
+    "message": "A kijelölt lap megváltozott a művelet végrehajtása előtt."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ lapot a bővítmény natív módon eldobott, de az Edge nem tudta jelezni ezt a címben vagy a faviconon, mert a megjelenítő már be volt fagyva.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ lap betöltve maradt, mert nem állt rendelkezésre biztonságosan aktívan tartható másik lap. Nyisson meg vagy válasszon ki egy másik lapot, majd próbálja újra.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ lap befagyva maradt a feloldó újratöltés után. Az Edge nem biztosított aktiválás nélküli ébresztést, ezért nem történt második újratöltés. Próbálja újra.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Diagnosztika megjelenítése"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Diagnosztika elrejtése"
+  },
+  "popup_diagnostics_region": {
+    "message": "Művelet diagnosztikája"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Esemény"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Csoportosított eredmények"
+  },
+  "popup_diagnostics_log": {
+    "message": "Tisztított diagnosztikai napló"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Napló másolása"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log letöltése"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Diagnosztika törlése"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnosztikai napló másolva."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "A diagnosztikai napló nem másolható."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "A diagnosztikai napló letöltése elindult."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "A diagnosztikai napló nem tölthető le."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnosztika törölve."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "A diagnosztika nem törölhető."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Nincs elérhető tisztított diagnosztika."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "sikeres"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "kihagyva"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "sikertelen"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Besorolt eredmény"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnosztika"
+  },
+  "options_diagnostics_privacy": {
+    "message": "A tisztított naplók nem tartalmaznak URL-eket, címeket, lap- és ablakazonosítókat, webhelyszabályokat vagy privát ablakok tevékenységét."
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log letöltése"
+  },
+  "options_diagnostics_clear": {
+    "message": "Diagnosztika törlése"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnosztika törölve."
+  },
+  "options_frame_access_title": {
+    "message": "Kereteket tartalmazó oldalak védelme"
+  },
+  "options_frame_access_description": {
+    "message": "Opcionális: engedélyezze az Auto Tab Discard számára a keretazonosítók felsorolását, hogy szigorú munkakorláton belül minden keretet ellenőrizhessen. A böngésző ezt az engedélyt „A böngészési előzmények olvasása” szöveggel írhatja le. A bővítmény nem tárolja és nem naplózza a keretek URL-címeit. Enélkül a korláton belüli, azonos eredetű keretek továbbra is ellenőrzésre kerülnek; az elérhetetlen vagy túl nagy keretfák védettek maradnak."
+  },
+  "options_frame_access_enable": {
+    "message": "Teljes keretvédelem engedélyezése"
+  },
+  "options_frame_access_disable": {
+    "message": "Opcionális kerethozzáférés letiltása"
+  },
+  "options_frame_access_enabled": {
+    "message": "A kereteket tartalmazó oldalak teljes védelme engedélyezve van."
+  },
+  "options_frame_access_limited": {
+    "message": "Az opcionális kerethozzáférés ki van kapcsolva. A korláton belüli, azonos eredetű kereteket ellenőrizzük; az ismeretlen ágak védettek maradnak."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Ez a böngésző nem tudja kezelni az opcionális kerethozzáférést. Az ismeretlen keretágak védettek maradnak."
+  },
+  "options_diagnostics_empty": {
+    "message": "Nincs elérhető tisztított diagnosztika."
+  }
 }

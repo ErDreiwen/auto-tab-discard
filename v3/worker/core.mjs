@@ -1,38 +1,20 @@
-import {log, query} from './core/utils.mjs';
+import {log} from './core/utils.mjs';
 import {prefs, storage} from './core/prefs.mjs';
 import {starters} from './core/startup.mjs';
+import {actionPopup} from './core/action.mjs';
+import {respondAsync} from './core/respond.mjs';
+import {resetExtensionState} from './core/reset.mjs';
+import {releaseTab} from './core/release.mjs';
 import {discard} from './core/discard.mjs';
-import {navigate} from './core/navigate.mjs';
-import './modes/number.mjs';
+import {ownership} from './core/ownership.mjs';
+import {createLifecycleNavigation} from './core/lifecycle.mjs';
+import {installExternalDiscardApi} from './core/external-api.mjs';
+import {number} from './modes/number.mjs';
 import './menu.mjs';
-import '../firefox.mjs';
 
-/*
-  remote access
-
-  request = {
-    method: 'discard',
-    query, {}, // query to find tabs with chrome.tabs
-    forced: false // whether or not to filter pages
-  }
-*/
-
-chrome.runtime.onMessageExternal.addListener((request, sender, resposne) => {
-  if (request.method === 'discard') {
-    log('onMessageExternal request received', request);
-
-    query(request.query).then((tbs = []) => {
-      if (request.forced !== true) {
-        tbs = tbs.filter(({url = '', discarded, active}) => (url.startsWith('http') ||
-          url.startsWith('ftp')) && !discarded && !active);
-      }
-      tbs.forEach(discard);
-
-      resposne(tbs.map(t => t.id));
-    });
-    return true;
-  }
-});
+// External extension control is opt-in, ID-allowlisted, schema-bound, and uses
+// the same ownership/protection pipeline as the popup and context-menu rows.
+installExternalDiscardApi();
 
 chrome.runtime.onMessage.addListener((request, sender, resposne) => {
   log('onMessage request received', request);
@@ -40,9 +22,14 @@ chrome.runtime.onMessage.addListener((request, sender, resposne) => {
   if (method === 'discard.on.load') { // for links after initial load
     discard(sender.tab);
   }
-  // navigation
-  else if (method.startsWith('move-') || method === 'close') {
-    navigate(method);
+  else if (method === 'reset') {
+    return respondAsync(() => resetExtensionState(
+      ownership,
+      chrome.storage.local,
+      discard.cancelTakeovers,
+      releaseTab,
+      discard.beginReset
+    ), resposne);
   }
   else if (method === 'storage') {
     Promise.all([
@@ -56,10 +43,22 @@ chrome.runtime.onMessage.addListener((request, sender, resposne) => {
 
 // left-click action
 const popup = () => chrome.action.setPopup({
-  popup: prefs.click === 'click.popup' ? 'data/popup/index.html' : ''
+  popup: actionPopup(prefs.click)
 });
 starters.push(() => popup());
 storage.on('click', () => popup());
+
+// Reconcile persisted markers and finish only a takeover this worker had
+// already woken. Existing external discards are left asleep until an explicit
+// scoped command targets them, avoiding a reload sweep on every MV3 restart.
+starters.push(async () => {
+  await ownership.start();
+  await discard.recoverInterruptedPulse();
+  await discard.recoverOrdinaryDiscards({
+    revalidate: tabs => number.revalidateOrdinaryIntents(tabs)
+  });
+  return discard.recoverTakeovers();
+});
 
 // idle timeout
 starters.push(() => {
@@ -74,30 +73,25 @@ starters.push(() => chrome.action.setBadgeBackgroundColor({
   color: '#666'
 }));
 
-/* FAQs & Feedback */
-{
-  const {management, runtime: {onInstalled, setUninstallURL, getManifest}, tabs} = chrome;
-  if (navigator.webdriver !== true) {
-    const page = getManifest().homepage_url;
-    const {name, version} = getManifest();
-    onInstalled.addListener(({reason, previousVersion}) => {
-      management.getSelf(({installType}) => installType === 'normal' && storage({
-        'faqs': true,
-        'last-update': 0
-      }).then(prefs => {
-        if (reason === 'install' || (prefs.faqs && reason === 'update')) {
-          const doUpdate = (Date.now() - prefs['last-update']) / 1000 / 60 / 60 / 24 > 45;
-          if (doUpdate && previousVersion !== version) {
-            tabs.query({active: true, currentWindow: true}, tbs => tabs.create({
-              url: page + '?version=' + version + (previousVersion ? '&p=' + previousVersion : '') + '&type=' + reason,
-              active: reason === 'install',
-              ...(tbs && tbs.length && {index: tbs[0].index + 1})
-            }));
-            chrome.storage.local.set({'last-update': Date.now()});
-          }
-        }
-      }));
-    });
-    setUninstallURL(page + '?rd=feedback&name=' + encodeURIComponent(name) + '&version=' + version);
-  }
+/* Optional release notes and feedback. Disabled by default in this fork. */
+if (navigator.webdriver !== true) {
+  const getSelf = () => new Promise((resolve, reject) => chrome.management.getSelf(info => {
+    const error = chrome.runtime.lastError;
+    error ? reject(Error(error.message || String(error))) : resolve(info);
+  }));
+  const lifecycle = createLifecycleNavigation({
+    getPreferences: defaults => storage(defaults),
+    getSelf,
+    runtime: chrome.runtime,
+    tabs: chrome.tabs
+  });
+  chrome.runtime.onInstalled.addListener(details => lifecycle.installed(details).then(result => {
+    if (result.opened) {
+      chrome.storage.local.set({'last-update': Date.now()});
+    }
+  }).catch(error => log('lifecycle navigation failed', error)));
+  starters.push(() => lifecycle.configureUninstall().catch(error =>
+    log('lifecycle uninstall preference failed', error)));
+  storage.on('lifecycle-feedback', () => lifecycle.configureUninstall().catch(error =>
+    log('lifecycle uninstall preference failed', error)));
 }

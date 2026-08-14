@@ -55,6 +55,10 @@
         "message": "Lägg till en symbol i början på slängda flikar (t.ex. 💤 eller ⏻︎) (om det är möjligt)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Släng alla icke-fästa flikar vid uppstart av webbläsaren eller tillägget",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Släng inte en flik när den har fästs",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Släng inte en flik om den är i en delad vy och någon av flikarna i delningen är fokuserad",
         "description": ""
     },
     "options_form": {
@@ -235,6 +243,36 @@
         "message": "Öppna sidan med frågor och svar vid uppdateringar",
         "description": ""
     },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
+    },
     "options_reset": {
         "message": "Fabriksåterställning",
         "description": ""
@@ -244,7 +282,7 @@
         "description": ""
     },
     "options_export": {
-        "message": "Importera inställningar",
+        "message": "Exportera inställningar",
         "description": ""
     },
     "options_save": {
@@ -356,7 +394,7 @@
         "description": ""
     },
     "popup_allowed": {
-        "message": "Keep Selected Tabs for This Session",
+        "message": "Behåll valda flikar för denna session",
         "description": ""
     },
     "popup_open_options": {
@@ -500,11 +538,11 @@
         "description": ""
     },
     "cmd_discard_rights": {
-        "message": "Discard Tabs to the Right",
+        "message": "Släng flikar till höger",
         "description": ""
     },
     "cmd_discard_lefts": {
-        "message": "Discard Tabs to the Left",
+        "message": "Släng flikar till vänster",
         "description": ""
     },
     "cmd_discard_window": {
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Slängt fönster)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Avbryt"
+  },
+  "popup_retry": {
+    "message": "Försök igen"
+  },
+  "popup_progress": {
+    "message": "$COMPLETED$ av $TOTAL$ flikar slutförda",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ lyckades, $SKIPPED$ hoppades över, $FAILED$ misslyckades.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Avbryter säkert…"
+  },
+  "popup_status_cancelled": {
+    "message": "Avbrutet."
+  },
+  "popup_status_complete": {
+    "message": "Klart."
+  },
+  "popup_status_partial": {
+    "message": "Klart med några flikar ej slutförda."
+  },
+  "popup_status_failed": {
+    "message": "Åtgärden kunde inte slutföras."
+  },
+  "popup_status_interrupted": {
+    "message": "Webbläsaren avbröt föregående åtgärd."
+  },
+  "popup_error_busy": {
+    "message": "En annan flikåtgärd körs redan i det här fönstret."
+  },
+  "popup_error_command_failed": {
+    "message": "Flikåtgärden misslyckades."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Ingen aktiv flik är tillgänglig."
+  },
+  "popup_error_target_changed": {
+    "message": "Den valda fliken ändrades innan åtgärden kunde köras."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ flik(ar) laddades ur direkt av tillägget, men Edge kunde inte märka titel eller favicon eftersom renderaren redan var fryst.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ flik(ar) förblev inlästa eftersom ingen säker flik kunde hållas aktiv. Öppna eller välj en annan flik och försök igen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ flik(ar) förblev frysta efter frigöringsomladdningen. Edge kunde inte väcka dem utan aktivering, så ingen andra omladdning gjordes. Försök igen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Visa diagnostik"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Dölj diagnostik"
+  },
+  "popup_diagnostics_region": {
+    "message": "Åtgärdsdiagnostik"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incident"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Grupperade resultat"
+  },
+  "popup_diagnostics_log": {
+    "message": "Rensad diagnostiklogg"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Kopiera logg"
+  },
+  "popup_diagnostics_download": {
+    "message": "Hämta latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Rensa diagnostik"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnostikloggen kopierades."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Diagnostikloggen kunde inte kopieras."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Hämtningen av diagnostikloggen startade."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Diagnostikloggen kunde inte hämtas."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostiken rensades."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Diagnostiken kunde inte rensas."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Ingen rensad diagnostik är tillgänglig."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "lyckades"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "hoppades över"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "misslyckades"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Klassificerat resultat"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostik"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Rensade loggar utesluter webbadresser, titlar, flik- och fönster-ID:n, webbplatsregler och aktivitet i privata fönster."
+  },
+  "options_diagnostics_download": {
+    "message": "Hämta latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Rensa diagnostik"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostiken rensades."
+  },
+  "options_frame_access_title": {
+    "message": "Skydd för sidor med ramar"
+  },
+  "options_frame_access_description": {
+    "message": "Valfritt: låt Auto Tab Discard räkna upp ramidentifierare så att varje ram kan kontrolleras inom en strikt arbetsgräns. Webbläsaren kan beskriva behörigheten som ”Läs din webbhistorik”. Tillägget lagrar eller loggar inte ramadresser. Utan behörigheten kontrolleras fortfarande begränsade ramar med samma ursprung; otillgängliga eller för stora ramträd förblir skyddade."
+  },
+  "options_frame_access_enable": {
+    "message": "Aktivera fullständigt ramskydd"
+  },
+  "options_frame_access_disable": {
+    "message": "Inaktivera valfri ramåtkomst"
+  },
+  "options_frame_access_enabled": {
+    "message": "Fullständigt skydd för sidor med ramar är aktiverat."
+  },
+  "options_frame_access_limited": {
+    "message": "Valfri ramåtkomst är avstängd. Begränsade ramar med samma ursprung kontrolleras; okända grenar förblir skyddade."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Den här webbläsaren kan inte hantera valfri ramåtkomst. Okända ramgrenar förblir skyddade."
+  },
+  "options_diagnostics_empty": {
+    "message": "Ingen rensad diagnostik är tillgänglig."
+  }
 }

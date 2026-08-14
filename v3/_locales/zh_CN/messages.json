@@ -55,6 +55,10 @@
         "message": "为已休眠标签页预先准备一个符号标志（比如 💤 或 ⏻︎）（如果可行）",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "在浏览器或扩展启动时休眠所有非固定标签页",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "不休眠已固定的标签页",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "不休眠处于分屏视图且该分屏中任一分页处于聚焦状态的标签页",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "扩展更新后打开 FAQ 页面",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "恢复出厂",
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "（已休眠窗口）",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "取消"
+  },
+  "popup_retry": {
+    "message": "重试"
+  },
+  "popup_progress": {
+    "message": "已完成 $COMPLETED$/$TOTAL$ 个标签页",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ 个成功，$SKIPPED$ 个已跳过，$FAILED$ 个失败。",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "正在安全取消…"
+  },
+  "popup_status_cancelled": {
+    "message": "已取消。"
+  },
+  "popup_status_complete": {
+    "message": "已完成。"
+  },
+  "popup_status_partial": {
+    "message": "已完成，但部分标签页未处理。"
+  },
+  "popup_status_failed": {
+    "message": "无法完成此操作。"
+  },
+  "popup_status_interrupted": {
+    "message": "浏览器中断了上一次操作。"
+  },
+  "popup_error_busy": {
+    "message": "此窗口中已有其他标签页操作正在运行。"
+  },
+  "popup_error_command_failed": {
+    "message": "标签页操作失败。"
+  },
+  "popup_error_no_active_tab": {
+    "message": "没有可用的活动标签页。"
+  },
+  "popup_error_target_changed": {
+    "message": "操作运行前，所选标签页已更改。"
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ 个标签页已转换为由扩展管理的原生丢弃状态，但由于渲染器已冻结，Edge 无法添加标题或网站图标标记。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ 个标签页保持已加载，因为没有可安全保持活动状态的其他标签页。请打开或选择另一个标签页，然后重试。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ 个标签页在释放重新加载后仍处于冻结状态。Edge 无法在不激活标签页的情况下唤醒它们，因此未尝试第二次重新加载。请重试。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "显示诊断信息"
+  },
+  "popup_diagnostics_hide": {
+    "message": "隐藏诊断信息"
+  },
+  "popup_diagnostics_region": {
+    "message": "操作诊断"
+  },
+  "popup_diagnostics_incident": {
+    "message": "事件"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "分组结果"
+  },
+  "popup_diagnostics_log": {
+    "message": "已清理的诊断日志"
+  },
+  "popup_diagnostics_copy": {
+    "message": "复制日志"
+  },
+  "popup_diagnostics_download": {
+    "message": "下载 latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "清除诊断信息"
+  },
+  "popup_diagnostics_copied": {
+    "message": "已复制诊断日志。"
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "无法复制诊断日志。"
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "诊断日志下载已开始。"
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "无法下载诊断日志。"
+  },
+  "popup_diagnostics_cleared": {
+    "message": "已清除诊断信息。"
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "无法清除诊断信息。"
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "没有可用的已清理诊断信息。"
+  },
+  "popup_diagnostics_status_success": {
+    "message": "成功"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "已跳过"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "失败"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "已分类的结果"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "诊断"
+  },
+  "options_diagnostics_privacy": {
+    "message": "已清理的日志不包含 URL、标题、标签页和窗口 ID、网站规则以及隐私窗口活动。"
+  },
+  "options_diagnostics_download": {
+    "message": "下载 latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "清除诊断信息"
+  },
+  "options_diagnostics_cleared": {
+    "message": "已清除诊断信息。"
+  },
+  "options_frame_access_title": {
+    "message": "框架页面保护"
+  },
+  "options_frame_access_description": {
+    "message": "可选：允许 Auto Tab Discard 枚举框架标识符，以便在严格的工作上限内检查每个框架。浏览器可能将此权限描述为“读取您的浏览记录”。扩展程序不会存储或记录框架 URL。未授予权限时，仍会检查上限内的同源框架；无法访问或过大的框架树会保持受保护状态。"
+  },
+  "options_frame_access_enable": {
+    "message": "启用完整框架保护"
+  },
+  "options_frame_access_disable": {
+    "message": "停用可选框架访问权限"
+  },
+  "options_frame_access_enabled": {
+    "message": "已启用框架页面的完整保护。"
+  },
+  "options_frame_access_limited": {
+    "message": "可选框架访问权限已关闭。会检查上限内的同源框架；未知分支会保持受保护状态。"
+  },
+  "options_frame_access_unavailable": {
+    "message": "此浏览器无法管理可选框架访问权限。未知框架分支会保持受保护状态。"
+  },
+  "options_diagnostics_empty": {
+    "message": "没有可用的已清理诊断信息。"
+  }
 }

@@ -17,6 +17,10 @@
       "title": "pinned = true => do not discard if tab is pinned",
       "type": "boolean"
     },
+    "split-view": {
+      "title": "split-view = true => do not discard split tabs if either tab of the split is focused",
+      "type": "boolean"
+    },
     "form": {
       "title": "form = true => do not discard if form data is changed",
       "type": "boolean"
@@ -54,8 +58,8 @@
       "type": "string"
     },
     "click": {
-      "title": "Use \"click.popup\" to show browser action's popup menu",
-      "type": "boolean"
+      "title": "Toolbar left-click action (use \"click.popup\" to show the popup menu)",
+      "type": "string"
     },
     "faqs": {
       "title": "Open FAQs page on updates",
@@ -68,6 +72,17 @@
     "favicon": {
       "title": "Change favicon of discarded tabs (if possible)",
       "type": "boolean"
+    },
+    "discard-protected-on-close": {
+      "title": "Discard pinned or grouped tabs instead of closing them",
+      "type": "boolean"
+    },
+    "external.trusted-ids": {
+      "title": "Extension IDs permitted to request bounded safe tab discards",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "go-hidden": {
       "title": "Discard a tab if it is hidden",
@@ -101,8 +116,44 @@
       "title": "Delay for painting the discarded favicon (in milliseconds)",
       "type": "number"
     },
+    "./plugins/blank/core.js": {
+      "title": "Enable the blank-page plug-in",
+      "type": "boolean"
+    },
+    "./plugins/focus/core.js": {
+      "title": "Enable the focus plug-in",
+      "type": "boolean"
+    },
+    "./plugins/trash/core.js": {
+      "title": "Enable the discarded-tab trash plug-in",
+      "type": "boolean"
+    },
+    "./plugins/force/core.js": {
+      "title": "Enable the forced-discard plug-in",
+      "type": "boolean"
+    },
+    "./plugins/next/core.js": {
+      "title": "Enable the release-next-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/previous/core.js": {
+      "title": "Enable the release-previous-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/new/core.js": {
+      "title": "Enable the new-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/unloaded/core.js": {
+      "title": "Enable the unloaded-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/youtube/core.js": {
+      "title": "Enable the YouTube plug-in",
+      "type": "boolean"
+    },
     "trash.enabled": {
-      "title": "Trash old discarded tabs",
+      "title": "Legacy policy alias for the discarded-tab trash plug-in",
       "type": "boolean"
     },
     "trash.period": {
@@ -122,7 +173,7 @@
       "type": "boolean"
     },
     "release-next-tab": {
-      "title": "Release discarding of the next tab if it is discarded",
+      "title": "Legacy policy alias for the release-next-tab plug-in",
       "type": "boolean"
     }
   }

@@ -1,0 +1,36 @@
+{
+  "id": "ownership-legacy",
+  "storageKey": "__discardOwnership",
+  "cases": [
+    {
+      "id": "self-owned-without-visual",
+      "tab": {"id": 101, "active": false, "discarded": true},
+      "marker": {"state": "owned", "source": "self", "attemptId": "legacy-self", "updatedAt": 1},
+      "expected": {"state": "owned", "source": "self", "attemptId": "legacy-self"}
+    },
+    {
+      "id": "claimed-owned",
+      "tab": {"id": 102, "active": false, "discarded": true},
+      "marker": {"state": "owned", "source": "claimed", "attemptId": null, "updatedAt": 1},
+      "expected": {"state": "owned", "source": "claimed", "attemptId": null}
+    },
+    {
+      "id": "stale-pending",
+      "tab": {"id": 103, "active": false, "discarded": true},
+      "marker": {"state": "pending", "attemptId": "lost-worker", "updatedAt": 1},
+      "expected": {"state": "owned", "source": "claimed", "attemptId": "lost-worker"}
+    },
+    {
+      "id": "stale-takeover-waking",
+      "tab": {"id": 104, "active": false, "discarded": true},
+      "marker": {"state": "takeover-waking", "attemptId": "requested", "updatedAt": 1},
+      "expected": {"state": "takeover-queued", "source": "requested", "attemptId": "requested"}
+    },
+    {
+      "id": "loaded-marker-is-removed",
+      "tab": {"id": 105, "active": false, "discarded": false},
+      "marker": {"state": "owned", "source": "self", "attemptId": "obsolete", "updatedAt": 1},
+      "expected": null
+    }
+  ]
+}

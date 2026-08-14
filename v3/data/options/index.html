@@ -59,6 +59,10 @@
           <td><input type="text" id="prepends"></td>
         </tr>
         <tr>
+          <td><input type="checkbox" id="discard-protected-on-close"></td>
+          <td colspan="2"><label for="discard-protected-on-close" data-i18n="options_discard_protected_on_close"></label></td>
+        </tr>
+        <tr>
           <td><input type="checkbox" id="startup-unpinned"></td>
           <td colspan="2"><label for="startup-unpinned" data-i18n="options_startup_unpinned"></label></td>
         </tr>
@@ -108,6 +112,10 @@
         <tr>
           <td><input type="checkbox" id="pinned"></td>
           <td colspan="2"><label for="pinned" data-i18n="options_pinned"></label></td>
+        </tr>
+        <tr>
+          <td><input type="checkbox" id="split-view"></td>
+          <td colspan="2"><label for="split-view" data-i18n="options_split_view"></label></td>
         </tr>
         <tr>
           <td><input type="checkbox" id="form"></td>
@@ -192,10 +200,6 @@
         </tr>
       </thead>
       <tbody>
-        <tr class="disabled">
-          <td><input type="checkbox" id="./plugins/dummy/core.js"></td>
-          <td colspan="2"><label for="./plugins/dummy/core.js" data-i18n="options_plugin_dummy"></label></td>
-        </tr>
         <tr>
           <td><input type="checkbox" id="./plugins/blank/core.js"></td>
           <td colspan="2"><label for="./plugins/blank/core.js" data-i18n="options_plugin_blank"></label></td>
@@ -269,19 +273,44 @@
           <td><input type="checkbox" id="faqs"></td>
           <td colspan="2"><label for="faqs" data-i18n="options_faqs"></label></td>
         </tr>
+        <tr>
+          <td><input type="checkbox" id="lifecycle-feedback"></td>
+          <td colspan="2"><label for="lifecycle-feedback" data-i18n="options_lifecycle_feedback"></label></td>
+        </tr>
       </tbody>
     </table>
 
     <div id="rate">
-      <label data-i18n="options_rate_desc"></label>
-      <input type="button" value="Rate Me" data-i18n="options_rate_btn" data-i18n-value="value">
+      <label data-i18n="options_feedback_desc"></label>
+      <input type="button" value="Open GitHub issues" data-i18n="options_feedback_btn" data-i18n-value="value">
     </div>
+
+    <section id="frame-protection" aria-labelledby="frame-protection-title">
+      <h2 id="frame-protection-title" data-i18n="options_frame_access_title">Framed-page protection</h2>
+      <p id="frame-access-description" class="wnt backup-note" data-i18n="options_frame_access_description">Optional: let Auto Tab Discard enumerate frame identifiers so it can check every frame within a strict work limit. The browser may describe this permission as “Read your browsing history.” The extension does not store or log frame URLs. Without it, bounded same-origin frames are still checked; inaccessible or oversized frame trees stay protected.</p>
+      <p>
+        <input type="button" id="enable-frame-access" value="Enable full framed-page protection" data-i18n="options_frame_access_enable" data-i18n-value="value" aria-describedby="frame-access-description frame-access-info">
+        <input type="button" id="disable-frame-access" value="Disable optional frame access" data-i18n="options_frame_access_disable" data-i18n-value="value" aria-describedby="frame-access-description frame-access-info">
+        <span id="frame-access-info" role="status" aria-live="polite" aria-atomic="true"></span>
+      </p>
+    </section>
+
+    <section id="diagnostics" aria-labelledby="diagnostics-title">
+      <h2 id="diagnostics-title" data-i18n="options_diagnostics_title">Diagnostics</h2>
+      <p class="wnt backup-note" data-i18n="options_diagnostics_privacy">Diagnostic history stays on this device until you download it. The sanitized log excludes URLs, page titles, hostnames, site rules, tab and window identifiers, and raw error messages.</p>
+      <p>
+        <input type="button" id="download-diagnostics" value="Download latest.log" data-i18n="options_diagnostics_download" data-i18n-value="value">
+        <input type="button" id="clear-diagnostics" value="Clear diagnostic history" data-i18n="options_diagnostics_clear" data-i18n-value="value">
+        <span id="diagnostics-info" role="status" aria-live="polite"></span>
+      </p>
+    </section>
 
     <p>
       <div class="wnt">
         <span data-i18n="options_managed_1"></span>
         <a data-i18n="options_managed_2" target="_blank" data-href="faq10"></a>
       </div>
+      <div class="wnt backup-note" data-i18n="options_backup_notice"></div>
       <table width=100%>
         <colgroup>
           <col width="1"/>
@@ -293,13 +322,16 @@
           <td><input type="button" id="save" data-i18n="options_save" data-i18n-value="value"></td>
         </tr>
         <tr>
-          <td><input type="button" id="export" data-i18n="options_export" data-i18n-value="value"></td>
-          <td><input type="button" id="support"  data-i18n="options_support" data-i18n-value="value"></td>
+          <td><input type="button" id="export" data-i18n="options_export_raw" data-i18n-value="value"></td>
+          <td><input type="button" id="export-support" data-i18n="options_export_support" data-i18n-value="value"></td>
           <td><span id="info"></span></td>
+        </tr>
+        <tr>
+          <td><input type="button" id="support" data-i18n="options_support" data-i18n-value="value"></td>
         </tr>
       </table>
     </p>
 
-    <script src="index.js"></script>
+    <script type="module" src="index.js"></script>
   </body>
 </html>

@@ -55,6 +55,10 @@
         "message": "Añadir un símbolo a las pestañas descartadas (por ejemplo: 💤 o ⏻︎) (si es posible)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Descartar todas las pestañas no fijadas al abrir el navegador o extensión",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "No descartar una pestaña cuando esté fijada",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "No descartar una pestaña si está en una vista dividida y cualquiera de las pestañas de la división está enfocada",
         "description": ""
     },
     "options_form": {
@@ -235,6 +243,36 @@
         "message": "Abrir página de preguntas frecuentes en actualizaciones",
         "description": ""
     },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
+    },
     "options_reset": {
         "message": "Restablecer a valores predeterminados",
         "description": ""
@@ -356,7 +394,7 @@
         "description": ""
     },
     "popup_allowed": {
-        "message": "Keep Selected Tabs for This Session",
+        "message": "Conservar las pestañas seleccionadas para esta sesión",
         "description": ""
     },
     "popup_open_options": {
@@ -376,7 +414,7 @@
         "description": ""
     },
     "popup_tmp_0": {
-        "message": "Off",
+        "message": "Desactivado",
         "description": ""
     },
     "popup_tmp_1": {
@@ -500,11 +538,11 @@
         "description": ""
     },
     "cmd_discard_rights": {
-        "message": "Discard Tabs to the Right",
+        "message": "Descartar pestañas a la derecha",
         "description": ""
     },
     "cmd_discard_lefts": {
-        "message": "Discard Tabs to the Left",
+        "message": "Descartar pestañas a la izquierda",
         "description": ""
     },
     "cmd_discard_window": {
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Ventana descartada)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Cancelar"
+  },
+  "popup_retry": {
+    "message": "Reintentar"
+  },
+  "popup_progress": {
+    "message": "$COMPLETED$ de $TOTAL$ pestañas completadas",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ correctas, $SKIPPED$ omitidas y $FAILED$ fallidas.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Cancelando de forma segura…"
+  },
+  "popup_status_cancelled": {
+    "message": "Cancelado."
+  },
+  "popup_status_complete": {
+    "message": "Finalizado."
+  },
+  "popup_status_partial": {
+    "message": "Finalizado con algunas pestañas sin completar."
+  },
+  "popup_status_failed": {
+    "message": "No se pudo completar la acción."
+  },
+  "popup_status_interrupted": {
+    "message": "El navegador interrumpió la acción anterior."
+  },
+  "popup_error_busy": {
+    "message": "Ya hay otra acción de pestañas en curso en esta ventana."
+  },
+  "popup_error_command_failed": {
+    "message": "La acción de pestañas falló."
+  },
+  "popup_error_no_active_tab": {
+    "message": "No hay ninguna pestaña activa disponible."
+  },
+  "popup_error_target_changed": {
+    "message": "La pestaña seleccionada cambió antes de ejecutar la acción."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ pestaña(s) se descartaron de forma nativa bajo control de la extensión, pero Edge no pudo añadir el indicador al título o favicon porque el renderizador ya estaba congelado.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ pestaña(s) permanecieron cargadas porque no había una pestaña segura disponible para mantener activa. Abra o seleccione otra pestaña y vuelva a intentarlo.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ pestaña(s) siguieron congeladas tras recargar para liberarlas. Edge no permitió reactivarlas sin seleccionarlas, por lo que no se intentó otra recarga. Vuelva a intentarlo.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostrar diagnóstico"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Ocultar diagnóstico"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnóstico de la acción"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incidente"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Resultados agrupados"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registro de diagnóstico depurado"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copiar registro"
+  },
+  "popup_diagnostics_download": {
+    "message": "Descargar latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Borrar diagnóstico"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registro de diagnóstico copiado."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "No se pudo copiar el registro de diagnóstico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Se inició la descarga del registro de diagnóstico."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "No se pudo descargar el registro de diagnóstico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnóstico borrado."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "No se pudo borrar el diagnóstico."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "No hay ningún diagnóstico depurado disponible."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "correctas"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "omitidas"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "fallidas"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Resultado clasificado"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnóstico"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Los registros depurados excluyen URL, títulos, identificadores de pestañas y ventanas, reglas de sitios y actividad de ventanas privadas."
+  },
+  "options_diagnostics_download": {
+    "message": "Descargar latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Borrar diagnóstico"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnóstico borrado."
+  },
+  "options_frame_access_title": {
+    "message": "Protección de páginas con marcos"
+  },
+  "options_frame_access_description": {
+    "message": "Opcional: permite que Auto Tab Discard enumere identificadores de marcos para comprobar todos los marcos dentro de un límite de trabajo estricto. El navegador puede describir este permiso como «Leer tu historial de navegación». La extensión no guarda ni registra las URL de los marcos. Sin él, se siguen comprobando los marcos del mismo origen dentro del límite; los árboles inaccesibles o demasiado grandes permanecen protegidos."
+  },
+  "options_frame_access_enable": {
+    "message": "Activar la protección completa de marcos"
+  },
+  "options_frame_access_disable": {
+    "message": "Desactivar el acceso opcional a marcos"
+  },
+  "options_frame_access_enabled": {
+    "message": "La protección completa de páginas con marcos está activada."
+  },
+  "options_frame_access_limited": {
+    "message": "El acceso opcional a marcos está desactivado. Se comprueban los marcos acotados del mismo origen; las ramas desconocidas permanecen protegidas."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Este navegador no puede administrar el acceso opcional a marcos. Las ramas desconocidas permanecen protegidas."
+  },
+  "options_diagnostics_empty": {
+    "message": "No hay diagnósticos depurados disponibles."
+  }
 }

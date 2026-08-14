@@ -1,162 +1,2230 @@
 import {prefs, storage} from './prefs.mjs';
-import {log} from './utils.mjs';
+import {log, query} from './utils.mjs';
+import {withTimeout} from './promise.mjs';
+import {ownership} from './ownership.mjs';
+import {
+  createMarkerAttempt,
+  prepareDocumentMarker,
+  restoreDocumentMarker,
+  visualPreparation
+} from './marker.mjs';
+import {normalizeTitleMarker} from './marker-title.mjs';
+import {invokeNativeDiscard, isNativeDiscardSettled} from './native-discard-state.mjs';
+import {createTakeoverScheduler} from './takeover-scheduler.mjs';
+import {scriptingFailureDecision} from './browser-error.mjs';
+import {
+  FAILURE_CAUSES,
+  failureCauseFrom,
+  safeFailureCause
+} from './failure-causes.mjs';
+import {createPulseRecovery} from './pulse-recovery.mjs';
+import {createOrdinaryIntents} from './ordinary-intents.mjs';
+import {
+  isDiscardedTab,
+  isFrozenTab,
+  isLoadedTab,
+  isSuspendedTab,
+  suspensionState
+} from './browser-state.mjs';
 
 // this list keeps ids of the tabs that are in progress of being discarded
 const inprogress = new Set();
+const rendererOperations = new Set();
+const releaseOperations = new Map();
+const ordinaryOperations = new Set();
+let resetBarrier;
+const currentId = id => ownership.resolveId(id);
+const pulseRecovery = createPulseRecovery({
+  area: chrome.storage.session,
+  resolveId: currentId,
+  tabs: chrome.tabs
+});
+const ordinaryIntents = createOrdinaryIntents({area: chrome.storage.session});
+const discardOutcome = (status, tab, reason, details = {}) => Object.freeze({
+  ok: status === 'succeeded',
+  reason,
+  status,
+  tab,
+  ...details
+});
+const nativeProvenance = outcome => outcome && typeof outcome === 'object' ? {
+  accepted: outcome.accepted === true,
+  apiStyle: outcome.apiStyle,
+  contract: outcome.contract,
+  error: outcome.error,
+  family: outcome.family,
+  resultShape: outcome.resultShape
+} : undefined;
+const nativeFailureCause = (boundary, timeout, accepted) => boundary === timeout ?
+  FAILURE_CAUSES.NATIVE_TIMEOUT : accepted === true ?
+    FAILURE_CAUSES.NATIVE_POSTCONDITION_FAILED : FAILURE_CAUSES.NATIVE_REJECTED;
+const failureError = (message, failureCause) => Object.assign(Error(message), {
+  failureCause
+});
+const markerAttempt = createMarkerAttempt;
 
-const discard = tab => {
-  if (inprogress.has(tab.id)) {
-    return;
+const resetInProgress = () => Boolean(resetBarrier);
+const resetDiscardOutcome = tab => discardOutcome(
+  'skipped',
+  tab,
+  'extension reset is in progress'
+);
+
+const runOrdinaryDiscard = (
+  tab,
+  {intentId: resumedIntentId, recoveryScope} = {}
+) => {
+  const id = currentId(tab.id);
+  if (inprogress.has(id) || rendererOperations.has(id) ||
+      releaseOperations.has(id) || takeoverJob(id)) {
+    return Promise.resolve(discardOutcome('skipped', tab, 'discard is already in progress'));
   }
-
   // https://github.com/rNeomy/auto-tab-discard/issues/248
-  inprogress.add(tab.id);
-  setTimeout(() => inprogress.delete(tab.id), 2000);
+  inprogress.add(id);
+  const finishEarly = (status, current, reason) => {
+    inprogress.delete(tab.id);
+    inprogress.delete(currentId(tab.id));
+    return discardOutcome(status, current || tab, reason);
+  };
 
-  if (tab.active) {
-    log('tab is active', tab);
-    return;
-  }
-  if (tab.discarded) {
-    log('already discarded', tab);
-    return;
-  }
-  return storage(prefs).then(prefs => {
-    if (discard.count > prefs['simultaneous-jobs'] && discard.time + 5000 < Date.now()) {
-      discard.count = 0;
+  // Metadata scans deliberately release their renderer lease before all peer
+  // scans finish. Their tab snapshot can therefore lag a completed physical
+  // takeover. Reserve synchronously above, then refresh both the browser tab
+  // and its durable ownership before queueing preferences, intent, scripting,
+  // or native work. That reservation prevents a same-worker takeover from
+  // starting between this authoritative read and renderer preparation.
+  const blocked = ownership.hasBlockingNativeIntent(id).catch(() => true);
+  const fresh = withTimeout(getTab(id), discard.getTimeout, undefined);
+  const status = ownership.status(id).catch(() => undefined);
+  return Promise.all([blocked, fresh, status]).then(async ([isBlocked, current, ownershipState]) => {
+    if (resetInProgress()) {
+      return finishEarly('skipped', current, 'extension reset is in progress');
     }
-    if (discard.count > prefs['simultaneous-jobs']) {
+    if (isBlocked) {
+      return finishEarly('skipped', current, 'direct native discard is still settling');
+    }
+    if (!current) {
+      return finishEarly('failed', current, 'tab is no longer available for discard');
+    }
+    tab = current;
+    if (resumedIntentId) {
+      const expectedScope = recoveryScope && {
+        incognito: recoveryScope.incognito,
+        windowId: recoveryScope.windowId,
+        windowType: 'normal'
+      };
+      const recovered = await validateNativeBoundaryTab(current, expectedScope)
+        .catch(() => undefined);
+      if (!recovered || resetInProgress()) {
+        return finishEarly('skipped', current,
+          resetInProgress() ? 'extension reset is in progress' :
+            'restart recovery tab scope could not be verified');
+      }
+      tab = current = recovered;
+    }
+    if (current.active === true) {
+      log('tab is active', current);
+      return finishEarly('failed', current, 'active tabs cannot be discarded');
+    }
+    if (isSuspendedTab(current)) {
+      log('already suspended', current);
+      return finishEarly('skipped', current, 'tab is already suspended');
+    }
+    const physicalSelf = ownershipState?.marker?.state === 'owned' &&
+      ownershipState.marker.source === 'self' &&
+      ownershipState.marker.visual?.physicalOnly === true;
+    if (physicalSelf) {
+      return finishEarly('skipped', current, 'physical discard ownership is already settled');
+    }
+    let intentId = resumedIntentId;
+    if (!intentId) {
+      try {
+        intentId = await ordinaryIntents.enqueue(current);
+      }
+      catch (error) {
+        log('ordinary discard intent persistence failed', error);
+      }
+      if (typeof intentId !== 'string') {
+        return finishEarly('failed', current, 'ordinary discard intent could not be persisted');
+      }
+    }
+    if (resetInProgress()) {
+      return finishEarly('skipped', current, 'extension reset is in progress');
+    }
+    return storage(prefs).then(async prefs => {
+      if (resetInProgress()) {
+        return finishEarly('skipped', tab, 'extension reset is in progress');
+      }
+      if (await ownership.hasBlockingNativeIntent(id).catch(() => true)) {
+        inprogress.delete(tab.id);
+        inprogress.delete(currentId(tab.id));
+        return discardOutcome('skipped', tab, 'direct native discard is still settling');
+      }
+      return new Promise(resolve => {
+    const limit = Math.max(1, Number(prefs['simultaneous-jobs']) || 1);
+    if (discard.count >= limit) {
       log('discarding queue for', tab);
-      discard.tabs.push(tab);
+      discard.tabs.push({intentId, recoveryScope, tab, resolve});
       return;
     }
 
-    return new Promise(resolve => {
-      discard.count += 1;
-      discard.time = Date.now();
-      const next = () => {
-        discard.perform(tab);
-
-        discard.count -= 1;
-        if (discard.tabs.length) {
-          const tab = discard.tabs.shift();
-          inprogress.delete(tab.id);
-          discard(tab);
+    discard.count += 1;
+    let started = false;
+    let prepareTimer;
+    const marker = {
+      favicon: prefs.favicon === true,
+      faviconDelay: Math.max(0, Number(prefs['favicon-delay']) || 0),
+      prepends: normalizeTitleMarker(prefs.prepends)
+    };
+    const next = (prepared = visualPreparation(marker)) => {
+      if (started) {
+        return;
+      }
+      started = true;
+      clearTimeout(prepareTimer);
+      void (async () => {
+        if (resetInProgress()) {
+          await restoreLiveDocumentMarker(tab.id, prepared?.rollbackToken).catch(() => false);
+          return resetDiscardOutcome(tab);
         }
-        resolve();
-      };
-      // change title or favicon
-      if (prefs.prepends || prefs.favicon) {
-        const href = tab.favIconUrl || '';
-        Promise.race([
-          new Promise(resolve => setTimeout(resolve, 1000, [])),
-          chrome.scripting.executeScript({
-            target: {
-              tabId: tab.id,
-              allFrames: true
-            },
-            func: (prefs, src) => {
-              window.stop();
-              if (window === window.top) {
-                if (prefs.prepends) {
-                  const title = document.title || location.href || '';
-                  if (title.startsWith(prefs.prepends) === false) {
-                    document.title = prefs.prepends + ' ' + title;
-                  }
-
-                  if (prefs.favicon === false) {
-                    return true;
-                  }
-                }
-                if (prefs.favicon) {
-                  const observe = (request, sender, response) => {
-                    if (request.method === 'fix-favicon') {
-                      chrome.runtime.onMessage.removeListener(observe);
-
-                      [...document.querySelectorAll('link[rel*="icon"]')].forEach(link => link.remove());
-
-                      const draw = img => {
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-
-                        if (ctx) {
-                          canvas.width = img.width;
-                          canvas.height = img.height;
-                          ctx.globalAlpha = 0.6;
-                          ctx.drawImage(img, 0, 0);
-
-                          ctx.globalAlpha = 1;
-                          ctx.beginPath();
-                          ctx.fillStyle = '#a1a0a1';
-                          ctx.arc(img.width * 0.75, img.height * 0.75, img.width * 0.25, 0, 2 * Math.PI, false);
-                          ctx.fill();
-                          const href = canvas.toDataURL();
-                          document.querySelector('head').appendChild(Object.assign(document.createElement('link'), {
-                            rel: 'icon',
-                            type: 'image/png',
-                            href
-                          }));
-                          response('done');
-                        }
-                        else {
-                          response('NO_CTX');
-                        }
-                      };
-                      Object.assign(new Image(), {
-                        crossOrigin: 'anonymous',
-                        src,
-                        onerror() { // fallback image
-                          Object.assign(new Image(), {
-                            src: chrome.runtime.getURL('/data/page.png'),
-                            onerror(e) {
-                              response(e.message || 'CORS');
-                            },
-                            onload() {
-                              draw(this);
-                            }
-                          });
-                        },
-                        onload() {
-                          draw(this);
-                        }
-                      });
-                      return true;
-                    }
-                  };
-                  chrome.runtime.onMessage.addListener(observe);
-                  return 'async';
-                }
-              }
-              return false;
-            },
-            args: [prefs, href]
-          })
-        ]).then(r => {
-          if (r.some(o => o.result === 'async')) {
-            chrome.tabs.sendMessage(tab.id, {
-              method: 'fix-favicon'
-            }, reason => setTimeout(next, prefs['favicon-delay'], reason));
+        if (intentId) {
+          await ordinaryIntents.transition(intentId, resumedIntentId ? 'resumed' : 'running').catch(() => false);
+        }
+        let result = discardOutcome('failed', tab, 'discard did not run');
+        try {
+          if (resetInProgress()) {
+            await restoreLiveDocumentMarker(tab.id, prepared?.rollbackToken).catch(() => false);
+            result = resetDiscardOutcome(tab);
+            return result;
           }
-          else {
-            next('one');
+          result = await discard.perform(tab, {
+            ...prepared,
+            repair: Boolean(marker.prepends || marker.favicon),
+            ...(marker.prepends && {titleMarker: marker.prepends})
+          });
+          return result;
+        }
+        finally {
+          if (intentId) {
+            await ordinaryIntents.transition(
+              intentId,
+              result?.status === 'succeeded' ? 'completed' :
+                resetInProgress() ? 'cancelled' : 'failed',
+              result?.status === 'succeeded' ? undefined : result?.reason || 'native discard did not settle'
+            ).catch(() => false);
           }
-        }).catch(e =>next(e.message));
-      }
-      else {
-        next('two');
-      }
+        }
+      })().then(resolve, error => resolve(discardOutcome(
+        'failed', tab, error?.message || String(error), {
+          failureCause: failureCauseFrom(error)
+        }
+      ))).finally(() => {
+        discard.count -= 1;
+        inprogress.delete(tab.id);
+        inprogress.delete(currentId(tab.id));
+        if (discard.tabs.length) {
+          const queued = discard.tabs.shift();
+          inprogress.delete(queued.tab.id);
+          discard(queued.tab, {
+            intentId: queued.intentId,
+            recoveryScope: queued.recoveryScope
+          }).then(queued.resolve);
+        }
+      });
+    };
+    // Page preparation is bounded independently of the renderer promise. The
+    // injected deadline/token makes any result arriving after this timer stale.
+    prepareTimer = setTimeout(() => next({
+      ...visualPreparation(marker),
+      error: 'marker preparation timed out',
+      stale: true
+    }), discard.prepareTimeout);
+    // change title or favicon
+    if (prefs.prepends || prefs.favicon) {
+      const href = tab.favIconUrl || '';
+      const attempt = markerAttempt(discard.prepareTimeout);
+      ownership.withNativeMutationGuard(() => chrome.scripting.executeScript({
+        target: {
+          tabId: tab.id
+        },
+        func: prepareDocumentMarker,
+        args: [marker, href, attempt]
+      }), tab.id).then(results => {
+        const prepared = results?.find(entry => entry.result?.top)?.result;
+        next({...visualPreparation(marker, prepared), rollbackToken: attempt.token});
+      }).catch(error => next({
+        ...visualPreparation(marker),
+        error: error?.message || String(error),
+        rollbackToken: attempt.token
+      }));
+    }
+    else {
+      next(visualPreparation(marker));
+    }
+      });
+    }, async error => {
+      await ordinaryIntents.transition(
+        intentId,
+        'failed',
+        `preference policy read failed: ${error?.message || String(error)}`
+      ).catch(() => false);
+      return finishEarly('failed', tab,
+        `preference policy read failed: ${error?.message || String(error)}`);
     });
   });
 };
+const discard = (tab, options) => {
+  if (resetInProgress()) {
+    return Promise.resolve(resetDiscardOutcome(tab));
+  }
+  let operation;
+  try {
+    operation = Promise.resolve(runOrdinaryDiscard(tab, options));
+  }
+  catch (error) {
+    operation = Promise.reject(error);
+  }
+  ordinaryOperations.add(operation);
+  const finish = () => {
+    ordinaryOperations.delete(operation);
+    if (Number.isInteger(tab?.id)) {
+      inprogress.delete(tab.id);
+      inprogress.delete(currentId(tab.id));
+    }
+  };
+  operation.then(finish, finish);
+  return operation;
+};
 discard.tabs = [];
 discard.count = 0;
-discard.perform = tab => {
+discard.prepareTimeout = 5000;
+const getTab = id => new Promise(resolve => chrome.tabs.get(currentId(id), current => {
+  const error = chrome.runtime.lastError;
+  resolve(error ? undefined : current);
+}));
+const getTabForRecovery = id => new Promise((resolve, reject) => {
+  let settled = false;
+  const finish = (method, value) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    method(value);
+  };
+  const timer = setTimeout(() => finish(
+    reject,
+    Error(`timed out reading restart-recovery tab ${id}`)
+  ), discard.getTimeout);
   try {
-    chrome.tabs.discard(tab.id, () => chrome.runtime.lastError);
+    chrome.tabs.get(currentId(id), current => {
+      const error = chrome.runtime.lastError;
+      if (!error) {
+        finish(resolve, current);
+        return;
+      }
+      const message = error.message || String(error);
+      if (/no tab with id|invalid tab id|tab not found/i.test(message)) {
+        finish(resolve, undefined);
+      }
+      else {
+        finish(reject, Error(message));
+      }
+    });
   }
-  catch (e) {
-    log('discarding failed', e);
+  catch (error) {
+    finish(reject, error);
+  }
+});
+const getWindow = id => new Promise(resolve => chrome.windows.get(id, current => {
+  const error = chrome.runtime.lastError;
+  resolve(error ? undefined : current);
+}));
+const expectedNativeScope = (candidate, {requireWindowType = false} = {}) => {
+  if (!Number.isInteger(candidate?.windowId) || typeof candidate?.incognito !== 'boolean' ||
+      (requireWindowType && candidate?.windowType !== 'normal')) {
+    return undefined;
+  }
+  return Object.freeze({
+    incognito: candidate.incognito,
+    windowId: candidate.windowId,
+    windowType: 'normal'
+  });
+};
+const validateNativeBoundaryTab = async (candidate, expectedScope = expectedNativeScope(candidate)) => {
+  if (!expectedScope || expectedScope.windowType !== 'normal' ||
+      !Number.isInteger(expectedScope.windowId) || typeof expectedScope.incognito !== 'boolean') {
+    return undefined;
+  }
+  const current = await withTimeout(getTab(candidate?.id), discard.getTimeout, undefined);
+  if (!current || !Number.isInteger(current.windowId) ||
+      current.windowId !== expectedScope.windowId ||
+      current.incognito !== expectedScope.incognito) {
+    return undefined;
+  }
+  const windowInfo = await withTimeout(getWindow(current.windowId), discard.getTimeout, undefined);
+  if (!windowInfo || windowInfo.id !== current.windowId || windowInfo.type !== 'normal' ||
+      typeof windowInfo.incognito !== 'boolean' || windowInfo.incognito !== current.incognito) {
+    return undefined;
+  }
+  return {...current, incognito: current.incognito, windowType: 'normal'};
+};
+// Chrome MV3 and Firefox both expose tabs.discard() as a Promise, but Firefox
+// deliberately has no callback result and fulfills with undefined.  The live
+// tab postcondition below is therefore the ownership boundary; the API result
+// is useful telemetry only and is never treated as proof that the renderer was
+// actually torn down.
+const nativeDiscard = async (tab, attemptId, token, expectedScope) => {
+  let scoped;
+  return ownership.withNativeMutationGuard(() => {
+    // This flag is the exact distinction between a rejected preflight and an
+    // API call that may still settle after the caller's timeout.
+    if (token) {
+      token.nativeInvoked = true;
+    }
+    return invokeNativeDiscard(currentId(scoped.id));
+  }, tab.id, attemptId, async () => {
+    scoped = await validateNativeBoundaryTab(tab, expectedScope);
+    return Boolean(scoped) && token?.cancelled !== true;
+  });
+};
+const guardedNativeDiscard = (tab, attemptId, token, expectedScope) =>
+  nativeDiscard(tab, attemptId, token, expectedScope).catch(error => {
+  if (error?.code === 'DIRECT_NATIVE_ORPHAN_BLOCKED') {
+    return {
+      accepted: false,
+      contract: 'native-mutation-guard',
+      error: 'direct native discard is blocked by unresolved lineage'
+    };
+  }
+  if (error?.code === 'NATIVE_SCOPE_INVALID') {
+    throw Error(`native discard window scope changed for tab ${tab.id}`);
+  }
+  throw error;
+});
+
+const takeoverFailureStage = error => {
+  const message = error?.message || String(error || '');
+  if (/timed out waking/i.test(message)) return 'wake-timeout';
+  if (/did not wake as a quiescent/i.test(message)) return 'wake-not-quiescent';
+  if (/timed out stopping|cannot stop the reload/i.test(message)) return 'reload-stop-failed';
+  if (/timed out preparing|cannot prepare the awakened/i.test(message)) return 'marker-preparation-failed';
+  if (/did not expose its prepared sleep title/i.test(message)) return 'marker-title-unavailable';
+  if (/native discard timed out/i.test(message)) return 'native-discard-timeout';
+  if (/native discard did not settle/i.test(message)) return 'native-discard-unsettled';
+  if (/another discarder won/i.test(message)) return 'native-discard-contended';
+  if (/ownership finalization|woke during ownership/i.test(message)) return 'ownership-finalization-failed';
+  if (/became stale/i.test(message)) return 'ownership-stale';
+  if (/cancelled/i.test(message)) return 'cancelled';
+  return 'other-takeover-failure';
+};
+
+const reloadTab = (id, expectedScope, token, onInvoke = () => {}) =>
+  (() => {
+    let scoped;
+    return ownership.withNativeMutationGuard(() => new Promise(resolve => {
+      try {
+        onInvoke();
+        chrome.tabs.reload(currentId(scoped.id), {bypassCache: false}, () => {
+          const error = chrome.runtime.lastError;
+          resolve(error ? {error: error.message || String(error)} : {success: true});
+        });
+      }
+      catch (e) {
+        resolve({error: e.message || String(e)});
+      }
+    }), id, undefined, async () => {
+      scoped = await validateNativeBoundaryTab({id}, expectedScope);
+      return Boolean(scoped) && token?.cancelled !== true;
+    });
+  })().catch(error => ({error: error?.code === 'DIRECT_NATIVE_ORPHAN_BLOCKED' ?
+    'direct native discard lineage is unresolved' : error?.code === 'NATIVE_SCOPE_INVALID' ?
+      `reload window scope changed for tab ${id}` : error?.message || String(error)}));
+
+const remainingTime = deadline => Math.max(0, deadline - Date.now());
+const waitBeforeDeadline = async (deadline, interval = discard.takeoverPoll) => {
+  const remaining = remainingTime(deadline);
+  if (remaining > 0) {
+    const delay = Math.min(Math.max(0, interval), remaining);
+    // setTimeout(0) is intentional in tests and yields to renderer/event timers;
+    // a microtask-only loop can starve a delayed loading transition.
+    await new Promise(resolve => setTimeout(resolve, delay));
   }
 };
+const getTabBeforeDeadline = (id, deadline) => {
+  const timeout = Math.min(discard.getTimeout, remainingTime(deadline));
+  return timeout > 0 ? withTimeout(getTab(id), timeout, undefined) : Promise.resolve(undefined);
+};
+
+const restoreLiveDocumentMarker = async (id, rollbackToken) => {
+  if (!rollbackToken || !Number.isInteger(currentId(id))) {
+    return false;
+  }
+  const deadline = Date.now() + discard.markerRollbackTimeout;
+  const tab = await getTabBeforeDeadline(id, deadline);
+  if (!tab || isSuspendedTab(tab)) {
+    return false;
+  }
+  const timeout = Math.min(discard.markerRollbackTimeout, remainingTime(deadline));
+  if (timeout <= 0) {
+    return false;
+  }
+  try {
+    const result = await withTimeout(ownership.withNativeMutationGuard(() =>
+      chrome.scripting.executeScript({
+        target: {tabId: currentId(id)},
+        func: restoreDocumentMarker,
+        args: [{token: rollbackToken}]
+      }), id), timeout, undefined);
+    return result?.some(entry => entry?.result?.restored === true ||
+      entry?.result?.titlePreserved === true || entry?.result?.faviconPreserved === true) === true;
+  }
+  catch (error) {
+    log('cannot roll back a live document marker', error);
+    return false;
+  }
+};
+
+const waitForAwake = async (id, token, deadline = Date.now() + discard.takeoverTimeout) => {
+  while (Date.now() < deadline && token.cancelled === false) {
+    const current = await getTabBeforeDeadline(id, deadline);
+    if (!current) {
+      return undefined;
+    }
+    if (isLoadedTab(current)) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+  }
+};
+
+const observeReload = id => {
+  const state = {
+    sawLoading: false
+  };
+  const listener = (tabId, changeInfo, tab) => {
+    if (currentId(tabId) !== currentId(id)) {
+      return;
+    }
+    const status = changeInfo.status || tab?.status;
+    if (status === 'loading') {
+      state.sawLoading = true;
+    }
+  };
+  chrome.tabs.onUpdated?.addListener(listener);
+  return {
+    close: () => chrome.tabs.onUpdated?.removeListener?.(listener),
+    state
+  };
+};
+
+// A takeover has to wake a natively discarded tab before this extension can
+// become the physical discarder. Chromium reports discarded:false as soon as
+// that navigation starts, not when it is safe to discard again. Discarding the
+// still-loading tab can leave a stale tab-strip spinner and a short-lived
+// renderer behind, so stop the reload and wait for it to leave "loading" first.
+const stopLoadingTab = (
+  id,
+  marker = {},
+  source = '',
+  {
+    attempt: suppliedAttempt,
+    deadline = Date.now() + discard.stopTimeout,
+    requireFavicon = false,
+    requireTitle = false
+  } = {}
+) => {
+  try {
+    const settings = {
+      favicon: requireFavicon && marker.favicon === true,
+      faviconDelay: Math.max(0, Number(marker.faviconDelay) || 0),
+      prepends: marker.prepends || ''
+    };
+    const attempt = suppliedAttempt || markerAttempt(Math.max(0, deadline - Date.now()));
+    return ownership.withNativeMutationGuard(() => chrome.scripting.executeScript({
+      target: {tabId: currentId(id)},
+      injectImmediately: true,
+      func: prepareDocumentMarker,
+      args: [settings, source, attempt]
+    }), id).then(results => {
+      const prepared = results?.find(result => result.result?.stopped === true)?.result;
+      if (!prepared) {
+        return {error: 'reload stop script did not return a result'};
+      }
+      const titleApplied = prepared.titleApplied === true ||
+        (!settings.prepends || prepared.title?.startsWith(settings.prepends) === true);
+      if (requireTitle && settings.prepends && titleApplied !== true) {
+        return {error: `sleep title prefix was not applied (title: ${prepared.title || ''})`};
+      }
+      if (requireFavicon && settings.favicon && prepared.faviconApplied !== true) {
+        return {error: `sleep favicon was not applied (${prepared.faviconError || 'unknown reason'})`};
+      }
+      return {
+        rollbackToken: attempt.token,
+        success: true,
+        title: prepared.title,
+        visual: visualPreparation(settings, {...prepared, titleApplied})
+      };
+    }, error => ({error: error?.message || String(error), cause: error}));
+  }
+  catch (error) {
+    return Promise.resolve({error: error?.message || String(error), cause: error});
+  }
+};
+
+const quiesceReload = async (
+  id,
+  token,
+  initial,
+  observation,
+  prepend,
+  deadline = Date.now() + discard.takeoverTimeout,
+  frameRetries = {count: 0}
+) => {
+  let current = initial || await getTabBeforeDeadline(id, deadline);
+  if (!current || !isLoadedTab(current)) {
+    return current;
+  }
+
+  let completeSince;
+  while (Date.now() < deadline && token.cancelled === false) {
+    if (!current || !isLoadedTab(current) || current.active === true) {
+      return current;
+    }
+    if (current.status === 'complete') {
+      completeSince ||= Date.now();
+      const stableFor = observation?.state.sawLoading ?
+        discard.quiesceDwell : discard.reloadStartGrace;
+      if (Date.now() - completeSince >= stableFor) {
+        return current;
+      }
+      await waitBeforeDeadline(deadline);
+      current = await getTabBeforeDeadline(id, deadline);
+      continue;
+    }
+
+    completeSince = undefined;
+    if (current.status !== 'loading') {
+      await waitBeforeDeadline(deadline);
+      current = await getTabBeforeDeadline(id, deadline);
+      continue;
+    }
+
+    // discarded:false can precede the new renderer/document commit. A single
+    // immediate injection can therefore stop the outgoing document and miss
+    // the new load. Retry only after the prior injection resolved successfully;
+    // a timed-out operation is left in flight, so fail the takeover and never
+    // queue a second stop behind it.
+    const stopTimeout = {};
+    const stopLimit = Math.min(discard.stopTimeout, remainingTime(deadline));
+    // Quiescence owns navigation settlement only. Indicator writes belong to
+    // the later generation-fenced preparation pass, where cancellation has an
+    // exact rollback token. Writing a title here allowed a delayed stop call
+    // to leave a stale marker after cancellation.
+    const stopped = stopLimit > 0 ?
+      await withTimeout(stopLoadingTab(id, {}, '', {deadline}),
+        stopLimit, stopTimeout) : stopTimeout;
+    if (stopped === stopTimeout) {
+      throw Error(`timed out stopping the reload on tab ${id}`);
+    }
+    if (stopped?.error) {
+      // During a renderer commit Chrome can reject an otherwise valid
+      // executeScript call because the outgoing main frame disappeared. The
+      // promise has settled, so it is safe to reread the tab and retry against
+      // the replacement frame. Keep permission and closed-tab errors fatal.
+      current = await getTabBeforeDeadline(id, deadline);
+      const decision = scriptingFailureDecision(stopped.cause || stopped.error, current);
+      if (decision.action === 'settled') {
+        return current;
+      }
+      if (decision.action === 'retry') {
+        if (frameRetries.count >= discard.transientFrameRetries) {
+          throw Error(`cannot stop the reload on tab ${id}: transient frame retry limit reached`);
+        }
+        frameRetries.count += 1;
+        await waitBeforeDeadline(deadline);
+        current = await getTabBeforeDeadline(id, deadline);
+        continue;
+      }
+      throw Error(`cannot stop the reload on tab ${id} (${decision.classification.category}): ${stopped.error}`);
+    }
+    current = await getTabBeforeDeadline(id, deadline);
+    if (!current || !isLoadedTab(current) || current.active === true) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+    current = await getTabBeforeDeadline(id, deadline);
+  }
+};
+
+// Cancellation wins over takeover. If this job initiated a reload, stop the
+// renderer request once (when scriptable) and wait until the live tab is no
+// longer loading before the release path can issue its own wake. This avoids an
+// abandoned spinner and duplicate renderer allocation after the user presses X.
+const settleCancelledReload = async (id, deadline, observation) => {
+  let current;
+  let stopped = false;
+  let stableKey;
+  let stableReads = 0;
+  let stableSince;
+  const startedAt = Date.now();
+  const dwell = Math.min(discard.cancellationStableDwell,
+    Math.max(0, Math.floor(remainingTime(deadline) / 2)));
+  while (Date.now() < deadline) {
+    current = await getTabBeforeDeadline(id, deadline);
+    if (!current) {
+      return current;
+    }
+    const suspended = isSuspendedTab(current);
+    if (!suspended && current.status === 'loading' && !stopped) {
+      stopped = true;
+      const limit = Math.min(discard.stopTimeout, remainingTime(deadline));
+      if (limit > 0) {
+        await withTimeout(stopLoadingTab(id, {}, '', {deadline}), limit, undefined).catch(() => undefined);
+      }
+      stableKey = undefined;
+      stableReads = 0;
+      stableSince = undefined;
+      await waitBeforeDeadline(deadline);
+      continue;
+    }
+    if (!suspended && current.status === 'loading') {
+      stableKey = undefined;
+      stableReads = 0;
+      stableSince = undefined;
+      await waitBeforeDeadline(deadline);
+      continue;
+    }
+
+    // A single non-loading read is not a settlement fence: a delayed reload
+    // callback can still flip discarded->loading in the next task. Require two
+    // identical reads plus a dwell, and for a never-observed transition retain
+    // the original reload-start grace as well.
+    const key = `${current.id}:${current.discarded === true}:${current.frozen === true}:${current.status || ''}`;
+    if (key !== stableKey) {
+      stableKey = key;
+      stableReads = 1;
+      stableSince = Date.now();
+    }
+    else {
+      stableReads += 1;
+    }
+    const graceComplete = observation?.state.sawLoading === true ||
+      Date.now() - startedAt >= Math.min(discard.reloadStartGrace, remainingTime(deadline));
+    if (stableReads >= 2 && graceComplete && Date.now() - stableSince >= dwell) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+  }
+  return current;
+};
+
+const waitForUnloaded = async (id, token) => {
+  const deadline = Date.now() + discard.nativeSettleTimeout;
+  let current;
+  let stableId;
+  let stableReads = 0;
+  let stableSince = 0;
+  while (Date.now() < deadline && token.cancelled === false) {
+    // Never trust the tabs.discard() callback snapshot as the ownership
+    // boundary. A user activation can wake the live tab before finalization.
+    current = await getTabBeforeDeadline(id, deadline);
+    if (!current) {
+      // Edge replacement lineage can briefly make tabs.get return no snapshot
+      // even though ownership has already remapped the predecessor. Treat it
+      // like the inactive callback gap and retry within the bounded settlement
+      // window; onRemoved/cancellation still terminates through the token.
+      stableId = undefined;
+      stableReads = 0;
+      await waitBeforeDeadline(deadline);
+      continue;
+    }
+    if (isNativeDiscardSettled(current)) {
+      if (stableId === current.id) {
+        stableReads += 1;
+      }
+      else {
+        stableId = current.id;
+        stableReads = 1;
+        stableSince = Date.now();
+      }
+      // The native callback and the first tabs.get can both win a same-task
+      // race against activation. Require a second authoritative read after a
+      // short dwell before any source:self marker can be finalized.
+      if (stableReads >= 2 && Date.now() - stableSince >= discard.nativeStableDwell) {
+        return current;
+      }
+    }
+    else if (current.active === true) {
+      return current;
+    }
+    else {
+      // Chromium/Edge may acknowledge tabs.discard() before its replacement
+      // and unloaded state become observable. An inactive loaded-looking read
+      // is therefore transitional, not proof that the accepted operation
+      // failed. Keep polling to the bounded deadline; only user activation is
+      // an authoritative early wake boundary.
+      stableId = undefined;
+      stableReads = 0;
+    }
+    await waitBeforeDeadline(deadline);
+  }
+  return current;
+};
+
+// A Chromium tabs.discard() callback acknowledges the request, not the
+// physical boundary. Edge may replace the tab or expose discarded:true before
+// status:unloaded. Keep this Promise pending until two stable authoritative
+// unloaded reads, a definite user wake, or removal; release joins this Promise
+// so it can never reload ahead of a delayed native discard. This boundary is
+// shared by direct frozen and ordinary renderer-prepared native calls.
+const waitForNativeBoundary = (id, token) => new Promise(resolve => {
+  let checking = false;
+  let checkAgain = false;
+  let dwellTimer;
+  let finished = false;
+  let missingRetries = 0;
+  let retryTimer;
+  let stableId;
+  let stableReads = 0;
+  let stableSince = 0;
+
+  const cleanup = () => {
+    clearTimeout(dwellTimer);
+    clearTimeout(retryTimer);
+    chrome.tabs.onActivated?.removeListener?.(onActivated);
+    chrome.tabs.onRemoved?.removeListener?.(onRemoved);
+    chrome.tabs.onReplaced?.removeListener?.(onReplaced);
+    chrome.tabs.onUpdated?.removeListener?.(onUpdated);
+  };
+  const settle = current => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    cleanup();
+    resolve(current);
+  };
+  const resetStable = () => {
+    clearTimeout(dwellTimer);
+    dwellTimer = undefined;
+    stableId = undefined;
+    stableReads = 0;
+    stableSince = 0;
+  };
+  const scheduleDwell = () => {
+    if (dwellTimer !== undefined) {
+      return;
+    }
+    const remaining = Math.max(0, discard.nativeStableDwell - (Date.now() - stableSince));
+    dwellTimer = setTimeout(() => {
+      dwellTimer = undefined;
+      void check();
+    }, remaining);
+  };
+  const scheduleMissingRetry = () => {
+    if (retryTimer !== undefined || missingRetries >= 2) {
+      return;
+    }
+    missingRetries += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      void check();
+    }, Math.max(0, discard.takeoverPoll));
+  };
+  const check = async () => {
+    if (finished) {
+      return;
+    }
+    if (checking) {
+      checkAgain = true;
+      return;
+    }
+    checking = true;
+    try {
+      if (token.removed === true) {
+        settle(undefined);
+        return;
+      }
+      const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+      if (finished) {
+        return;
+      }
+      if (current?.active === true) {
+        settle(current);
+        return;
+      }
+      if (!current) {
+        // A replacement callback can win the first live read before the
+        // successor is enumerable. Retry that finite gap twice, then rely only
+        // on lifecycle events; no repeating timer survives an unresolved call.
+        resetStable();
+        scheduleMissingRetry();
+        return;
+      }
+      missingRetries = 0;
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+      if (!isNativeDiscardSettled(current)) {
+        // Only an active tab is authoritative evidence that the user won.
+        // Edge's accepted native discard can pass through inactive both-false
+        // state while replacing the renderer, so wait for its next lifecycle
+        // event without retaining a perpetual polling timer.
+        resetStable();
+        return;
+      }
+      if (stableId === current.id) {
+        stableReads += 1;
+      }
+      else {
+        stableId = current.id;
+        stableReads = 1;
+        stableSince = Date.now();
+      }
+      if (stableReads >= 2 && Date.now() - stableSince >= discard.nativeStableDwell) {
+        settle(current);
+        return;
+      }
+      scheduleDwell();
+    }
+    finally {
+      checking = false;
+      if (checkAgain && !finished) {
+        checkAgain = false;
+        queueMicrotask(check);
+      }
+    }
+  };
+  function onActivated({tabId} = {}) {
+    if (currentId(tabId) === currentId(id)) {
+      void check();
+    }
+  }
+  function onRemoved(tabId) {
+    // Ignore the predecessor removal Edge may emit after an observed
+    // replacement; only removal of the current logical identity is final.
+    if (currentId(tabId) === tabId && tabId === currentId(id)) {
+      token.removed = true;
+      settle(undefined);
+    }
+  }
+  function onReplaced(addedId, removedId) {
+    if (currentId(removedId) === currentId(id) || currentId(addedId) === currentId(id)) {
+      resetStable();
+      void check();
+    }
+  }
+  function onUpdated(tabId) {
+    if (currentId(tabId) === currentId(id)) {
+      void check();
+    }
+  }
+
+  chrome.tabs.onActivated?.addListener(onActivated);
+  chrome.tabs.onRemoved?.addListener(onRemoved);
+  chrome.tabs.onReplaced?.addListener(onReplaced);
+  chrome.tabs.onUpdated?.addListener(onUpdated);
+  queueMicrotask(check);
+});
+
+// The generic timeout helper intentionally converts rejection to its fallback.
+// Native boundary rejection is different: a rejected scope/authority preflight
+// proves no browser call was issued and must never be mislabeled late-native.
+const withNativeBoundaryTimeout = (operation, timeout, fallback) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => resolve(fallback), timeout);
+  Promise.resolve(operation).then(value => {
+    clearTimeout(timer);
+    resolve(value);
+  }, error => {
+    clearTimeout(timer);
+    reject(error);
+  });
+});
+
+const nativeBoundaryOperation = (tab, attemptId, token, expectedScope) => {
+  token.nativeSettled = false;
+  const operation = Promise.resolve(guardedNativeDiscard(
+    tab,
+    attemptId,
+    token,
+    expectedScope
+  )).then(async outcome => ({
+    outcome,
+    finalTab: outcome?.accepted === true ?
+      await waitForNativeBoundary(tab.id, token) :
+      await withTimeout(getTab(tab.id), discard.getTimeout, undefined) || tab
+  })).then(
+    result => {
+      token.nativeSettled = true;
+      return result;
+    },
+    error => {
+      token.nativeSettled = true;
+      throw error;
+    }
+  );
+  token.nativeOperation = operation;
+  return operation;
+};
+
+const reconcileLateNative = (operation, authority, attemptId, visual, rollbackToken) =>
+  Promise.resolve(operation).then(async result => {
+    const outcome = result?.outcome || result;
+    if (outcome?.accepted !== true) {
+      await restoreLiveDocumentMarker(authority?.id, rollbackToken);
+      return false;
+    }
+    const id = authority?.id;
+    if (!Number.isInteger(id)) {
+      return false;
+    }
+    const finalTab = result?.finalTab;
+    if (!isNativeDiscardSettled(finalTab)) {
+      await restoreLiveDocumentMarker(id, rollbackToken);
+      return false;
+    }
+    if (!await ownership.promoteLateSelf(authority, attemptId, visual)) {
+      await restoreLiveDocumentMarker(id, rollbackToken);
+      return false;
+    }
+    return ownership.confirmSelf(finalTab.id, attemptId);
+  }).catch(async error => {
+    log('late native discard reconciliation failed', error);
+    await restoreLiveDocumentMarker(authority?.id, rollbackToken);
+    return false;
+  });
+
+const reconcileLateDirectNative = (operation, authority, attemptId, visual) => {
+  // Attach immediately so a late rejection can never escape the worker or a
+  // focused test. Reset/release invalidates `authority`, making late promotion
+  // impossible even when the same browser operation later settles.
+  const clearRejected = async finalTab => {
+    if (!await ownership.cancelDirectNative(authority, attemptId)) {
+      return false;
+    }
+    // A different discarder can win while our timed-out API call eventually
+    // reports rejection. Preserve that physical sleeper conservatively as an
+    // external claim after removing only our exact pending authority.
+    const current = await withTimeout(getTab(authority?.id), discard.getTimeout, undefined) ||
+      finalTab;
+    if (isNativeDiscardSettled(current)) {
+      await ownership.claim(current).catch(() => false);
+    }
+    return true;
+  };
+  return Promise.resolve(operation).then(async result => {
+    if (result?.outcome?.accepted !== true) {
+      return clearRejected(result?.finalTab);
+    }
+    if (!isNativeDiscardSettled(result.finalTab)) {
+      return false;
+    }
+    if (!await ownership.promoteLateSelf(authority, attemptId, visual)) {
+      return false;
+    }
+    return ownership.confirmSelf(result.finalTab.id, attemptId);
+  }, async error => {
+    log('late direct native discard reconciliation failed', error);
+    await clearRejected().catch(() => false);
+    return false;
+  }).catch(error => {
+    log('late direct native discard finalization failed', error);
+    return false;
+  });
+};
+
+const waitForPreparedTitle = async (
+  id,
+  token,
+  prepend,
+  initial,
+  deadline = Date.now() + discard.titleSettleTimeout
+) => {
+  if (!prepend) {
+    return initial;
+  }
+  let current = initial;
+  while (Date.now() < deadline && token.cancelled === false) {
+    if (!current || !isLoadedTab(current) ||
+        current.active === true || current.status !== 'complete') {
+      return current;
+    }
+    if (current.title?.startsWith(prepend)) {
+      return current;
+    }
+    await waitBeforeDeadline(deadline);
+    current = await getTabBeforeDeadline(id, deadline);
+  }
+  return current;
+};
+
+const prepareAwakeTab = async (
+  id,
+  token,
+  initial,
+  observation,
+  marker,
+  deadline,
+  visual,
+  rollback = {}
+) => {
+  const frameRetries = {count: 0};
+  const prepend = marker.prepends || '';
+  let current = initial;
+  while (Date.now() < deadline && token.cancelled === false) {
+    current = await quiesceReload(
+      id, token, current, observation, prepend, deadline, frameRetries
+    );
+    if (!current || !isLoadedTab(current) ||
+        current.active === true || current.status !== 'complete') {
+      return current;
+    }
+
+    // A final pass makes the physical takeover visually consistent with an
+    // ordinary extension discard. If Chrome swaps the main frame here, return
+    // through quiescence and retry against the replacement renderer.
+    const prepareTimeout = {};
+    // The reload-stop pass above is deliberately short, but this final visual
+    // pass also loads and rasterizes the favicon and honors faviconDelay.
+    // Hidden Chromium renderers can throttle that timer to roughly one second,
+    // so reusing stopTimeout races a valid marker result after its title write.
+    // Give visual preparation its ordinary bounded budget while retaining the
+    // single takeover deadline as the outer limit.
+    const prepareLimit = Math.min(discard.prepareTimeout, remainingTime(deadline));
+    const attempt = markerAttempt(Math.max(0, prepareLimit));
+    // The injected function can write the exact-attempt title/favicon before
+    // executeScript's result Promise settles. Publish its rollback authority
+    // before awaiting that Promise so cancellation and timeouts can still undo
+    // only this extension's live-document writes.
+    rollback.token = attempt.token;
+    const prepared = prepareLimit > 0 ?
+      await withTimeout(stopLoadingTab(id, marker, current.favIconUrl || '', {
+        attempt,
+        deadline,
+        requireFavicon: marker.favicon === true,
+        requireTitle: Boolean(prepend)
+      }), prepareLimit, prepareTimeout) : prepareTimeout;
+    if (prepared === prepareTimeout) {
+      throw Error(`timed out preparing the awakened tab ${id}`);
+    }
+    if (prepared?.error) {
+      current = await getTabBeforeDeadline(id, deadline);
+      const decision = scriptingFailureDecision(prepared.cause || prepared.error, current);
+      if (decision.action === 'settled') {
+        return current;
+      }
+      if (decision.action === 'retry') {
+        if (frameRetries.count >= discard.transientFrameRetries) {
+          throw Error(`cannot prepare the awakened tab ${id}: transient frame retry limit reached`);
+        }
+        frameRetries.count += 1;
+        await waitBeforeDeadline(deadline);
+        current = await getTabBeforeDeadline(id, deadline);
+        continue;
+      }
+      throw Error(`cannot prepare the awakened tab ${id} (${decision.classification.category}): ${prepared.error}`);
+    }
+
+    Object.assign(visual, prepared.visual || visualPreparation(marker));
+    rollback.token = prepared.rollbackToken;
+    visual.repair = Boolean(marker.prepends || marker.favicon);
+    current = await getTabBeforeDeadline(id, deadline);
+    const titleDeadline = Math.min(deadline, Date.now() + discard.titleSettleTimeout);
+    return waitForPreparedTitle(id, token, prepend, current, titleDeadline);
+  }
+  return current;
+};
+
+const waitForOwnership = async (id, token) => {
+  const deadline = Date.now() + discard.takeoverTimeout;
+  while (Date.now() < deadline && token.cancelled === false) {
+    const state = await ownership.status(id);
+    if (!state.attemptId) {
+      return state.marker?.state === 'owned' && state.marker.source === 'self';
+    }
+    await new Promise(resolve => setTimeout(resolve, discard.takeoverPoll));
+  }
+  throw Error(`timed out waiting for existing discard attempt on tab ${id}`);
+};
+
+const takeoverOnce = async (
+  tab,
+  token,
+  runPhase = async (resource, task) => task(),
+  expectedScope = expectedNativeScope(tab, {requireWindowType: true})
+) => {
+  const id = tab.id;
+  if (!expectedScope) {
+    throw Error(`tab ${id} has no authoritative normal-window takeover scope`);
+  }
+  const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
+  if (token.cancelled) {
+    throw Error(`discard takeover cancelled for tab ${id}`);
+  }
+  const initialState = await ownership.status(id);
+  const currentState = suspensionState(current);
+  const recovering = currentState.kind === 'loaded' && initialState.marker?.state === 'takeover-recovery';
+  const suspended = isSuspendedTab(current);
+  if (!current || current.active === true || (suspended === false && recovering === false)) {
+    throw Error(`tab ${id} is no longer an inactive takeover target`);
+  }
+
+  const directNative = isFrozenTab(current);
+  let attemptId;
+  if (!directNative) {
+    attemptId = await ownership.beginTakeover(current);
+    if (!attemptId) {
+      if (await waitForOwnership(id, token)) {
+        return true;
+      }
+      throw Error(`cannot start discard takeover for tab ${id}`);
+    }
+  }
+
+  let finished = false;
+  let directPendingAuthority;
+  let markerRollbackToken;
+  const markerRollback = {};
+  let reloadObservation;
+  let reloadStarted = false;
+  let lateNativePending = false;
+  let takeoverDeadline = Date.now() + discard.takeoverTimeout;
+  try {
+    const takeoverPrefs = await storage({
+      favicon: prefs.favicon,
+      'favicon-delay': prefs['favicon-delay'],
+      prepends: prefs.prepends
+    });
+    const marker = {
+      favicon: takeoverPrefs.favicon === true,
+      faviconDelay: Math.max(0, Number(takeoverPrefs['favicon-delay']) || 0),
+      prepends: normalizeTitleMarker(takeoverPrefs.prepends)
+    };
+    const prepend = marker.prepends;
+    if (directNative) {
+      // A frozen renderer cannot be marked without waking it. Edge can,
+      // however, convert it directly into a real unloaded discard without
+      // selecting, reloading, or scripting the tab. Keep that physical and
+      // visual truth separate: this extension owns the native discard, while
+      // the requested title/favicon signal is explicitly unavailable.
+      const visualRequested = Boolean(marker.prepends || marker.favicon);
+      const visual = visualRequested ? {
+        complete: false,
+        favicon: false,
+        physicalOnly: true,
+        repair: false,
+        title: false,
+        ...(marker.prepends && {titleMarker: marker.prepends})
+      } : {
+        complete: true,
+        favicon: true,
+        physicalOnly: true,
+        repair: false,
+        title: true
+      };
+      const nativeTimeout = {};
+      const phase = await runPhase('cpu', async () => {
+        // A direct-native marker is irreversible authority: after worker loss,
+        // removal of its tab becomes a global orphan fence. Persist it only
+        // after this job owns the physical CPU/API phase, so a resource-queued
+        // job can be cancelled or removed without claiming a native call that
+        // was never issued.
+        takeoverDeadline = Date.now() + discard.takeoverTimeout;
+        if (token.cancelled) {
+          throw Error(`discard takeover cancelled for tab ${id}`);
+        }
+        let live = await validateNativeBoundaryTab({id}, expectedScope);
+        if (!live || live.active === true || !isFrozenTab(live)) {
+          throw Error(`tab ${id} changed before direct native discard`);
+        }
+        attemptId = await ownership.beginDirectNative(live);
+        if (!attemptId) {
+          if (await waitForOwnership(id, token)) {
+            return {existingOwned: true};
+          }
+          throw Error(`cannot start discard takeover for tab ${id}`);
+        }
+        token.directNative = true;
+        // Capture exact cleanup authority before the mandatory live re-read.
+        // If removal/replacement wins this narrow post-persistence gap, no
+        // native call exists and its exact pending/orphan nonce must be retired.
+        directPendingAuthority = ownership.lateAuthority(id);
+        live = await validateNativeBoundaryTab({id}, expectedScope);
+        if (token.cancelled || !live || live.active === true || !isFrozenTab(live) ||
+            !ownership.isCurrent(id, attemptId)) {
+          throw Error(`tab ${id} changed before direct native discard`);
+        }
+
+        const lateAuthority = ownership.lateAuthority(id);
+        const nativeOperation = nativeBoundaryOperation(live, attemptId, token, expectedScope);
+        let settled = await withNativeBoundaryTimeout(
+          nativeOperation,
+          discard.nativeTimeout,
+          nativeTimeout
+        );
+        if (settled === nativeTimeout) {
+          const fenceTimeout = {};
+          settled = await withNativeBoundaryTimeout(
+            nativeOperation,
+            discard.takeoverFenceTimeout,
+            fenceTimeout
+          );
+          if (settled === fenceTimeout) {
+            settled = nativeTimeout;
+          }
+        }
+        return {lateAuthority, live, nativeOperation, settled};
+      });
+      if (phase.existingOwned) {
+        return true;
+      }
+      const {lateAuthority, live, nativeOperation, settled} = phase;
+      const outcome = settled === nativeTimeout ? undefined : settled?.outcome;
+      const nativeAccepted = outcome?.accepted === true;
+      const finalTab = settled === nativeTimeout ?
+        await withTimeout(getTab(id), discard.getTimeout, undefined) || live : settled.finalTab;
+      const strong = nativeAccepted && isNativeDiscardSettled(finalTab);
+      const owned = await ownership.finish(finalTab || {...live, discarded: false}, attemptId,
+        strong ? 'self' : undefined, {
+          allowClaimed: false,
+          directNative: true,
+          lateNative: settled === nativeTimeout,
+          visual
+        });
+      finished = true;
+      if (settled === nativeTimeout) {
+        lateNativePending = true;
+        token.nativeFinalization = reconcileLateDirectNative(
+          nativeOperation,
+          lateAuthority,
+          attemptId,
+          visual
+        );
+      }
+      if (strong && owned && await ownership.confirmSelf(finalTab.id, attemptId)) {
+        return Object.freeze({
+          ok: true,
+          physicalOnly: true,
+          reason: visualRequested ? 'native discard completed; frozen renderer visual unavailable' :
+            'native discard completed without waking the frozen renderer',
+          tab: finalTab,
+          visualUnavailable: visualRequested
+        });
+      }
+      const reason = settled === nativeTimeout ? 'native discard timed out' : outcome?.error ||
+        (nativeAccepted ? 'native discard did not settle in the browser discard state' :
+          'another discarder won before the native discard');
+      throw failureError(
+        `direct frozen discard takeover failed for tab ${id}: ${reason}`,
+        nativeFailureCause(settled, nativeTimeout, nativeAccepted)
+      );
+    }
+    const visual = visualPreparation(marker);
+    visual.repair = Boolean(marker.prepends || marker.favicon);
+    if (marker.prepends) {
+      visual.titleMarker = marker.prepends;
+    }
+    takeoverDeadline = Date.now() + discard.takeoverTimeout;
+    let awake = current;
+    if (isDiscardedTab(current)) {
+      awake = await runPhase('network', async () => {
+        if (token.cancelled) {
+          throw Error(`discard takeover cancelled for tab ${id}`);
+        }
+        reloadObservation = observeReload(id);
+        const reloadTimeout = {};
+        const reloadLimit = remainingTime(takeoverDeadline);
+        const reload = reloadLimit > 0 ?
+          await withTimeout(reloadTab(id, expectedScope, token, () => {
+            // The native call starts the wake synchronously, before its callback
+            // can settle. Cancellation cleanup must own that interval too.
+            reloadStarted = true;
+          }), reloadLimit, reloadTimeout) : reloadTimeout;
+        if (reload === reloadTimeout || reload.error) {
+          throw Error(reload.error || `timed out waking tab ${id}`);
+        }
+        return waitForAwake(id, token, takeoverDeadline);
+      });
+    }
+    return await runPhase('cpu', async () => {
+      if (token.cancelled) {
+        throw Error(`discard takeover cancelled for tab ${id}`);
+      }
+      awake = await prepareAwakeTab(
+        id,
+        token,
+        awake,
+        reloadObservation,
+        marker,
+        takeoverDeadline,
+        visual,
+        markerRollback
+      );
+      markerRollbackToken = markerRollback.token;
+      if (token.cancelled) {
+        throw Error(`discard takeover cancelled for tab ${id}`);
+      }
+
+      if (!awake || !isLoadedTab(awake) ||
+          awake.active === true || awake.status !== 'complete') {
+        throw Error(`tab ${id} did not wake as a quiescent inactive tab`);
+      }
+      if (prepend && awake.title?.startsWith(prepend) !== true) {
+        throw Error(`tab ${id} did not expose its prepared sleep title`);
+      }
+      if (!ownership.isCurrent(id, attemptId)) {
+        throw Error(`discard takeover became stale for tab ${id}`);
+      }
+
+      const nativeTimeout = {};
+      const lateAuthority = ownership.lateAuthority(id);
+      const nativeOperation = nativeBoundaryOperation(awake, undefined, token, expectedScope);
+      let boundary = await withNativeBoundaryTimeout(
+        nativeOperation,
+        discard.nativeTimeout,
+        nativeTimeout
+      );
+      if (boundary === nativeTimeout) {
+        const fenceTimeout = {};
+        boundary = await withNativeBoundaryTimeout(
+          nativeOperation,
+          discard.takeoverFenceTimeout,
+          fenceTimeout
+        );
+        if (boundary === fenceTimeout) {
+          boundary = nativeTimeout;
+        }
+      }
+      const outcome = boundary === nativeTimeout ? undefined : boundary?.outcome;
+      const nativeAccepted = outcome?.accepted === true;
+      // Never use the API callback snapshot as physical authority. The shared
+      // boundary returns only after stable unloaded state, activation, or
+      // removal; a bounded caller that times out keeps the same Promise fenced.
+      const finalTab = boundary === nativeTimeout ?
+        await withTimeout(getTab(id), discard.getTimeout, undefined) || awake : boundary.finalTab;
+      const strong = nativeAccepted && isNativeDiscardSettled(finalTab);
+      const owned = await ownership.finish(finalTab || {...awake, discarded: false}, attemptId,
+        strong ? 'self' : undefined, {
+          allowClaimed: false,
+          lateNative: boundary === nativeTimeout,
+          visual
+        });
+      finished = true;
+      if (boundary === nativeTimeout) {
+        lateNativePending = true;
+        token.nativeFinalization = reconcileLateNative(
+          nativeOperation,
+          lateAuthority,
+          attemptId,
+          visual,
+          markerRollbackToken
+        );
+      }
+
+      if (strong && owned) {
+        if (await ownership.confirmSelf(finalTab.id, attemptId)) {
+          return true;
+        }
+        throw failureError(
+          `discard takeover failed for tab ${id}: tab woke during ownership finalization`,
+          FAILURE_CAUSES.OWNERSHIP_FINALIZATION_FAILED
+        );
+      }
+      const reason = boundary === nativeTimeout ? 'native discard timed out' : outcome?.error ||
+        (nativeAccepted ? 'native discard did not settle in the browser discard state' :
+          'another discarder won before the native discard');
+      throw failureError(
+        `discard takeover failed for tab ${id}: ${reason}`,
+        nativeFailureCause(boundary, nativeTimeout, nativeAccepted)
+      );
+    });
+  }
+  catch (e) {
+    if (directNative && attemptId && token.nativeInvoked !== true && directPendingAuthority) {
+      // A scope/ownership preflight can reject after the pending nonce is
+      // durable but before tabs.discard() is invoked. Retire only that exact
+      // authority; an invoked call remains fenced by token.nativeOperation.
+      await ownership.cancelDirectNative(directPendingAuthority, attemptId).catch(() => false);
+    }
+    if (token.cancelled && reloadStarted) {
+      await runPhase('network', () => settleCancelledReload(
+        id,
+        Date.now() + discard.cancellationSettleTimeout,
+        reloadObservation
+      ), {allowCancelled: true}).catch(() => undefined);
+    }
+    if (!finished && attemptId && ownership.isCurrent(id, attemptId)) {
+      const finalTab = await withTimeout(getTab(id), discard.getTimeout, undefined) || {
+        ...current,
+        discarded: false
+      };
+      await ownership.finish(finalTab, attemptId, undefined, {allowClaimed: false}).catch(() => {
+        return ownership.invalidate(id);
+      });
+    }
+    const rollbackToken = markerRollbackToken || markerRollback.token;
+    if (!lateNativePending && rollbackToken) {
+      await runPhase('cpu', () => restoreLiveDocumentMarker(
+        id,
+        rollbackToken
+      ), {allowCancelled: true}).catch(() => false);
+    }
+    if (e && typeof e === 'object' && !safeFailureCause(e.failureCause)) {
+      e.failureCause = FAILURE_CAUSES.TAKEOVER_FAILED;
+    }
+    throw e;
+  }
+  finally {
+    reloadObservation?.close();
+  }
+};
+
+const takeoverJobs = new Map();
+// Bound complete transactions as well as individual physical phases. Without
+// this admission layer, fast reload phases could wake an unbounded batch while
+// every job waited for the smaller renderer/native CPU budget.
+const takeoverAdmission = createTakeoverScheduler({concurrency: 4});
+// Each takeover schedules only its current physical phase. Renderer/script and
+// native-settlement work consumes the CPU/API budget; an ordinary discarded
+// wake and cancellation settlement consumes a separate network/RAM budget.
+// This avoids making a job hold one resource while waiting for another and
+// retains the historical four-phase global ceiling.
+const takeoverScheduler = createTakeoverScheduler({
+  concurrency: 4,
+  resourceLimits: {
+    cpu: 2,
+    network: 4
+  }
+});
+const takeoverJob = id => takeoverJobs.get(id) || takeoverJobs.get(currentId(id));
+discard.reserveRelease = rawId => {
+  const id = currentId(rawId);
+  if (!Number.isInteger(id)) {
+    throw Error('invalid tab release target');
+  }
+  // Once an ordinary discard has crossed into its native boundary, release is
+  // allowed to reserve and join that exact operation. Earlier renderer work
+  // remains conflicting because it has no accepted native call to fence yet.
+  const boundaryJob = takeoverJob(id);
+  if (releaseOperations.has(id) || rendererOperations.has(id) ||
+      (inprogress.has(id) && boundaryJob?.nativeBoundary !== true)) {
+    throw Error(`tab ${id} has a conflicting discard or release operation`);
+  }
+  const lease = {};
+  releaseOperations.set(id, lease);
+  let released = false;
+  return Object.freeze({
+    release() {
+      if (released) {
+        return;
+      }
+      released = true;
+      for (const [candidateId, candidate] of releaseOperations) {
+        if (candidate === lease) {
+          releaseOperations.delete(candidateId);
+        }
+      }
+    }
+  });
+};
+discard.withRendererGuard = (id, task) => {
+  id = currentId(id);
+  if (resetInProgress() || !Number.isInteger(id) || inprogress.has(id) || rendererOperations.has(id) ||
+      releaseOperations.has(id) || takeoverJob(id)) {
+    const error = Error(`tab ${id} has a conflicting discard operation`);
+    error.code = 'DISCARD_OPERATION_BLOCKED';
+    return Promise.reject(error);
+  }
+  rendererOperations.add(id);
+  return Promise.resolve().then(() => {
+    if (resetInProgress()) {
+      const error = Error('extension reset is in progress');
+      error.code = 'DISCARD_OPERATION_BLOCKED';
+      throw error;
+    }
+    return task();
+  }).finally(() => {
+    rendererOperations.delete(id);
+    rendererOperations.delete(currentId(id));
+  });
+};
+const retireTakeoverJob = job => {
+  for (const [id, candidate] of takeoverJobs) {
+    if (candidate === job) {
+      takeoverJobs.delete(id);
+    }
+  }
+};
+const registerNativeBoundaryJob = (tab, token) => {
+  const id = currentId(tab?.id);
+  const scope = expectedNativeScope(tab, {requireWindowType: true});
+  if (!Number.isInteger(id) || !scope || takeoverJob(id)) {
+    return undefined;
+  }
+  let resolveCompletion;
+  const completion = new Promise(resolve => {
+    resolveCompletion = resolve;
+  });
+  const job = {
+    id,
+    nativeBoundary: true,
+    phaseStarted: true,
+    scope,
+    started: true,
+    tab: {...tab, id},
+    token
+  };
+  job.promise = completion.finally(() => retireTakeoverJob(job));
+  takeoverJobs.set(id, job);
+  let completed = false;
+  return {
+    complete(finalization) {
+      if (completed) {
+        return;
+      }
+      completed = true;
+      void Promise.resolve(finalization).then(resolveCompletion, resolveCompletion);
+    },
+    job
+  };
+};
+const takeoverSnapshot = () => Object.freeze([...new Set(takeoverJobs.values())].map(job => {
+  const id = currentId(job.id);
+  // Return new, minimal records. Callers can scope/cancel a job without gaining
+  // access to its cancellation token, scheduler callback, promise, or live Map.
+  const tab = Object.freeze({
+    id,
+    ...(typeof job.tab?.incognito === 'boolean' && {incognito: job.tab.incognito}),
+    index: job.tab?.index,
+    windowId: job.tab?.windowId,
+    ...(job.tab?.windowType === 'normal' && {windowType: 'normal'})
+  });
+  return Object.freeze({
+    id,
+    started: job.started === true,
+    tab
+  });
+}));
+
+discard.takeover = (tab, {manual = false} = {}) => {
+  const id = currentId(tab && tab.id);
+  const scope = expectedNativeScope(tab, {requireWindowType: true});
+  if (resetInProgress()) {
+    return Promise.reject(Error('extension reset is in progress'));
+  }
+  if (!Number.isInteger(id) || !scope) {
+    return Promise.reject(Error('invalid tab or normal-window scope for discard takeover'));
+  }
+  const existing = takeoverJob(id);
+  if (existing) {
+    return existing.promise;
+  }
+  // Ordinary discard reserves its id synchronously before its first await.
+  // Never let a frozen/direct takeover interleave persistence and native work
+  // with that renderer-marking transaction.
+  if (inprogress.has(id) || rendererOperations.has(id) || releaseOperations.has(id)) {
+    return Promise.reject(Error(`ordinary discard is already in progress for tab ${id}`));
+  }
+
+  const token = {cancelled: false};
+  const job = {id, scope, started: false, tab: {...tab, id}, token};
+  const runPhase = (resource, task, {allowCancelled = false} = {}) => {
+    const scheduled = takeoverScheduler.schedule(async () => {
+      job.started = true;
+      job.phaseStarted = true;
+      if (token.cancelled && allowCancelled === false) {
+        throw Error(`discard takeover cancelled for tab ${job.id}`);
+      }
+      return task();
+    }, {
+      // Cancellation settlement and exact marker rollback are release fences.
+      // They may jump queued ordinary work, but the scheduler still makes them
+      // wait for active owners and enforces the same resource ceilings.
+      priority: allowCancelled ? 1 : 0,
+      resources: [resource]
+    });
+    job.phaseStarted = false;
+    // Repeated release/reset calls may observe cleanup while it is resource-
+    // queued. Never let a later cancellation cancel the settlement/rollback
+    // phase that the first cancellation is waiting for.
+    job.cancelScheduled = allowCancelled ? undefined : scheduled.cancel;
+    job.rekeyScheduled = scheduled.rekey;
+    return scheduled.promise;
+  };
+  const execute = async () => {
+    // The durable queue record now has an executor. From this point release
+    // must await/cancel the job transaction instead of treating it as a
+    // never-started queue item, even if its first resource phase is waiting.
+    job.started = true;
+    if (token.cancelled || resetInProgress()) {
+      throw Error(`discard takeover cancelled after window scope changed for tab ${job.id}`);
+    }
+    const live = await validateNativeBoundaryTab({id: job.id}, job.scope);
+    if (!live || live.active === true) {
+      throw Error(`tab ${job.id} is no longer an inactive takeover target`);
+    }
+    job.tab = live;
+    let lastError;
+    for (let pass = 0; pass < discard.takeoverRetries && token.cancelled === false; pass += 1) {
+      const state = await ownership.status(job.id);
+      if (state.marker?.source === 'contended' && manual !== true) {
+        throw Error(`automatic discard takeover stopped after contention on tab ${job.id}`);
+      }
+      if (!state.attemptId && state.marker?.state === 'owned' && state.marker.source === 'self') {
+        return true;
+      }
+      if (state.attemptId) {
+        try {
+          if (await waitForOwnership(job.id, token)) {
+            return true;
+          }
+        }
+        catch (e) {
+          lastError = e;
+          continue;
+        }
+      }
+      try {
+        const takeoverResult = await takeoverOnce(
+          {...job.tab, id: job.id},
+          token,
+          runPhase,
+          job.scope
+        );
+        if (takeoverResult) {
+          return takeoverResult;
+        }
+      }
+      catch (e) {
+        lastError = e;
+        // Emit only a bounded stage code under the existing opt-in debug
+        // preference. Browser evidence can diagnose races without exposing
+        // tab IDs, URLs, raw errors, or page data.
+        log('discard takeover failure stage', takeoverFailureStage(e));
+      }
+    }
+    if (!token.cancelled) {
+      const current = await withTimeout(getTab(job.id), discard.getTimeout, undefined);
+      if (isDiscardedTab(current) && token.directNative !== true) {
+        await ownership.deferTakeover(job.id);
+      }
+    }
+    throw lastError || Error(`discard takeover cancelled for tab ${job.id}`);
+  };
+
+  const start = async () => {
+    job.queueId = await ownership.queueTakeover(job.tab, token);
+    if (!job.queueId || token.cancelled || resetInProgress()) {
+      throw Error(`discard takeover cancelled before scheduling tab ${job.id}`);
+    }
+    const admitted = takeoverAdmission.schedule(execute);
+    job.cancelAdmission = admitted.cancel;
+    return admitted.promise;
+  };
+  job.promise = start().finally(async () => {
+    if (job.queueId) {
+      await ownership.clearQueuedTakeover(job.id, job.queueId).catch(() => false);
+    }
+    const pendingNative = job.token.nativeFinalization ||
+      (job.token.nativeSettled !== true && job.token.nativeOperation);
+    if (pendingNative) {
+      // A timed-out browser discard may still complete physically. Keep this
+      // transaction visible to release scopes until that operation reaches an
+      // actual boundary; otherwise the target disappears while awake and can
+      // be re-discarded after release has already reported success.
+      void Promise.resolve(pendingNative).then(
+        () => retireTakeoverJob(job),
+        () => retireTakeoverJob(job)
+      );
+    }
+    else {
+      retireTakeoverJob(job);
+    }
+  });
+  takeoverJobs.set(id, job);
+  return job.promise;
+};
+
+// Popup adoption commands can join the exact physical job instead of relying
+// on a duplicated timeout that cannot account for queue or storage latency.
+discard.waitForTakeover = id => takeoverJob(id)?.promise;
+
+discard.cancelTakeover = async id => {
+  const job = takeoverJob(id);
+  if (!job) {
+    return false;
+  }
+  if (job.nativeBoundary === true) {
+    // Cancellation can still win while the authoritative tab/window preflight
+    // is queued. If the browser call was already issued, this token cannot undo
+    // it and the existing physical/native fence below waits for its settlement.
+    job.token.cancelled = true;
+    const nativeBoundaryTimeout = {};
+    const settled = await withTimeout(
+      Promise.resolve(job.promise).then(() => true, () => true),
+      discard.releaseNativeFenceTimeout,
+      nativeBoundaryTimeout
+    );
+    if (settled === nativeBoundaryTimeout) {
+      throw Error(`cannot safely release tab ${job.id}: native discard operation is still pending`);
+    }
+    await ownership.invalidate(job.id);
+    return true;
+  }
+  job.token.cancelled = true;
+  // Phase scheduling preserves release priority too. A transaction can be
+  // logically started (and therefore require normal cleanup) while its next
+  // CPU/network phase is still queued behind that resource's independent cap.
+  // Reject that phase immediately instead of making release wait for a slot.
+  if (job.started === true && job.phaseStarted === false) {
+    job.cancelScheduled?.(`discard takeover cancelled for tab ${job.id}`);
+  }
+  // A queued job has not woken or touched the tab yet. Its cancellation token
+  // makes it safe to release immediately instead of waiting behind unrelated
+  // takeovers in the global serialization queue.
+  if (job.started === false) {
+    await ownership.invalidate(job.id);
+    job.cancelAdmission?.(`discard takeover cancelled for tab ${job.id}`);
+    job.cancelScheduled?.(`discard takeover cancelled for tab ${job.id}`);
+    if (takeoverJobs.get(job.id) === job) {
+      takeoverJobs.delete(job.id);
+    }
+    return true;
+  }
+  const jobFenceTimeout = {};
+  const jobSettled = await withTimeout(
+    Promise.resolve(job.promise).then(() => true, () => true),
+    discard.releaseNativeFenceTimeout,
+    jobFenceTimeout
+  );
+  if (jobSettled === jobFenceTimeout) {
+    throw Error(`cannot safely release tab ${job.id}: native discard operation is still pending`);
+  }
+  const nativeFence = job.token.nativeFinalization ||
+    (job.token.nativeSettled !== true && job.token.nativeOperation);
+  if (nativeFence) {
+    const timedOut = {};
+    const settled = await withTimeout(
+      Promise.resolve(nativeFence).then(() => true, () => true),
+      discard.releaseNativeFenceTimeout,
+      timedOut
+    );
+    if (settled === timedOut) {
+      throw Error(`cannot safely release tab ${job.id}: native discard operation is still pending`);
+    }
+  }
+  // Once the direct physical boundary is definitive, release may remove the
+  // old marker before performing its single explicit reload. A fence timeout
+  // deliberately leaves direct-native-pending durable so every retry remains
+  // a no-op until Edge finally settles.
+  await ownership.invalidate(job.id);
+  return true;
+};
+
+// Reset is a global barrier, so drain the live job registry rather than taking
+// a one-shot snapshot. Jobs that were still persisting their queue marker when
+// cancellation began are already present in the Map and are fenced by their
+// token; any job added while a running takeover settles is caught on the next
+// pass before ownership storage is erased.
+discard.cancelTakeovers = async () => {
+  const cancelled = new Set();
+  while (takeoverJobs.size) {
+    const jobs = [...new Set(takeoverJobs.values())];
+    await Promise.all(jobs.map(async job => {
+      if (await discard.cancelTakeover(job.id)) {
+        cancelled.add(job);
+      }
+    }));
+  }
+  return cancelled.size;
+};
+
+// Install the admission fence synchronously, before reset clears preferences.
+// drain() then cancels queued work, joins every admitted ordinary transaction,
+// joins native/takeover fences, and removes the journal behind all older writes.
+// The caller keeps the fence installed through visual repair and ownership
+// reconciliation, releasing it only with complete() (or abort() on failure).
+discard.beginReset = () => {
+  if (resetBarrier) {
+    throw Error('extension reset is already in progress');
+  }
+  const intentReset = ordinaryIntents.beginReset();
+  if (!intentReset) {
+    throw Error('ordinary discard reset barrier is already in progress');
+  }
+  const state = {drainPromise: undefined};
+  resetBarrier = state;
+  const release = method => {
+    if (resetBarrier === state) {
+      resetBarrier = undefined;
+      intentReset[method]();
+    }
+  };
+  return Object.freeze({
+    abort: () => release('abort'),
+    complete: () => release('complete'),
+    drain() {
+      if (!state.drainPromise) {
+        state.drainPromise = (async () => {
+          const journalClear = intentReset.clear();
+          const queued = discard.tabs.splice(0);
+          for (const entry of queued) {
+            inprogress.delete(entry.tab?.id);
+            inprogress.delete(currentId(entry.tab?.id));
+            entry.resolve(resetDiscardOutcome(entry.tab));
+          }
+
+          await discard.cancelTakeovers();
+          while (ordinaryOperations.size) {
+            await Promise.allSettled([...ordinaryOperations]);
+            // An already-admitted operation may have published its native job
+            // immediately before observing the reset flag. Drain that late
+            // boundary before deciding the registry is empty.
+            await discard.cancelTakeovers();
+          }
+          await discard.cancelTakeovers();
+          inprogress.clear();
+          await journalClear;
+          return {ordinary: ordinaryOperations.size, queued: queued.length};
+        })();
+      }
+      return state.drainPromise;
+    }
+  });
+};
+
+// Only resume a takeover that this worker had already woken before MV3 stopped
+// it. Do not sweep and reload every pre-existing external discard at startup.
+discard.recoverTakeovers = async () => {
+  if (resetInProgress()) {
+    return [];
+  }
+  const tabs = await query({
+    url: '*://*/*',
+    active: false
+  });
+  const targets = (await Promise.all(tabs.map(async tab => {
+    const state = await ownership.status(tab.id);
+    const recovery = isLoadedTab(tab) && state.marker?.state === 'takeover-recovery';
+    const queued = isSuspendedTab(tab) &&
+      state.marker?.state === 'takeover-queued';
+    return recovery || queued ? tab : undefined;
+  }))).filter(Boolean);
+  return Promise.all(targets.map(tab => discard.takeover({
+    ...tab,
+    windowType: 'normal'
+  }).catch(e => {
+    log('discard takeover failed', e);
+    return false;
+  })));
+};
+
+discard.recoverOrdinaryDiscards = ({revalidate} = {}) => resetInProgress() ? Promise.resolve([]) :
+  ordinaryIntents.recover({
+    getTab: getTabForRecovery,
+    revalidate,
+    resolveId: currentId,
+    resume: async (tab, intentId) => {
+      const result = await discard(tab, {
+        intentId,
+        recoveryScope: {
+          incognito: tab.incognito,
+          windowId: tab.windowId
+        }
+      });
+      return result?.status === 'succeeded';
+    }
+  });
+
+chrome.tabs.onRemoved?.addListener(id => {
+  void ordinaryIntents.removed(id).catch(() => false);
+  if (currentId(id) !== id) {
+    return;
+  }
+  const job = takeoverJob(id);
+  if (job) {
+    job.token.cancelled = true;
+    job.token.removed = true;
+    // A transaction may have begun its durable queue bookkeeping while its
+    // current physical phase is still resource-queued. Reject either kind of
+    // unstarted work immediately so removal cannot retain scheduler memory or
+    // later acquire a phase for a tab that no longer exists.
+    if (job.phaseStarted !== true) {
+      job.cancelScheduled?.(`discard takeover target ${job.id} was removed`);
+    }
+    if (job.started === false) {
+      job.cancelAdmission?.(`discard takeover target ${job.id} was removed`);
+      if (takeoverJobs.get(job.id) === job) {
+        takeoverJobs.delete(job.id);
+      }
+    }
+  }
+});
+chrome.tabs.onReplaced?.addListener((addedId, removedId) => {
+  void ordinaryIntents.replace(removedId, addedId).catch(() => false);
+  const job = takeoverJobs.get(removedId);
+  if (job) {
+    takeoverJobs.delete(removedId);
+    job.id = currentId(addedId);
+    job.tab = {...job.tab, id: job.id};
+    takeoverJobs.set(job.id, job);
+  }
+  if (inprogress.delete(removedId)) {
+    inprogress.add(currentId(addedId));
+  }
+  // Queued ordinary jobs hold their original snapshot until the active slot
+  // drains. Move that snapshot with the ownership lineage as well as the Set
+  // reservation; otherwise the internal resume deletes only the predecessor
+  // lock and immediately skips the live successor as already in progress.
+  for (const queued of discard.tabs) {
+    if (queued?.tab?.id === removedId) {
+      queued.tab = {...queued.tab, id: currentId(addedId)};
+    }
+  }
+  if (rendererOperations.delete(removedId)) {
+    rendererOperations.add(currentId(addedId));
+  }
+  const releaseLease = releaseOperations.get(removedId);
+  if (releaseLease) {
+    releaseOperations.delete(removedId);
+    releaseOperations.set(currentId(addedId), releaseLease);
+  }
+});
+chrome.tabs.onAttached?.addListener((id, info) => {
+  const job = takeoverJob(id);
+  if (!job || !Number.isInteger(info?.newWindowId)) {
+    return;
+  }
+  job.tab = {
+    ...job.tab,
+    incognito: undefined,
+    windowId: info.newWindowId,
+    windowType: undefined,
+    ...(Number.isInteger(info.newPosition) && {index: info.newPosition})
+  };
+  // A command's window is part of its immutable authorization scope. Never
+  // adopt or rekey a moved target into the destination, even when that window
+  // is also normal and has the same privacy mode. Clearing the snapshot scope
+  // above keeps release discovery fail closed while every queued/running phase
+  // is cancelled through its existing transaction fences.
+  job.token.cancelled = true;
+  job.cancelAdmission?.(`discard takeover window changed for tab ${job.id}`);
+  if (job.phaseStarted === false) {
+    job.cancelScheduled?.(`discard takeover window changed for tab ${job.id}`);
+  }
+});
+chrome.tabs.onMoved?.addListener((id, info) => {
+  const job = takeoverJob(id);
+  if (!job || !Number.isInteger(info?.toIndex)) {
+    return;
+  }
+  if (Number.isInteger(info.windowId) && info.windowId !== job.scope?.windowId) {
+    job.token.cancelled = true;
+    return;
+  }
+  job.tab = {...job.tab, index: info.toIndex};
+});
+
+discard.perform = async (tab, visual = undefined) => {
+  let attemptId;
+  const rollback = () => restoreLiveDocumentMarker(tab.id, visual?.rollbackToken).catch(() => false);
+  if (resetInProgress()) {
+    await rollback();
+    return resetDiscardOutcome(tab);
+  }
+  if (await ownership.hasBlockingNativeIntent(tab.id).catch(() => true)) {
+    return discardOutcome('skipped', tab, 'direct native discard is still settling');
+  }
+  if (resetInProgress()) {
+    await rollback();
+    return resetDiscardOutcome(tab);
+  }
+  try {
+    // The pending tag is persisted before Chromium receives the discard call.
+    attemptId = await ownership.begin(tab);
+  }
+  catch (e) {
+    log('discard ownership tagging failed', e);
+    await rollback();
+    return discardOutcome('failed', tab, `ownership tagging failed: ${e?.message || String(e)}`);
+  }
+  if (!attemptId) {
+    await rollback();
+    return discardOutcome('failed', tab, 'ownership tagging did not start');
+  }
+  if (resetInProgress()) {
+    await ownership.finish(tab, attemptId, undefined, {allowClaimed: false}).catch(() => false);
+    await rollback();
+    return resetDiscardOutcome(tab);
+  }
+
+  // tabs.get() intentionally omits a window type. Revalidate the fresh tab
+  // against its authoritative Window immediately before publishing the live
+  // native boundary, so release scopes can neither lose it nor cross privacy
+  // contexts.
+  const expectedScope = expectedNativeScope(tab);
+  const scopedTab = await validateNativeBoundaryTab(tab, expectedScope).catch(() => undefined);
+  if (!scopedTab) {
+    await ownership.finish(tab, attemptId, undefined, {allowClaimed: false}).catch(() => false);
+    await rollback();
+    return discardOutcome('failed', tab, 'native discard window scope could not be verified');
+  }
+  tab = scopedTab;
+
+  if (resetInProgress()) {
+    await ownership.finish(tab, attemptId, undefined, {allowClaimed: false}).catch(() => false);
+    await rollback();
+    return resetDiscardOutcome(tab);
+  }
+
+  const token = {cancelled: false, removed: false};
+  const boundaryRegistration = registerNativeBoundaryJob(tab, token);
+  if (!boundaryRegistration) {
+    await ownership.finish(tab, attemptId, undefined, {allowClaimed: false}).catch(() => false);
+    await rollback();
+    return discardOutcome('failed', tab, 'another native discard boundary is already in progress');
+  }
+  const timeout = {};
+  const lateAuthority = ownership.lateAuthority(tab.id);
+  const nativeOperation = nativeBoundaryOperation(tab, undefined, token, expectedScope);
+  let retainedFinalization;
+  try {
+    let boundary = await withNativeBoundaryTimeout(
+      nativeOperation,
+      discard.nativeTimeout,
+      timeout
+    );
+    if (boundary === timeout) {
+      const fenceTimeout = {};
+      boundary = await withNativeBoundaryTimeout(
+        nativeOperation,
+        discard.takeoverFenceTimeout,
+        fenceTimeout
+      );
+      if (boundary === fenceTimeout) {
+        boundary = timeout;
+      }
+    }
+
+    const outcome = boundary === timeout ? undefined : boundary?.outcome;
+    const accepted = outcome?.accepted === true;
+    const current = boundary === timeout ?
+      await withTimeout(getTab(tab.id), discard.getTimeout, undefined) : boundary.finalTab;
+    const settled = accepted && isNativeDiscardSettled(current);
+    const source = settled ? 'self' : undefined;
+
+    const failureReason = outcome?.error || (boundary === timeout ? 'native discard timed out' :
+      (!settled ? 'native discard did not settle in the browser discard state' : undefined));
+    if (failureReason) {
+      log('discarding failed', failureReason);
+    }
+
+    try {
+      const owned = await ownership.finish(current || tab, attemptId, source, {
+        allowClaimed: !accepted,
+        lateNative: boundary === timeout,
+        visual
+      });
+      if (boundary === timeout) {
+        retainedFinalization = token.nativeFinalization = reconcileLateNative(
+          nativeOperation,
+          lateAuthority,
+          attemptId,
+          visual,
+          visual?.rollbackToken
+        );
+      }
+      if (source && owned === false) {
+        await rollback();
+        return discardOutcome('failed', current || tab, 'ownership finalization rejected the settled discard', {
+          failureCause: FAILURE_CAUSES.OWNERSHIP_FINALIZATION_FAILED,
+          native: nativeProvenance(outcome)
+        });
+      }
+      if (settled && owned && await ownership.confirmSelf(current.id, attemptId) === false) {
+        await rollback();
+        return discardOutcome('failed', current || tab, 'tab woke during ownership finalization', {
+          failureCause: FAILURE_CAUSES.OWNERSHIP_FINALIZATION_FAILED,
+          native: nativeProvenance(outcome)
+        });
+      }
+    }
+    catch (e) {
+      log('discard ownership finalization failed', e);
+      await rollback();
+      return discardOutcome('failed', current || tab,
+        `ownership finalization failed: ${e?.message || String(e)}`, {
+          failureCause: FAILURE_CAUSES.OWNERSHIP_FINALIZATION_FAILED,
+          native: nativeProvenance(outcome)
+        });
+    }
+    if (!settled && boundary !== timeout) {
+      await rollback();
+    }
+    return settled ? discardOutcome('succeeded', current, 'native discard settled', {
+      native: nativeProvenance(outcome)
+    }) : discardOutcome('failed', current || tab, failureReason || 'native discard did not settle', {
+      failureCause: nativeFailureCause(boundary, timeout, accepted),
+      native: nativeProvenance(outcome)
+    });
+  }
+  catch (error) {
+    // Scope/reset cancellation can win after the pending ownership marker was
+    // persisted but before tabs.discard was invoked. Retire that exact attempt
+    // and undo its document marker before publishing boundary completion.
+    await ownership.finish(tab, attemptId, undefined, {allowClaimed: false}).catch(() => false);
+    await rollback();
+    const cancelled = token.cancelled === true || resetInProgress();
+    return discardOutcome(cancelled ? 'skipped' : 'failed', tab,
+      cancelled ? 'native discard was cancelled before invocation' :
+        `native discard boundary failed: ${error?.message || String(error)}`, {
+        ...(!cancelled && {failureCause: failureCauseFrom(error)})
+      });
+  }
+  finally {
+    // The bounded caller may return after both API fences, but the public job
+    // remains discoverable until the physical boundary and late ownership
+    // reconciliation have both settled.
+    boundaryRegistration.complete(retainedFinalization ||
+      (token.nativeSettled !== true ? nativeOperation : undefined));
+  }
+};
+
+discard.recoverInterruptedPulse = async () => {
+  const recovery = await pulseRecovery.recover();
+  if (Number.isInteger(recovery.targetId) && recovery.status !== 'deferred') {
+    // Recovery never changes the live selection. Remove the interrupted
+    // attempt so the ordinary takeover startup scan cannot turn a preserved
+    // user-visible target into a delayed discard after worker eviction.
+    await ownership.invalidate(recovery.targetId);
+  }
+  return recovery;
+};
+discard.nativeTimeout = 5000;
+discard.getTimeout = 1000;
+discard.takeoverTimeout = 5000;
+discard.takeoverPoll = 50;
+discard.takeoverRetries = 1;
+discard.takeoverFenceTimeout = 10000;
+discard.releaseNativeFenceTimeout = 10000;
+discard.nativeSettleTimeout = 5000;
+discard.nativeStableDwell = 50;
+discard.quiesceDwell = 100;
+discard.reloadStartGrace = 250;
+discard.stopTimeout = 1000;
+discard.titleSettleTimeout = 1000;
+discard.transientFrameRetries = 2;
+discard.cancellationSettleTimeout = 2000;
+discard.cancellationStableDwell = 100;
+discard.activationEventGrace = 50;
+discard.transientFocusStartGrace = 100;
+discard.transientFocusReturnTimeout = 2000;
+// Rollback can queue behind the same bounded visual preparation it revokes.
+// Match that operation's budget so a timeout after a renderer-side title write
+// still has time to run the exact-token cleanup; this never authorizes a retry
+// or a second native discard.
+discard.markerRollbackTimeout = 5000;
+discard.sideEffectProbeTimeout = 1000;
+discard.takeoverSnapshot = takeoverSnapshot;
+discard.takeoverAdmission = takeoverAdmission;
+discard.takeoverScheduler = takeoverScheduler;
 
 export {discard, inprogress};

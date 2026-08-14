@@ -1,18 +1,23 @@
+import {helperMetadata} from '../../core/helper-metadata.mjs';
+
 // localization
 [...document.querySelectorAll('[data-i18n]')].forEach(e => {
   e[e.dataset.i18nValue || 'textContent'] = chrome.i18n.getMessage(e.dataset.i18n);
 });
 
-const args = new URLSearchParams(location.search);
-document.title = chrome.i18n.getMessage('blank_header') + ' ' + args.get('title');
-
-const favicon = args.get('favicon');
-if (favicon) {
-  const link = document.createElement('link');
-  link.setAttribute('rel', 'icon');
-  link.setAttribute('href', favicon);
-  document.head.appendChild(link);
-}
+const nonce = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+helperMetadata.take(nonce).then(metadata => {
+  document.title = chrome.i18n.getMessage('blank_header') + (metadata?.title ? ` ${metadata.title}` : '');
+  if (metadata?.favicon) {
+    const link = document.createElement('link');
+    link.setAttribute('rel', 'icon');
+    link.setAttribute('href', metadata.favicon);
+    document.head.appendChild(link);
+  }
+}).catch(() => {
+  document.title = chrome.i18n.getMessage('blank_header');
+});
 
 chrome.runtime.onMessage.addListener(request => {
   if (request.method === 'tab-is-active') {

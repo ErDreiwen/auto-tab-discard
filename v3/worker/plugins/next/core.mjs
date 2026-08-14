@@ -1,15 +1,11 @@
 import {log, query} from '../../core/utils.mjs';
+import {getTab, releaseMatching} from '../../core/release.mjs';
+import {nextReleaseScope} from '../release-scopes.mjs';
 
-const observe = activeInfo => chrome.tabs.get(activeInfo.tabId, tab => query({
-  windowId: activeInfo.windowId,
-  index: tab.index + 1,
-  discarded: true
-}).then(tbs => {
-  if (tbs.length) {
-    log('release discarding of the next tab', tbs[0]);
-    chrome.tabs.reload(tbs[0].id);
-  }
-}));
+const observe = activeInfo => getTab(activeInfo.tabId).then(tab => {
+  const scope = nextReleaseScope(activeInfo, tab);
+  return scope && query(scope.query).then(tabs => releaseMatching(tabs, scope));
+}).catch(error => log('next release failed', error));
 
 function enable() {
   log('next.enable is called');

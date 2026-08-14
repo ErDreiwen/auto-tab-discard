@@ -55,6 +55,10 @@
         "message": "De gedeactiveerde tabbladen laten voorafgaan door een symbool (bv. 💤 of ⏻︎) (wanneer mogelijk)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Alle niet-vastgemaakte tabbladen deactiveren bij het starten van de browser of extensie",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Geen tabblad deactiveren als het is vastgemaakt",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Geen tabblad deactiveren als het zich in een gesplitste weergave bevindt en een van de tabbladen van de splitsing is gefocust",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "FAQ-pagina over updates openen",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "Fabrieksinstellingen terugzetten",
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Gedeactiveerd venster)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Annuleren"
+  },
+  "popup_retry": {
+    "message": "Opnieuw proberen"
+  },
+  "popup_progress": {
+    "message": "$COMPLETED$ van $TOTAL$ tabbladen voltooid",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ geslaagd, $SKIPPED$ overgeslagen, $FAILED$ mislukt.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Veilig annuleren…"
+  },
+  "popup_status_cancelled": {
+    "message": "Geannuleerd."
+  },
+  "popup_status_complete": {
+    "message": "Voltooid."
+  },
+  "popup_status_partial": {
+    "message": "Voltooid met enkele tabbladen niet afgerond."
+  },
+  "popup_status_failed": {
+    "message": "De actie kon niet worden voltooid."
+  },
+  "popup_status_interrupted": {
+    "message": "De browser heeft de vorige actie onderbroken."
+  },
+  "popup_error_busy": {
+    "message": "Er wordt al een andere tabbladactie uitgevoerd in dit venster."
+  },
+  "popup_error_command_failed": {
+    "message": "De tabbladactie is mislukt."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Er is geen actief tabblad beschikbaar."
+  },
+  "popup_error_target_changed": {
+    "message": "Het geselecteerde tabblad veranderde voordat de actie kon worden uitgevoerd."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ tabblad(en) zijn door de extensie via de browser ontladen, maar Edge kon geen titel- of faviconmarkering toevoegen omdat de renderer al was bevroren.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ tabblad(en) bleven geladen omdat er geen veilig tabblad beschikbaar was om actief te houden. Open of selecteer een ander tabblad en probeer het opnieuw.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ tabblad(en) bleven bevroren na het opnieuw laden voor vrijgave. Edge kon ze niet activeren zonder selectie, dus er volgde geen tweede herlaadpoging. Probeer het opnieuw.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Diagnostiek tonen"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Diagnostiek verbergen"
+  },
+  "popup_diagnostics_region": {
+    "message": "Actiediagnostiek"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incident"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Gegroepeerde resultaten"
+  },
+  "popup_diagnostics_log": {
+    "message": "Opgeschoond diagnostisch logboek"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Logboek kopiëren"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log downloaden"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Diagnostiek wissen"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnostisch logboek gekopieerd."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Het diagnostische logboek kon niet worden gekopieerd."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Download van het diagnostische logboek gestart."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Het diagnostische logboek kon niet worden gedownload."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostiek gewist."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Diagnostiek kon niet worden gewist."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Er is geen opgeschoonde diagnostiek beschikbaar."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "geslaagd"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "overgeslagen"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "mislukt"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Ingedeeld resultaat"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostiek"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Opgeschoonde logboeken bevatten geen URL's, titels, tabblad- en venster-ID's, siteregels of activiteit in privévensters."
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log downloaden"
+  },
+  "options_diagnostics_clear": {
+    "message": "Diagnostiek wissen"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostiek gewist."
+  },
+  "options_frame_access_title": {
+    "message": "Bescherming voor pagina’s met frames"
+  },
+  "options_frame_access_description": {
+    "message": "Optioneel: laat Auto Tab Discard frame-ID’s opsommen zodat elk frame binnen een strikte werklimiet kan worden gecontroleerd. De browser kan deze toestemming omschrijven als ‘Je browsegeschiedenis lezen’. De extensie bewaart of logt geen frame-URL’s. Zonder deze toestemming worden begrensde frames van dezelfde oorsprong nog steeds gecontroleerd; ontoegankelijke of te grote framebomen blijven beschermd."
+  },
+  "options_frame_access_enable": {
+    "message": "Volledige framebescherming inschakelen"
+  },
+  "options_frame_access_disable": {
+    "message": "Optionele frametoegang uitschakelen"
+  },
+  "options_frame_access_enabled": {
+    "message": "Volledige bescherming voor pagina’s met frames is ingeschakeld."
+  },
+  "options_frame_access_limited": {
+    "message": "Optionele frametoegang is uitgeschakeld. Begrensde frames van dezelfde oorsprong worden gecontroleerd; onbekende takken blijven beschermd."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Deze browser kan optionele frametoegang niet beheren. Onbekende frametakken blijven beschermd."
+  },
+  "options_diagnostics_empty": {
+    "message": "Er is geen opgeschoonde diagnostiek beschikbaar."
+  }
 }

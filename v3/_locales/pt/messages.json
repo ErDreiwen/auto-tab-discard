@@ -55,6 +55,10 @@
         "message": "Adicionar um símbolo aos separadores descartados (p.ex. 💤 ou ⏻︎) (se possível)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "No arranque do navegador ou extensão, descartar todos os separadores não fixados",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Não descartar um separador quando fixado",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Não descartar um separador se estiver numa vista dividida e qualquer um dos separadores da divisão estiver em foco",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "Abrir a página de P&R quando houver actualizações",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "Restabelecer o estado original",
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Janela descartada)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Cancelar"
+  },
+  "popup_retry": {
+    "message": "Tentar novamente"
+  },
+  "popup_progress": {
+    "message": "$COMPLETED$ de $TOTAL$ separadores concluídos",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ com êxito, $SKIPPED$ ignorados, $FAILED$ falharam.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "A cancelar em segurança…"
+  },
+  "popup_status_cancelled": {
+    "message": "Cancelado."
+  },
+  "popup_status_complete": {
+    "message": "Concluído."
+  },
+  "popup_status_partial": {
+    "message": "Concluído com alguns separadores por processar."
+  },
+  "popup_status_failed": {
+    "message": "Não foi possível concluir a ação."
+  },
+  "popup_status_interrupted": {
+    "message": "O navegador interrompeu a ação anterior."
+  },
+  "popup_error_busy": {
+    "message": "Já está em curso outra ação de separadores nesta janela."
+  },
+  "popup_error_command_failed": {
+    "message": "A ação de separadores falhou."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Não está disponível nenhum separador ativo."
+  },
+  "popup_error_target_changed": {
+    "message": "O separador selecionado mudou antes de a ação ser executada."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ separador(es) foram descartados nativamente pela extensão, mas o Edge não conseguiu marcar o título ou favicon porque o renderizador já estava congelado.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ separador(es) permaneceram carregados porque não estava disponível um separador seguro para manter ativo. Abra ou selecione outro separador e tente novamente.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ separador(es) permaneceram congelados após o recarregamento de libertação. O Edge não permitiu reativá-los sem os selecionar, por isso não foi tentado outro recarregamento. Tente novamente.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostrar diagnóstico"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Ocultar diagnóstico"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnóstico da ação"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incidente"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Resultados agrupados"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registo de diagnóstico sanitizado"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copiar registo"
+  },
+  "popup_diagnostics_download": {
+    "message": "Transferir latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Limpar diagnóstico"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registo de diagnóstico copiado."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Não foi possível copiar o registo de diagnóstico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "A transferência do registo de diagnóstico começou."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Não foi possível transferir o registo de diagnóstico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnóstico limpo."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Não foi possível limpar o diagnóstico."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Não está disponível nenhum diagnóstico sanitizado."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "com êxito"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "ignorados"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "falharam"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Resultado classificado"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnóstico"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Os registos sanitizados excluem URL, títulos, IDs de separadores e janelas, regras de sites e atividade de janelas privadas."
+  },
+  "options_diagnostics_download": {
+    "message": "Transferir latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Limpar diagnóstico"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnóstico limpo."
+  },
+  "options_frame_access_title": {
+    "message": "Proteção de páginas com molduras"
+  },
+  "options_frame_access_description": {
+    "message": "Opcional: permita que o Auto Tab Discard enumere identificadores de molduras para verificar todas as molduras dentro de um limite de trabalho rigoroso. O navegador pode descrever esta permissão como «Ler o histórico de navegação». A extensão não guarda nem regista URLs de molduras. Sem ela, as molduras limitadas da mesma origem continuam a ser verificadas; árvores inacessíveis ou demasiado grandes permanecem protegidas."
+  },
+  "options_frame_access_enable": {
+    "message": "Ativar proteção completa de molduras"
+  },
+  "options_frame_access_disable": {
+    "message": "Desativar acesso opcional a molduras"
+  },
+  "options_frame_access_enabled": {
+    "message": "A proteção completa de páginas com molduras está ativada."
+  },
+  "options_frame_access_limited": {
+    "message": "O acesso opcional a molduras está desativado. As molduras limitadas da mesma origem são verificadas; os ramos desconhecidos permanecem protegidos."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Este navegador não consegue gerir o acesso opcional a molduras. Os ramos desconhecidos permanecem protegidos."
+  },
+  "options_diagnostics_empty": {
+    "message": "Não estão disponíveis diagnósticos sanitizados."
+  }
 }

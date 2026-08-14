@@ -55,6 +55,10 @@
         "message": "Добавляет символ к выгруженным вкладкам (например 💤 или ⏻︎) (если возможно)",
         "description": ""
     },
+    "options_discard_protected_on_close": {
+        "message": "Discard pinned or grouped tabs instead of closing them (from navigation interface or user command)",
+        "description": ""
+    },
     "options_startup_unpinned": {
         "message": "Выгружать все незакрепленные вкладки при запуске браузера или расширения",
         "description": ""
@@ -93,6 +97,10 @@
     },
     "options_pinned": {
         "message": "Не выгружать вкладку, когда она закреплена",
+        "description": ""
+    },
+    "options_split_view": {
+        "message": "Не выгружать вкладку, если она находится в разделенном представлении и любая из вкладок разделения находится в фокусе",
         "description": ""
     },
     "options_form": {
@@ -234,6 +242,36 @@
     "options_faqs": {
         "message": "Открыть страницу FAQ при обновлении",
         "description": ""
+    },
+    "options_lifecycle_feedback": {
+        "message": "Allow fixed fork GitHub release notes on install/update and an uninstall feedback page"
+    },
+    "options_export_raw": {
+        "message": "Export Raw Settings"
+    },
+    "options_export_support": {
+        "message": "Export Sanitized Support Bundle"
+    },
+    "options_backup_notice": {
+        "message": "Raw backups may contain site rules. Sanitized support bundles exclude browsing and site-rule data."
+    },
+    "options_import_success": {
+        "message": "Settings imported. Reloading..."
+    },
+    "options_import_failed": {
+        "message": "Import failed"
+    },
+    "options_export_failed": {
+        "message": "Export failed"
+    },
+    "options_save_failed": {
+        "message": "Save failed"
+    },
+    "options_feedback_desc": {
+        "message": "Report a problem or suggest an improvement for this fork"
+    },
+    "options_feedback_btn": {
+        "message": "Open GitHub Issues"
     },
     "options_reset": {
         "message": "Сброс Настроек",
@@ -538,5 +576,229 @@
     "blank_header": {
         "message": "(Выгруженное окно)",
         "description": ""
+    },
+  "popup_title": {
+    "message": "Auto Tab Discard"
+  },
+  "popup_cancel": {
+    "message": "Отмена"
+  },
+  "popup_retry": {
+    "message": "Повторить"
+  },
+  "popup_progress": {
+    "message": "Завершено $COMPLETED$ из $TOTAL$ вкладок",
+    "placeholders": {
+      "completed": {
+        "content": "$1"
+      },
+      "total": {
+        "content": "$2"
+      }
     }
+  },
+  "popup_result_summary": {
+    "message": "$SUCCESS$ успешно, $SKIPPED$ пропущено, $FAILED$ с ошибкой.",
+    "placeholders": {
+      "success": {
+        "content": "$1"
+      },
+      "skipped": {
+        "content": "$2"
+      },
+      "failed": {
+        "content": "$3"
+      }
+    }
+  },
+  "popup_status_cancelling": {
+    "message": "Безопасная отмена…"
+  },
+  "popup_status_cancelled": {
+    "message": "Отменено."
+  },
+  "popup_status_complete": {
+    "message": "Готово."
+  },
+  "popup_status_partial": {
+    "message": "Готово, но некоторые вкладки не обработаны."
+  },
+  "popup_status_failed": {
+    "message": "Не удалось выполнить действие."
+  },
+  "popup_status_interrupted": {
+    "message": "Браузер прервал предыдущее действие."
+  },
+  "popup_error_busy": {
+    "message": "В этом окне уже выполняется другое действие с вкладками."
+  },
+  "popup_error_command_failed": {
+    "message": "Не удалось выполнить действие с вкладками."
+  },
+  "popup_error_no_active_tab": {
+    "message": "Нет доступной активной вкладки."
+  },
+  "popup_error_target_changed": {
+    "message": "Выбранная вкладка изменилась до запуска действия."
+  },
+  "popup_visual_unavailable_warning": {
+    "message": "$COUNT$ вкладок были нативно выгружены расширением, но Edge не смог добавить индикатор в заголовок или значок, поскольку процесс отображения уже был заморожен.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_no_safe_keeper_warning": {
+    "message": "$COUNT$ вкладок остались загруженными, поскольку не было другой безопасной вкладки, которую можно оставить активной. Откройте или выберите другую вкладку и повторите попытку.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_release_remains_frozen_warning": {
+    "message": "$COUNT$ вкладок остались замороженными после перезагрузки для освобождения. Edge не смог пробудить их без активации, поэтому повторная перезагрузка не выполнялась. Повторите попытку.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "popup_diagnostics_show": {
+    "message": "Показать диагностику"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Скрыть диагностику"
+  },
+  "popup_diagnostics_region": {
+    "message": "Диагностика действия"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Инцидент"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Сгруппированные результаты"
+  },
+  "popup_diagnostics_log": {
+    "message": "Очищенный диагностический журнал"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Копировать журнал"
+  },
+  "popup_diagnostics_download": {
+    "message": "Скачать latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Очистить диагностику"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Диагностический журнал скопирован."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Не удалось скопировать диагностический журнал."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Скачивание диагностического журнала началось."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Не удалось скачать диагностический журнал."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Диагностика очищена."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Не удалось очистить диагностику."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Очищенная диагностика недоступна."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "успешно"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "пропущено"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "с ошибкой"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Классифицированный результат"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Диагностика"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Очищенные журналы не содержат URL, заголовков, идентификаторов вкладок и окон, правил сайтов и активности приватных окон."
+  },
+  "options_diagnostics_download": {
+    "message": "Скачать latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Очистить диагностику"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Диагностика очищена."
+  },
+  "options_frame_access_title": {
+    "message": "Защита страниц с фреймами"
+  },
+  "options_frame_access_description": {
+    "message": "Необязательно: разрешите Auto Tab Discard перечислять идентификаторы фреймов, чтобы проверять каждый фрейм в пределах строгого лимита работы. Браузер может описать это разрешение как «Чтение истории просмотров». Расширение не сохраняет и не записывает URL фреймов. Без разрешения ограниченные фреймы того же источника всё равно проверяются; недоступные или слишком большие деревья фреймов остаются защищёнными."
+  },
+  "options_frame_access_enable": {
+    "message": "Включить полную защиту фреймов"
+  },
+  "options_frame_access_disable": {
+    "message": "Отключить необязательный доступ к фреймам"
+  },
+  "options_frame_access_enabled": {
+    "message": "Полная защита страниц с фреймами включена."
+  },
+  "options_frame_access_limited": {
+    "message": "Необязательный доступ к фреймам отключён. Ограниченные фреймы того же источника проверяются; неизвестные ветви остаются защищёнными."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Этот браузер не может управлять необязательным доступом к фреймам. Неизвестные ветви фреймов остаются защищёнными."
+  },
+  "options_diagnostics_empty": {
+    "message": "Очищенная диагностика недоступна."
+  }
 }
