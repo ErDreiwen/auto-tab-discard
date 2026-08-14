@@ -3,8 +3,8 @@
 This is the repository-local index for the exact 25 current and 35 potential reliability issues maintained in GitHub. Each issue has 4–7 independently checkable subissues. GitHub remains the status authority; this file makes count, scope, and review coverage auditable from a source checkout.
 
 - Repository: `ErDreiwen/auto-tab-discard`
-- Branch baseline: `hardened/0.6.9.1-reliability` at `a47b3ed9a4afe9cde3e4df18d66d93fdb116fe2b`
-- Baseline workflow: [Browser channel canaries run 31770690573](https://github.com/ErDreiwen/auto-tab-discard/actions/runs/31770690573)
+- Last fully validated branch baseline: `hardened/0.6.9.1-reliability` at `0dcf3fac4638f2fdcd98fea8674cf5143576648a`
+- Baseline workflow: [Browser channel canaries run 31807745155](https://github.com/ErDreiwen/auto-tab-discard/actions/runs/31807745155)
 - Baseline result: reproducible Linux/Windows packages, seven browser lanes, and aggregate browser gate all passed
 - Audited: 2026-08-14
 

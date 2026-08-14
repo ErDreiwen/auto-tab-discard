@@ -43,7 +43,7 @@ test('every reliability issue has a GitHub record and four to seven subissues', 
 });
 
 test('matrix binds the audited green browser-canary baseline', () => {
-  assert.match(source, /a47b3ed9a4afe9cde3e4df18d66d93fdb116fe2b/);
-  assert.match(source, /actions\/runs\/31770690573/);
+  assert.match(source, /0dcf3fac4638f2fdcd98fea8674cf5143576648a/);
+  assert.match(source, /actions\/runs\/31807745155/);
   assert.match(source, /seven browser lanes, and aggregate browser gate all passed/);
 });
