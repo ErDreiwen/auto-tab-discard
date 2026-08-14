@@ -11,7 +11,8 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_POLICY = path.join(repositoryRoot, '.github', 'browser-canary-policy.json');
 const DEFAULT_MANIFEST = path.join(repositoryRoot, 'v3', 'manifest.json');
 const SHA256 = /^[a-f\d]{64}$/;
-const TARGET_ID = /^(?:chrome|edge)-(?:minimum|stable|beta)$/;
+const TARGET_ID = /^(?:(?:chrome|edge)-(?:minimum|stable|beta)|firefox-(?:minimum|stable))$/;
+const ARTIFACT_KEYS = Object.freeze(['chromium', 'firefox']);
 const OWNER = /^@[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -30,23 +31,47 @@ const dateValue = value => Date.parse(`${value}T23:59:59.999Z`);
 
 const validatePolicy = (policy, manifest, now = new Date()) => {
   const errors = [];
-  if (policy?.schemaVersion !== 1) {
-    errors.push('policy schemaVersion must be 1');
+  if (policy?.schemaVersion !== 2) {
+    errors.push('policy schemaVersion must be 2');
   }
   if (!Array.isArray(policy?.requiredCapabilities) || policy.requiredCapabilities.length === 0 ||
       policy.requiredCapabilities.some(item => typeof item !== 'string' || !item)) {
     errors.push('requiredCapabilities must be a non-empty string array');
   }
-  const targets = Array.isArray(policy?.requiredTargets) ? policy.requiredTargets : [];
-  if (targets.length !== 5) {
-    errors.push('the canary gate requires exactly five targets');
+  if (!Array.isArray(policy?.requiredFirefoxCapabilities) ||
+      policy.requiredFirefoxCapabilities.length === 0 ||
+      policy.requiredFirefoxCapabilities.some(item => typeof item !== 'string' || !item)) {
+    errors.push('requiredFirefoxCapabilities must be a non-empty string array');
   }
-  const expected = new Set([
-    'chrome-minimum', 'chrome-stable', 'chrome-beta', 'edge-stable', 'edge-beta'
+  if (!Array.isArray(policy?.requiredMinimumChromeCapabilities) ||
+      policy.requiredMinimumChromeCapabilities.length === 0 ||
+      policy.requiredMinimumChromeCapabilities.some(item => typeof item !== 'string' || !item)) {
+    errors.push('requiredMinimumChromeCapabilities must be a non-empty string array');
+  }
+  if (!Array.isArray(policy?.requiredMinimumFirefoxCapabilities) ||
+      policy.requiredMinimumFirefoxCapabilities.length === 0 ||
+      policy.requiredMinimumFirefoxCapabilities.some(item => typeof item !== 'string' || !item)) {
+    errors.push('requiredMinimumFirefoxCapabilities must be a non-empty string array');
+  }
+  const targets = Array.isArray(policy?.requiredTargets) ? policy.requiredTargets : [];
+  if (targets.length !== 7) {
+    errors.push('the canary gate requires exactly seven targets');
+  }
+  const expected = new Map([
+    ['chrome-minimum', 'chromium'],
+    ['chrome-stable', 'chromium'],
+    ['chrome-beta', 'chromium'],
+    ['edge-stable', 'chromium'],
+    ['edge-beta', 'chromium'],
+    ['firefox-minimum', 'firefox'],
+    ['firefox-stable', 'firefox']
   ]);
   for (const target of targets) {
     if (!target || target.id !== targetKey(target) || !TARGET_ID.test(target.id)) {
       errors.push(`invalid required target: ${JSON.stringify(target)}`);
+    }
+    else if (target.artifact !== expected.get(target.id)) {
+      errors.push(`${target.id} must consume the ${expected.get(target.id)} artifact`);
     }
     expected.delete(target?.id);
   }
@@ -54,7 +79,7 @@ const validatePolicy = (policy, manifest, now = new Date()) => {
     errors.push('required target IDs must be unique');
   }
   if (expected.size) {
-    errors.push(`missing required targets: ${[...expected].sort().join(', ')}`);
+    errors.push(`missing required targets: ${[...expected.keys()].sort().join(', ')}`);
   }
 
   const declaredMajor = Number.parseInt(manifest?.minimum_chrome_version, 10);
@@ -72,6 +97,21 @@ const validatePolicy = (policy, manifest, now = new Date()) => {
   }
   if (!/^\d+\.\d+\.\d+$/.test(String(policy?.minimumChrome?.playwrightVersion || ''))) {
     errors.push('minimumChrome.playwrightVersion must be an exact three-part version');
+  }
+
+  const firefoxMinimum = String(manifest?.browser_specific_settings?.gecko?.strict_min_version || '');
+  const firefoxDeclaredMajor = major(firefoxMinimum);
+  if (!/^\d+\.\d+$/.test(firefoxMinimum)) {
+    errors.push('manifest Firefox strict_min_version must declare an exact two-part version');
+  }
+  if (policy?.minimumFirefox?.declaredMajor !== firefoxDeclaredMajor) {
+    errors.push(`Firefox minimum canary ${policy?.minimumFirefox?.declaredMajor} does not match manifest minimum ${firefoxDeclaredMajor}`);
+  }
+  if (policy?.minimumFirefox?.target !== 'firefox-minimum') {
+    errors.push('minimumFirefox.target must be firefox-minimum');
+  }
+  if (policy?.minimumFirefox?.engineVersion !== firefoxMinimum) {
+    errors.push('minimumFirefox.engineVersion must exactly exercise Firefox strict_min_version');
   }
 
   const targetIds = new Set(targets.map(target => target?.id));
@@ -160,13 +200,103 @@ export const deriveCanaryCapabilities = (report, expectedTreeSha256) => {
   };
 };
 
-const archiveDigest = artifact => {
-  const digests = new Set((artifact?.archives || []).map(item => item?.sha256));
-  if (digests.size !== 1 || !SHA256.test([...digests][0] || '')) {
-    throw new Error('canary artifact metadata must attest one shared archive SHA-256');
+const minimumChromeAssertionPassed = (report, name) => report?.assertions?.some(assertion =>
+  assertion?.name === name && assertion?.passed === true);
+
+const exactWindowsJobExited = cleanup => cleanup?.owner === 'windows-kernel-job' &&
+  cleanup?.exited === true && cleanup?.identityVerified === true &&
+  cleanup?.jobEmptyVerified === true && cleanup?.ownerExited === true;
+
+export const deriveMinimumChromeCapabilities = (
+  report,
+  expectedTreeSha256,
+  expectedPlaywrightVersion
+) => ({
+  artifactTreeAttested: report?.extension?.treeSha256 === expectedTreeSha256,
+  crashFree: Array.isArray(report?.crashes) && report.crashes.length === 0,
+  exactMinimumVersion: minimumChromeAssertionPassed(
+    report, 'browser reports the exact pinned Chromium minimum'),
+  exactPlaywrightDriver: report?.driver?.version === expectedPlaywrightVersion &&
+    minimumChromeAssertionPassed(report, 'Playwright reports the exact pinned minimum driver'),
+  extensionPageRuntime: minimumChromeAssertionPassed(
+    report, 'extension options page exposes matching runtime identity and version'),
+  isolatedProfileRemoved: report?.cleanup?.profile?.removed === true &&
+    exactWindowsJobExited(report?.cleanup?.process) && report?.cleanup?.process?.graceful === true &&
+    report?.cleanup?.process?.forced?.needed === false,
+  runtimeRoundTrip: minimumChromeAssertionPassed(
+    report, 'storage runtime message completes a module-worker round trip'),
+  serviceWorkerTarget: minimumChromeAssertionPassed(
+    report, 'packaged module service-worker target is present'),
+  versionReported: typeof report?.browser?.version === 'string' && report.browser.version.length > 0
+});
+
+const firefoxAssertionPassed = (report, name) => report?.assertions?.some(assertion =>
+  assertion?.name === name && assertion?.passed === true);
+
+const exactMinimumFirefoxCrashEvidence = profile => profile?.crashArtifacts === 0 &&
+  JSON.stringify(profile?.crashLocationsChecked) === JSON.stringify(['profile-minidumps', 'crash-events']) &&
+  profile?.externalCrashState?.changed === 0 && profile?.externalCrashState?.created === 0 &&
+  profile?.externalCrashState?.removed === 0 &&
+  ['crashReports', 'pendingPings'].every(category =>
+    profile?.externalCrashState?.categories?.[category]?.changed === 0 &&
+    profile?.externalCrashState?.categories?.[category]?.created === 0 &&
+    profile?.externalCrashState?.categories?.[category]?.removed === 0);
+
+export const deriveFirefoxCapabilities = (report, expectedTreeSha256) => ({
+  artifactTreeAttested: report?.extension?.treeSha256 === expectedTreeSha256,
+  crashFree: exactMinimumFirefoxCrashEvidence(report?.profile),
+  isolatedProfileRemoved: report?.profile?.removed === true &&
+    exactWindowsJobExited(report?.profile?.processTreeCleanup) && firefoxAssertionPassed(
+      report, 'exact launched Firefox tree exited and isolated profile was deleted'),
+  ordinaryDiscard: firefoxAssertionPassed(
+    report, 'ordinary discard-tab settles to authoritative discarded/unloaded content state'),
+  scopedDiscard: firefoxAssertionPassed(
+    report, 'scoped discard-window runtime message reaches the real popup/worker path'),
+  versionReported: typeof report?.browser?.version === 'string' && report.browser.version.length > 0
+});
+
+export const deriveMinimumFirefoxCapabilities = (
+  report,
+  expectedTreeSha256,
+  expectedArchiveSha256
+) => ({
+  artifactArchiveAttested: report?.extension?.archiveSha256 === expectedArchiveSha256,
+  artifactTreeAttested: report?.extension?.treeSha256 === expectedTreeSha256,
+  backgroundRuntimeStarted: firefoxAssertionPassed(
+    report, 'Firefox 140 background page and core runtime started without privileged BiDi scope'),
+  crashFree: exactMinimumFirefoxCrashEvidence(report?.profile),
+  isolatedProfileRemoved: report?.profile?.removed === true &&
+    exactWindowsJobExited(report?.profile?.processTreeCleanup) && firefoxAssertionPassed(
+      report, 'exact launched Firefox tree exited and isolated profile was deleted'),
+  temporaryArchiveInstall: report?.extension?.temporary === true &&
+    report?.extension?.installed === true && report?.extension?.idMatchedManifest === true &&
+    report?.extension?.installDataType === 'archivePath' && firefoxAssertionPassed(
+      report, 'temporary Firefox XPI install via webExtension.install'),
+  versionReported: typeof report?.browser?.version === 'string' && report.browser.version.length > 0
+});
+
+const artifactVariant = (artifact, key) => {
+  if (artifact?.formatVersion !== 4 || !artifact?.artifacts ||
+      Object.keys(artifact.artifacts).sort().join(',') !== [...ARTIFACT_KEYS].sort().join(',')) {
+    throw new Error('canary artifact metadata must use format 4 and describe chromium and firefox artifacts');
   }
-  return [...digests][0];
+  const value = artifact.artifacts[key];
+  const expectedExtension = key === 'chromium' ? '.zip' : '.xpi';
+  if (!value || path.posix.extname(value.file || '').toLowerCase() !== expectedExtension ||
+      path.posix.basename(value.file || '') !== value.file || !SHA256.test(value.sha256 || '') ||
+      !SHA256.test(value.treeSha256 || '') || !Number.isSafeInteger(value.bytes) || value.bytes < 0 ||
+      !Number.isSafeInteger(value.entryCount) || value.entryCount <= 0 ||
+      !Array.isArray(value.inventory) || value.inventory.length !== value.entryCount) {
+    throw new Error(`canary ${key} artifact metadata is invalid`);
+  }
+  inventorySha256(value.inventory);
+  return value;
 };
+
+const requiredCapabilities = (policy, target) => target.id === 'chrome-minimum' ?
+  policy.requiredMinimumChromeCapabilities : target.id === 'firefox-minimum' ?
+    policy.requiredMinimumFirefoxCapabilities : target.browser === 'firefox' ?
+      policy.requiredFirefoxCapabilities : policy.requiredCapabilities;
 
 const matchingQuarantine = (policy, target, failures) => policy.quarantines.find(candidate =>
   candidate.target === target && failures.every(failure => candidate.failureKinds.includes(failure.kind)));
@@ -182,40 +312,72 @@ export const createCanaryEvidence = ({
   runnerImage
 }) => {
   const target = `${browser}-${channel}`;
-  if (!policy.requiredTargets.some(candidate => candidate.id === target)) {
+  const targetPolicy = policy.requiredTargets.find(candidate => candidate.id === target);
+  if (!targetPolicy) {
     throw new Error(`Unexpected canary target: ${target}`);
   }
-  const expectedTreeSha256 = artifact?.sourceTreeSha256;
-  if (!SHA256.test(expectedTreeSha256 || '')) {
-    throw new Error('canary artifact metadata has no valid sourceTreeSha256');
-  }
-  const capabilities = deriveCanaryCapabilities(report, expectedTreeSha256);
+  const selectedArtifact = artifactVariant(artifact, targetPolicy.artifact);
+  const expectedTreeSha256 = selectedArtifact.treeSha256;
+  const capabilities = target === 'chrome-minimum' ? deriveMinimumChromeCapabilities(
+    report, expectedTreeSha256, policy.minimumChrome.playwrightVersion
+  ) : target === 'firefox-minimum' ? deriveMinimumFirefoxCapabilities(
+    report, expectedTreeSha256, selectedArtifact.sha256
+  ) : browser === 'firefox' ? deriveFirefoxCapabilities(report, expectedTreeSha256) :
+    deriveCanaryCapabilities(report, expectedTreeSha256);
   const failures = [];
-  if (report?.ok !== true) {
-    failures.push({kind: 'matrix-failed', detail: report?.error?.message || 'popup matrix did not pass'});
+  const compatibilitySmoke = target === 'chrome-minimum' || target === 'firefox-minimum';
+  if ((browser === 'firefox' || compatibilitySmoke ? report?.outcome !== 'passed' : report?.ok !== true)) {
+    failures.push({
+      kind: browser === 'firefox' || compatibilitySmoke ? 'smoke-failed' : 'matrix-failed',
+      detail: report?.error?.message || (typeof report?.error === 'string' ? report.error : undefined) ||
+        (target === 'chrome-minimum' ? 'Chromium minimum compatibility smoke did not pass' :
+          browser === 'firefox' ? 'Firefox BiDi smoke did not pass' : 'popup matrix did not pass')
+    });
   }
-  for (const capability of policy.requiredCapabilities) {
+  for (const capability of requiredCapabilities(policy, targetPolicy)) {
     if (capabilities[capability] !== true) {
       failures.push({kind: `capability:${capability}`, detail: `${capability} was not proven`});
     }
+  }
+  if (report?.extension?.version !== artifact?.extensionVersion) {
+    failures.push({
+      kind: 'extension-version-mismatch',
+      detail: 'reported extension version does not match the canary artifact'
+    });
   }
   const reportedVersion = report?.browser?.version || '';
   if (installedVersion && major(installedVersion) !== major(reportedVersion)) {
     failures.push({kind: 'version-mismatch', detail: `installer reported ${installedVersion}; browser reported ${reportedVersion}`});
   }
-  if (channel === 'minimum' && major(reportedVersion) !== policy.minimumChrome.declaredMajor) {
+  const expectedMinimum = browser === 'firefox' ? policy.minimumFirefox : policy.minimumChrome;
+  if (channel === 'minimum' && reportedVersion !== expectedMinimum.engineVersion) {
     failures.push({
       kind: 'minimum-version-mismatch',
-      detail: `expected browser major ${policy.minimumChrome.declaredMajor}; received ${reportedVersion || 'none'}`
+      detail: `expected exact ${browser === 'firefox' ? 'Firefox' : 'Chromium'} ` +
+        `${expectedMinimum.engineVersion}; received ${reportedVersion || 'none'}`
+    });
+  }
+  if (target === 'chrome-minimum' && installedVersion !== policy.minimumChrome.engineVersion) {
+    failures.push({
+      kind: 'minimum-installer-version-mismatch',
+      detail: `expected installer Chromium ${policy.minimumChrome.engineVersion}; received ${installedVersion || 'none'}`
+    });
+  }
+  if (target === 'firefox-minimum' && installedVersion !== policy.minimumFirefox.engineVersion) {
+    failures.push({
+      kind: 'minimum-installer-version-mismatch',
+      detail: `expected installer Firefox ${policy.minimumFirefox.engineVersion}; received ${installedVersion || 'none'}`
     });
   }
   const quarantine = failures.length ? matchingQuarantine(policy, target, failures) : undefined;
   return {
-    archiveSha256: archiveDigest(artifact),
+    archiveFile: selectedArtifact.file,
+    archiveSha256: selectedArtifact.sha256,
+    artifact: targetPolicy.artifact,
     browser,
     capabilities,
     channel,
-    extensionVersion: report?.extension?.version || artifact?.extensionVersion,
+    extensionVersion: report?.extension?.version || null,
     failures,
     gate: failures.length && !quarantine ? 'red' : 'green',
     installer: {
@@ -230,8 +392,8 @@ export const createCanaryEvidence = ({
       reason: quarantine.reason
     } : null,
     runnerImage: runnerImage || null,
-    schemaVersion: 1,
-    sourceTreeSha256: expectedTreeSha256,
+    schemaVersion: 2,
+    treeSha256: expectedTreeSha256,
     status: failures.length ? (quarantine ? 'quarantined' : 'failed') : 'passed',
     target,
     testedVersion: reportedVersion
@@ -241,32 +403,46 @@ export const createCanaryEvidence = ({
 export const verifyCanaryEvidence = ({artifact, evidence, policy, reproducibility}) => {
   const failures = [];
   const byTarget = new Map();
+  const declaredTargets = new Set(policy.requiredTargets.map(target => target.id));
   for (const item of evidence) {
     if (byTarget.has(item?.target)) {
       failures.push(`duplicate evidence for ${item?.target}`);
+    }
+    else if (!declaredTargets.has(item?.target)) {
+      failures.push(`unexpected evidence for ${item?.target || '(unknown)'}`);
     }
     else {
       byTarget.set(item?.target, item);
     }
   }
-  const expectedArchive = archiveDigest(artifact);
-  const expectedTree = artifact?.sourceTreeSha256;
-  const expectedInventory = inventorySha256(artifact?.inventory);
-  if (reproducibility?.schemaVersion !== 1 || reproducibility?.status !== 'passed' ||
+  const expectedArtifacts = Object.fromEntries(ARTIFACT_KEYS.map(key => {
+    const value = artifactVariant(artifact, key);
+    return [key, {
+      archiveFile: value.file,
+      archiveSha256: value.sha256,
+      inventorySha256: inventorySha256(value.inventory),
+      sourceTreeSha256: value.treeSha256
+    }];
+  }));
+  if (reproducibility?.schemaVersion !== 2 || reproducibility?.status !== 'passed' ||
       reproducibility?.failures?.length !== 0) {
     failures.push('independent Linux/Windows reproducibility gate is not passed');
   }
   if (reproducibility?.canonical?.builderId !== 'linux') {
-    failures.push('browser-tested artifact is not the canonical Linux builder artifact');
+    failures.push('browser-tested artifacts are not from the canonical Linux builder');
   }
-  if (reproducibility?.canonical?.archiveSha256 !== expectedArchive) {
-    failures.push('browser-tested archive differs from the cross-builder canonical archive');
-  }
-  if (reproducibility?.canonical?.sourceTreeSha256 !== expectedTree) {
-    failures.push('browser-tested tree differs from the cross-builder canonical tree');
-  }
-  if (reproducibility?.canonical?.inventorySha256 !== expectedInventory) {
-    failures.push('browser-tested inventory differs from the cross-builder canonical inventory');
+  for (const key of ARTIFACT_KEYS) {
+    const expected = expectedArtifacts[key];
+    const canonical = reproducibility?.canonical?.targets?.[key];
+    if (canonical?.archiveSha256 !== expected.archiveSha256) {
+      failures.push(`browser-tested ${key} archive differs from the cross-builder canonical archive`);
+    }
+    if (canonical?.treeSha256 !== expected.sourceTreeSha256) {
+      failures.push(`browser-tested ${key} tree differs from the cross-builder canonical tree`);
+    }
+    if (canonical?.inventorySha256 !== expected.inventorySha256) {
+      failures.push(`browser-tested ${key} inventory differs from the cross-builder canonical inventory`);
+    }
   }
   if (reproducibility?.canonical?.extensionVersion !== artifact?.extensionVersion) {
     failures.push('browser-tested version differs from the cross-builder canonical version');
@@ -277,22 +453,32 @@ export const verifyCanaryEvidence = ({artifact, evidence, policy, reproducibilit
       failures.push(`missing evidence for ${target.id}`);
       continue;
     }
+    const expected = expectedArtifacts[target.artifact];
+    if (item.schemaVersion !== 2) {
+      failures.push(`${target.id} evidence schema is not version 2`);
+    }
     if (item.gate !== 'green' || !['passed', 'quarantined'].includes(item.status)) {
       failures.push(`${target.id} is not green (${item.status || 'unknown'})`);
     }
-    if (item.sourceTreeSha256 !== expectedTree) {
-      failures.push(`${target.id} tested a different source tree`);
+    if (item.artifact !== target.artifact) {
+      failures.push(`${target.id} references the wrong artifact family`);
     }
-    if (item.archiveSha256 !== expectedArchive) {
+    if (item.treeSha256 !== expected.sourceTreeSha256) {
+      failures.push(`${target.id} tested a different ${target.artifact} tree`);
+    }
+    if (item.archiveSha256 !== expected.archiveSha256 || item.archiveFile !== expected.archiveFile) {
       failures.push(`${target.id} references a different archive`);
     }
     if (item.browser !== target.browser || item.channel !== target.channel) {
       failures.push(`${target.id} browser/channel identity does not match policy`);
     }
+    if (item.extensionVersion !== artifact.extensionVersion) {
+      failures.push(`${target.id} extension version does not match the candidate`);
+    }
     if (!item.testedVersion) {
       failures.push(`${target.id} did not record a browser version`);
     }
-    for (const capability of policy.requiredCapabilities) {
+    for (const capability of requiredCapabilities(policy, target)) {
       if (item.capabilities?.[capability] !== true && item.status !== 'quarantined') {
         failures.push(`${target.id} did not prove ${capability}`);
       }
@@ -304,29 +490,39 @@ export const verifyCanaryEvidence = ({artifact, evidence, policy, reproducibilit
       }
     }
   }
-  const seenTrees = new Set(evidence.map(item => item?.sourceTreeSha256));
-  const seenArchives = new Set(evidence.map(item => item?.archiveSha256));
-  if (seenTrees.size > 1) {
-    failures.push('required channels did not test one source-tree hash');
-  }
-  if (seenArchives.size > 1) {
-    failures.push('required channels did not test one archive hash');
+  for (const key of ARTIFACT_KEYS) {
+    const familyEvidence = evidence.filter(item => item?.artifact === key);
+    const seenTrees = new Set(familyEvidence.map(item => item?.treeSha256));
+    const seenArchives = new Set(familyEvidence.map(item => item?.archiveSha256));
+    if (seenTrees.size > 1) {
+      failures.push(`required ${key} channels did not test one source-tree hash`);
+    }
+    if (seenArchives.size > 1) {
+      failures.push(`required ${key} channels did not test one archive hash`);
+    }
   }
   return {
-    archiveSha256: expectedArchive,
+    artifacts: Object.fromEntries(ARTIFACT_KEYS.map(key => [key, {
+      archiveSha256: expectedArtifacts[key].archiveSha256,
+      inventorySha256: expectedArtifacts[key].inventorySha256,
+      treeSha256: expectedArtifacts[key].sourceTreeSha256
+    }])),
     failures: [...new Set(failures)].sort(),
     reproducibility: {
       builderId: reproducibility?.canonical?.builderId || null,
-      inventorySha256: reproducibility?.canonical?.inventorySha256 || null,
       status: reproducibility?.status || 'missing'
     },
-    schemaVersion: 1,
-    sourceTreeSha256: expectedTree,
+    schemaVersion: 2,
     status: failures.length ? 'failed' : evidence.some(item => item.status === 'quarantined') ?
       'passed-with-quarantines' : 'passed',
     targets: policy.requiredTargets.map(target => {
       const item = byTarget.get(target.id);
-      return {id: target.id, status: item?.status || 'missing', testedVersion: item?.testedVersion || null};
+      return {
+        artifact: target.artifact,
+        id: target.id,
+        status: item?.status || 'missing',
+        testedVersion: item?.testedVersion || null
+      };
     })
   };
 };
@@ -350,7 +546,7 @@ const readEvidenceDirectory = async directory => {
   const evidence = [];
   for (const name of names) {
     const item = await parseJson(path.join(directory, name), `canary evidence ${name}`);
-    if (item?.schemaVersion === 1 && typeof item?.target === 'string') {
+    if (item?.schemaVersion === 2 && typeof item?.target === 'string') {
       evidence.push(item);
     }
   }

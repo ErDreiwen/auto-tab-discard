@@ -5,7 +5,7 @@ A browser extension which uses the native tab discarding method (`chrome.tabs.di
 
 This repository branch hardens external-discard ownership, bulk command scoping, reload quiescence, visible sleep markers, Manifest V3 restart recovery, and Firefox compatibility. See [FORK_NOTES.md](FORK_NOTES.md) for the versioned behavior changes.
 
-Release 0.6.9.2 has passed its isolated Chrome 151 popup matrix and Firefox 153 WebDriver BiDi smoke. Edge 151.0.4129.72 passed the 19-scenario popup matrix and the current-tree direct-native matrix covering all five release scopes, four cancellation boundaries, and three worker-loss boundaries. The redesigned native-frozen smoke requires a direct physical discard with zero activation, scripting, loading, or document requests and a truthful visual-unavailable record. The final generated artifact tree must pass that smoke and every other browser gate before release.
+Release 0.6.9.2 has passed its isolated Chrome 151 popup matrix and Firefox 153 WebDriver BiDi smoke. Edge 151.0.4129.72 passed the 19-scenario popup matrix and the current-tree direct-native matrix covering all five release scopes, four cancellation boundaries, and three worker-loss boundaries. The redesigned native-frozen smoke requires a direct physical discard with zero activation, scripting, loading, or document requests and a truthful visual-unavailable record. The final Chromium and Firefox artifact trees must each pass their browser-specific gates before release.
 
 Run the single release gate from a clean repository root, supplying isolated browser executables:
 
@@ -13,7 +13,7 @@ Run the single release gate from a clean repository root, supplying isolated bro
 node scripts/release-gate.mjs --chrome-executable PATH --edge-executable PATH --firefox-executable PATH
 ```
 
-The gate runs the full Node suite, migration fixtures, manifest/store-policy lint, deterministic packaging, safe extraction/inventory comparison, and the existing browser harnesses against that extracted artifact. It records the Git commit, Git tree, normalized source digest, artifact digest, release-note digest, permission report, and hashed test-evidence references. Without a valid protected-tag attestation it still retains a reproducible candidate and reports `candidateReady`, but remains blocked for release. It fails on a dirty or transitional Git worktree, nested source root, forbidden files, identity/version/archive-name drift, missing evidence, a tested-tree mismatch, or missing/invalid signed release provenance.
+The gate runs the full Node suite, migration fixtures, manifest/store-policy lint, deterministic browser-specific packaging, safe extraction/inventory comparison, and the existing browser harnesses against the matching extracted artifact. It records the Git commit and tree, each target archive/tree/inventory digest, release-note digest, permission report, and hashed test-evidence references. Without a valid protected-tag attestation it still retains a reproducible candidate and reports `candidateReady`, but remains blocked for release. It fails on a dirty or transitional Git worktree, nested source root, forbidden files, identity/version/archive-name drift, missing evidence, a tested-tree mismatch, or missing/invalid signed release provenance.
 
 The generated ZIP/XPI contains this README and the MPL-2.0 license. The strict
 gate requires real extracted-artifact update, worker/browser restart, and

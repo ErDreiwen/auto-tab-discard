@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "requiredCapabilities": [
     "artifactTreeAttested",
     "crashFree",
@@ -11,38 +11,88 @@
     "replacementLineage",
     "versionReported"
   ],
+  "requiredMinimumChromeCapabilities": [
+    "artifactTreeAttested",
+    "crashFree",
+    "exactMinimumVersion",
+    "exactPlaywrightDriver",
+    "extensionPageRuntime",
+    "isolatedProfileRemoved",
+    "runtimeRoundTrip",
+    "serviceWorkerTarget",
+    "versionReported"
+  ],
   "requiredTargets": [
     {
+      "artifact": "chromium",
       "browser": "chrome",
       "channel": "minimum",
       "id": "chrome-minimum"
     },
     {
+      "artifact": "chromium",
       "browser": "chrome",
       "channel": "stable",
       "id": "chrome-stable"
     },
     {
+      "artifact": "chromium",
       "browser": "chrome",
       "channel": "beta",
       "id": "chrome-beta"
     },
     {
+      "artifact": "chromium",
       "browser": "edge",
       "channel": "stable",
       "id": "edge-stable"
     },
     {
+      "artifact": "chromium",
       "browser": "edge",
       "channel": "beta",
       "id": "edge-beta"
+    },
+    {
+      "artifact": "firefox",
+      "browser": "firefox",
+      "channel": "minimum",
+      "id": "firefox-minimum"
+    },
+    {
+      "artifact": "firefox",
+      "browser": "firefox",
+      "channel": "stable",
+      "id": "firefox-stable"
     }
+  ],
+  "requiredFirefoxCapabilities": [
+    "artifactTreeAttested",
+    "crashFree",
+    "isolatedProfileRemoved",
+    "ordinaryDiscard",
+    "scopedDiscard",
+    "versionReported"
+  ],
+  "requiredMinimumFirefoxCapabilities": [
+    "artifactArchiveAttested",
+    "artifactTreeAttested",
+    "backgroundRuntimeStarted",
+    "crashFree",
+    "isolatedProfileRemoved",
+    "temporaryArchiveInstall",
+    "versionReported"
   ],
   "minimumChrome": {
     "declaredMajor": 102,
     "engineVersion": "102.0.5005.40",
     "playwrightVersion": "1.22.2",
     "target": "chrome-minimum"
+  },
+  "minimumFirefox": {
+    "declaredMajor": 140,
+    "engineVersion": "140.0",
+    "target": "firefox-minimum"
   },
   "quarantines": []
 }

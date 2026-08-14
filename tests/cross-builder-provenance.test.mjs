@@ -16,20 +16,49 @@ const digest = data => createHash('sha256').update(data).digest('hex');
 const hash = character => character.repeat(64);
 const commit = character => character.repeat(40);
 
-const archive = Buffer.from('one deterministic ZIP/XPI byte stream');
-const artifact = () => ({
-  archives: [
-    {bytes: archive.length, file: 'auto-tab-discard-canary.xpi', sha256: digest(archive)},
-    {bytes: archive.length, file: 'auto-tab-discard-canary.zip', sha256: digest(archive)}
-  ],
-  entryCount: 2,
-  extensionVersion: '0.6.9.2',
-  formatVersion: 3,
-  inventory: [
+const archives = Object.freeze({
+  chromium: Buffer.from('deterministic Chromium ZIP byte stream'),
+  firefox: Buffer.from('deterministic Firefox XPI byte stream')
+});
+const inventories = () => ({
+  chromium: [
     {bytes: 4, path: 'LICENSE', sha256: hash('a')},
-    {bytes: 12, path: 'manifest.json', sha256: hash('b')}
+    {bytes: 21, path: 'manifest.json', sha256: hash('b')}
   ],
-  sourceTreeSha256: hash('c')
+  firefox: [
+    {bytes: 4, path: 'LICENSE', sha256: hash('a')},
+    {bytes: 20, path: 'manifest.json', sha256: hash('c')}
+  ]
+});
+const artifact = () => ({
+  artifacts: {
+    chromium: {
+      bytes: archives.chromium.length,
+      entryCount: 2,
+      file: 'auto-tab-discard-canary.zip',
+      inventory: inventories().chromium,
+      sha256: digest(archives.chromium),
+      treeSha256: hash('d')
+    },
+    firefox: {
+      bytes: archives.firefox.length,
+      entryCount: 2,
+      file: 'auto-tab-discard-canary.xpi',
+      inventory: inventories().firefox,
+      sha256: digest(archives.firefox),
+      treeSha256: hash('e')
+    }
+  },
+  extensionVersion: '0.6.9.2',
+  formatVersion: 4
+});
+
+const targetEvidence = target => ({
+  archiveBytes: archives[target].length,
+  archiveSha256: digest(archives[target]),
+  inventoryEntries: 2,
+  inventorySha256: inventorySha256(inventories()[target]),
+  treeSha256: target === 'chromium' ? hash('d') : hash('e')
 });
 
 const provenance = (builderId, runnerOs, overrides = {}) => createBuilderProvenance({
@@ -49,7 +78,7 @@ const records = () => [
 ];
 
 test('inventory hash binds byte-sorted path, size, and content digest', () => {
-  const original = artifact().inventory;
+  const original = artifact().artifacts.chromium.inventory;
   assert.match(inventorySha256(original), /^[a-f\d]{64}$/);
   assert.notEqual(inventorySha256(original), inventorySha256([
     original[0],
@@ -59,7 +88,7 @@ test('inventory hash binds byte-sorted path, size, and content digest', () => {
   assert.throws(() => inventorySha256([original[0], original[0]]), /duplicates/);
 
   const unsafeArchive = artifact();
-  unsafeArchive.archives[0].file = '../outside.xpi';
+  unsafeArchive.artifacts.firefox.file = '../outside.xpi';
   assert.throws(() => createBuilderProvenance({
     artifact: unsafeArchive,
     builderId: 'linux',
@@ -68,7 +97,19 @@ test('inventory hash binds byte-sorted path, size, and content digest', () => {
     metadataSha256: hash('f'),
     runnerImage: 'linux-clean-image-1',
     runnerOs: 'Linux'
-  }), /archive path is unsafe/);
+  }), /firefox archive path is unsafe/);
+
+  const incomplete = artifact();
+  delete incomplete.artifacts.firefox;
+  assert.throws(() => createBuilderProvenance({
+    artifact: incomplete,
+    builderId: 'linux',
+    commitSha: commit('d'),
+    gitTree: commit('e'),
+    metadataSha256: hash('f'),
+    runnerImage: 'linux-clean-image-1',
+    runnerOs: 'Linux'
+  }), /exactly chromium and firefox/);
 });
 
 test('independent Linux and Windows builders pass only on one exact commit and artifact', () => {
@@ -76,56 +117,81 @@ test('independent Linux and Windows builders pass only on one exact commit and a
   assert.deepEqual(report, {
     builders: [
       {
-        archiveSha256: digest(archive),
         commitSha: commit('d'),
         extensionVersion: '0.6.9.2',
         gitTree: commit('e'),
         id: 'linux',
-        inventorySha256: inventorySha256(artifact().inventory),
         metadataSha256: hash('f'),
         runnerImage: 'linux-clean-image-1',
         runnerOs: 'Linux',
-        sourceTreeSha256: hash('c')
+        targets: {
+          chromium: targetEvidence('chromium'),
+          firefox: targetEvidence('firefox')
+        }
       },
       {
-        archiveSha256: digest(archive),
         commitSha: commit('d'),
         extensionVersion: '0.6.9.2',
         gitTree: commit('e'),
         id: 'windows',
-        inventorySha256: inventorySha256(artifact().inventory),
         metadataSha256: hash('f'),
         runnerImage: 'windows-clean-image-1',
         runnerOs: 'Windows',
-        sourceTreeSha256: hash('c')
+        targets: {
+          chromium: targetEvidence('chromium'),
+          firefox: targetEvidence('firefox')
+        }
       }
     ],
     canonical: {
-      archiveSha256: digest(archive),
       builderId: 'linux',
       commitSha: commit('d'),
       extensionVersion: '0.6.9.2',
       gitTree: commit('e'),
-      inventorySha256: inventorySha256(artifact().inventory),
-      sourceTreeSha256: hash('c')
+      targets: {
+        chromium: targetEvidence('chromium'),
+        firefox: targetEvidence('firefox')
+      }
     },
     failures: [],
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'passed'
   });
 });
 
 test('every archive, tree, inventory, metadata, version, and Git mismatch is fatal', () => {
-  const fields = [
-    ['archiveSha256', hash('1'), 'archive SHA-256 mismatch'],
-    ['archiveBytes', archive.length + 1, 'archive byte count mismatch'],
-    ['sourceTreeSha256', hash('2'), 'source-tree SHA-256 mismatch'],
-    ['inventorySha256', hash('3'), 'inventory SHA-256 mismatch'],
-    ['inventoryEntries', 3, 'inventory entry count mismatch'],
+  for (const target of ['chromium', 'firefox']) {
+    for (const [field, value, expected] of [
+      ['archiveSha256', hash('1'), 'archive SHA-256 mismatch'],
+      ['archiveBytes', archives[target].length + 1, 'archive byte count mismatch'],
+      ['treeSha256', hash('2'), 'tree SHA-256 mismatch'],
+      ['inventorySha256', hash('3'), 'inventory SHA-256 mismatch'],
+      ['inventoryEntries', 3, 'inventory entry count mismatch']
+    ]) {
+      const builders = records();
+      builders[1] = {
+        ...builders[1],
+        provenance: {
+          ...builders[1].provenance,
+          artifact: {
+            ...builders[1].provenance.artifact,
+            targets: {
+              ...builders[1].provenance.artifact.targets,
+              [target]: {...builders[1].provenance.artifact.targets[target], [field]: value}
+            }
+          }
+        }
+      };
+      const report = verifyCrossBuilderProvenance({builders, canonicalBuilder: 'linux'});
+      assert.equal(report.status, 'failed', `${target}.${field}`);
+      assert.ok(report.failures.some(failure => failure.includes(`${target} ${expected}`)), `${target}.${field}`);
+    }
+  }
+
+  for (const [field, value, expected] of [
     ['metadataSha256', hash('4'), 'metadata SHA-256 mismatch'],
     ['extensionVersion', '9.9.9', 'extension version mismatch']
-  ];
-  for (const [field, value, expected] of fields) {
+  ]) {
     const builders = records();
     builders[1] = {
       ...builders[1],
@@ -134,7 +200,7 @@ test('every archive, tree, inventory, metadata, version, and Git mismatch is fat
         artifact: {...builders[1].provenance.artifact, [field]: value}
       }
     };
-    const report = verifyCrossBuilderProvenance({builders, canonicalBuilder: 'linux'});
+    const report = verifyCrossBuilderProvenance({builders});
     assert.equal(report.status, 'failed', field);
     assert.ok(report.failures.some(failure => failure.includes(expected)), field);
   }
@@ -208,8 +274,8 @@ test('bundle loading hashes actual ZIP/XPI and metadata bytes before trusting at
     await Promise.all([
       writeFile(path.join(directory, 'checksums.json'), metadataBytes),
       writeFile(path.join(directory, 'builder-provenance.json'), `${JSON.stringify(attestation, null, 2)}\n`),
-      writeFile(path.join(directory, 'auto-tab-discard-canary.zip'), archive),
-      writeFile(path.join(directory, 'auto-tab-discard-canary.xpi'), archive)
+      writeFile(path.join(directory, 'auto-tab-discard-canary.zip'), archives.chromium),
+      writeFile(path.join(directory, 'auto-tab-discard-canary.xpi'), archives.firefox)
     ]);
     return directory;
   };

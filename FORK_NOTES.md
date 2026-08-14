@@ -8,7 +8,7 @@ This fork keeps the upstream extension's behavior and addresses Chromium failure
 - Bound and persist takeover work across Manifest V3 worker restarts, tab moves, ID replacements, cancellation, and late native-discard settlement.
 - Quiesce takeover navigation before the native discard, preserve truthful per-tab outcomes, and repair visible sleep markers without starting reload feedback loops.
 - Add Firefox tab-API compatibility, deterministic release packaging, complete locale validation, and isolated real-browser safety/cleanup checks.
-- Package the real fork README and MPL-2.0 license, normalize UTF-8 text to LF, and record a normalized source-tree digest with the release checksums.
+- Package the real fork README and MPL-2.0 license, normalize UTF-8 text to LF, and record separate Chromium and Firefox archive, tree, and inventory digests with the release checksums.
 - Add a fail-closed release gate with clean-Git provenance, hashed test-evidence references, safe ZIP extraction/inventory comparison, legacy preference/ownership fixtures, and a deterministic permission-change report.
 - Require non-empty migration, permission-change, and fork notes in every strict release; bind their normalized in-archive digests, exact ZIP/XPI subjects, policy, source identity, and hosted evidence in a versioned protected-tag in-toto attestation whose final offline verification fails closed.
 
@@ -17,7 +17,7 @@ This fork keeps the upstream extension's behavior and addresses Chromium failure
 - Chrome 151: the isolated real-popup matrix passed on a disposable profile, including all discard/release scopes, ownership takeover, repeat no-ops, stable dwell, cleanup, and crash checks.
 - Firefox 153: the raw WebDriver BiDi smoke passed ordinary and scoped discards, authoritative unloaded state, one request per fixture, stable dwell, exact process cleanup, and zero crash artifacts.
 - Edge 151.0.4129.72: the isolated popup matrix passed all 19 scenarios, and the current-tree direct-native matrix passed all five release scopes, four cancellation boundaries, and three forced worker-loss boundaries. The dedicated frozen Sleeping Tabs smoke requires a direct physical discard with zero activation, scripting, loading, focus, or document requests and a truthful visual-unavailable ownership record.
-- Release gate: source-tree checks are diagnostic evidence only. The strict gate must safely extract the deterministic package and make Chrome, Firefox, and every Edge matrix pass against that exact generated artifact tree before publication.
+- Release gate: checked-in source-tree checks are diagnostic evidence only. The strict gate must safely extract both deterministic packages and make Chrome/Edge and Firefox pass against their exact generated artifact trees before publication.
 - Upgrade/store gate: unit fixtures cover supported 0.5.0/0.6.9.1 settings and legacy ownership shapes; the strict release command also requires candidate-artifact update, worker/browser restart, rollback, and no-reload-storm reports from Chrome and Edge.
 - Signing gate: the protected-tag least-privilege workflow has immutable full-SHA pins across its complete producer/signing chain, and exhaustive offline/fake-`gh` tests require the reviewed policy-pinned trusted-root snapshot with no production verifier override; the actual hosted signing run, retained bundle, and trusted-root verification are still pending.
 
@@ -105,6 +105,6 @@ The fork now uses its own product name, GitHub homepage, and Gecko ID (`{b3b398c
 
 ## Test
 
-Run `node --test tests/*.test.mjs` from a POSIX shell, or `node --test (Get-ChildItem tests/*.test.mjs)` from PowerShell. The `v3` directory has no build step and is the unpacked Chrome/Edge extension root.
+Run `node --test tests/*.test.mjs` from a POSIX shell, or `node --test (Get-ChildItem tests/*.test.mjs)` from PowerShell. The `v3` directory is the canonical packaging input, not a directly loadable browser artifact: deterministic packaging derives a service-worker-only Chromium manifest and a background-page-only Firefox manifest.
 
 See `e2e/README.md` for the isolated real-browser matrix.

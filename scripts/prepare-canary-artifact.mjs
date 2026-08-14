@@ -50,10 +50,9 @@ const provenance = await writeBuilderProvenance({
 });
 
 process.stdout.write(`${JSON.stringify({
-  archive: result.archives.find(item => item.file.endsWith('.zip')),
+  artifacts: result.metadata.artifacts,
   builder: provenance.builder,
   extensionVersion: result.metadata.extensionVersion,
   metadataPath: result.metadataPath,
-  provenancePath,
-  sourceTreeSha256: result.metadata.sourceTreeSha256
+  provenancePath
 }, null, 2)}\n`);

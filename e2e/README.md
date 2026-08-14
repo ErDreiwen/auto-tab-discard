@@ -112,6 +112,33 @@ The file is replaced by the next Edge frozen smoke run.
 node e2e/edge-frozen-smoke.cjs --executable "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --allow-edge
 ```
 
+## Chromium minimum compatibility smoke
+
+`chromium-minimum-smoke.cjs` is the narrow gate for the manifest's declared Chrome minimum. A checked Windows
+controller uses `STARTUPINFOEX` to create the pinned Chromium suspended and atomically associated with a
+kill-on-close kernel Job, verifies that association, and only then resumes it;
+Playwright 1.22.2 connects over CDP to that fresh profile and extracted release ZIP tree. It never evaluates inside
+Playwright's old service-worker realm: Chromium 102 exposes the target there, but that realm does not provide the
+extension `chrome` API. Instead the smoke observes the real `/worker/core.mjs` target through public Playwright APIs,
+opens the packaged options page on the target's extension origin, validates runtime ID and manifest version there, and
+sends a `storage` message whose two sentinels must return through the module worker.
+
+The report binds the normalized extracted-tree SHA-256, exact browser version, and exact Playwright driver version. The
+short opaque profile name keeps Chromium 102's Windows managed-storage LevelDB path below legacy `MAX_PATH`; an
+overlong caller-supplied profile root is rejected before launch. A pass additionally requires no crash dumps, a CDP PID
+matching the controller-created browser handle, an explicit CDP `Browser.close` request with no forced Job termination,
+kernel Job `ACTIVE_PROCESS_ZERO`, controller exit, and only then deletion
+of the isolated profile. This is intentionally a compatibility proof; current Chrome and Edge channels continue to run the full
+popup matrix.
+
+```powershell
+node e2e/chromium-minimum-smoke.cjs `
+  --executable "C:\path\to\playwright-1.22.2\chromium\chrome.exe" `
+  --expected-version 102.0.5005.40 `
+  --expected-playwright-version 1.22.2 `
+  --extension "C:\path\to\the-extracted-chromium-zip"
+```
+
 ## Firefox WebDriver BiDi smoke test
 
 `firefox-bidi-smoke.cjs` launches the requested Firefox executable headlessly with a unique disposable profile and
@@ -123,16 +150,36 @@ sleep-title marker whenever Firefox exposes the title, one initial fixture reque
 no extra navigation start (even an aborted request), no post-settlement loading/activation/undiscard transition, and zero
 crash artifacts.
 
-Firefox blocks a normal content context from navigating to `moz-extension://`. The harness therefore starts only its
+Firefox blocks a normal content context from navigating to `moz-extension://`. The full Stable suite therefore starts only its
 fresh test process with `--remote-allow-system-access`, uses `browsingContext.getTree` with `moz:scope: "chrome"` for the
 single operation that opens the temporary extension controller, and never points automation at a personal profile. The
-launcher is kept as the exact parent on Windows with `--wait-for-browser`; every protocol operation is time-bounded,
-cleanup addresses only that launched process tree and verifies its exit, verifies the profile remains beneath
-`e2e/.profiles/`, and deletes it even after a failed assertion. A sanitized JSON
+checked Windows controller uses `STARTUPINFOEX` to create Firefox suspended and atomically associated with a
+non-breakaway kill-on-close kernel Job, verifies that association, and resumes it only after ownership exists. Every
+protocol operation is time-bounded; cleanup requires zero active
+Job processes and controller exit, verifies the profile remains beneath `e2e/.profiles/`, and retains it when exact exit
+cannot be proved. A sanitized JSON
 report is always written beneath `e2e/results/`.
 
 ```powershell
 node e2e/firefox-bidi-smoke.cjs --executable "C:\Program Files\Mozilla Firefox\firefox.exe"
+```
+
+The declared-minimum lane uses the same lifecycle and fail-closed cleanup but a deliberately narrower compatibility
+mode. It requires the exact XPI and Firefox version, installs that archive temporarily with BiDi `archivePath`, and uses
+Firefox 140's ordinary CDP new-tab endpoint to open the installed extension controller. The controller resolves the real
+`/firefox/background.html` with `runtime.getBackgroundPage`; the gate requires the compatibility module before the core
+module, a successful core runtime-message round trip, and the startup-initialized badge color.
+This lane never enables system access and never sends `moz:scope`; its report records the XPI SHA-256 and normalized
+extracted-tree SHA-256 before asserting crash-free process exit and profile removal. Minimum mode is Windows-only. It
+keeps crash reporting non-reporting, scans isolated minidumps/events, and diffs bounded content snapshots of the
+canonical Windows ApplicationData `Crash Reports` and `Pending Pings` stores. The kernel Job captures every descendant
+from Firefox's first instruction without PID-based termination.
+
+```powershell
+node e2e/firefox-bidi-smoke.cjs --minimum-startup-only --expected-version 140.0 `
+  --archive "C:\path\to\auto-tab-discard-canary.xpi" `
+  --extension "C:\path\to\the-extracted-xpi" `
+  --executable "C:\path\to\Firefox-140\firefox.exe"
 ```
 
 Pass `--headed` only when visually diagnosing the isolated run. The protocol choices follow Mozilla's

@@ -5,7 +5,7 @@
   "archiveBaseName": "auto-tab-discard-0.6.9.2",
   "releaseRef": "refs/tags/v0.6.9.2",
   "attestation": {
-    "predicateType": "https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v1",
+    "predicateType": "https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v2",
     "repository": "ErDreiwen/auto-tab-discard",
     "signerWorkflow": "ErDreiwen/auto-tab-discard/.github/workflows/browser-canaries.yml",
     "trustedRootSha256": "65ca537f6ed8a47fd0e560c421baa1f6c1efb8b25fc200d8c5c02c0e92eb2b9c"

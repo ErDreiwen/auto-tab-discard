@@ -11,7 +11,7 @@ import {promisify, TextDecoder} from 'node:util';
 import {inspectArchive} from './archive-inventory.mjs';
 import {inventorySha256} from './cross-builder-provenance.mjs';
 
-export const PREDICATE_TYPE = 'https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v1';
+export const PREDICATE_TYPE = 'https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v2';
 export const TRUSTED_RELEASE_REF = 'refs/tags/v0.6.9.2';
 export const TRUSTED_REPOSITORY = 'ErDreiwen/auto-tab-discard';
 export const TRUSTED_SIGNER_WORKFLOW =
@@ -21,6 +21,28 @@ export const TRUSTED_ROOT_SHA256 = '65ca537f6ed8a47fd0e560c421baa1f6c1efb8b25fc2
 const SHA256 = /^[a-f\d]{64}$/;
 const GIT_OBJECT = /^[a-f\d]{40,64}$/;
 const TAG_REF = /^refs\/tags\/v\d+(?:\.\d+){2,3}$/;
+const ARTIFACT_TARGETS = Object.freeze(['chromium', 'firefox']);
+const TARGET_EXTENSIONS = Object.freeze({chromium: '.zip', firefox: '.xpi'});
+const METADATA_KEYS = Object.freeze([
+  'artifacts',
+  'extensionVersion',
+  'formatVersion',
+  'localeCount',
+  'provenance',
+  'rootFiles',
+  'source',
+  'testEvidence',
+  'zipEpoch'
+]);
+const ARTIFACT_KEYS = Object.freeze([
+  'bytes',
+  'entryCount',
+  'file',
+  'inventory',
+  'sha256',
+  'treeSha256'
+]);
+const INVENTORY_KEYS = Object.freeze(['bytes', 'path', 'sha256']);
 const NOTE_PATHS = Object.freeze([
   'FORK_NOTES.md',
   'docs/MIGRATIONS.md',
@@ -31,7 +53,9 @@ const REQUIRED_BROWSER_TARGETS = Object.freeze([
   'chrome-stable',
   'chrome-beta',
   'edge-stable',
-  'edge-beta'
+  'edge-beta',
+  'firefox-minimum',
+  'firefox-stable'
 ]);
 const binaryCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 const sha256 = data => createHash('sha256').update(data).digest('hex');
@@ -39,6 +63,9 @@ const UTF8 = new TextDecoder('utf-8', {fatal: true});
 const exec = promisify(execFile);
 const normalizedText = data => Buffer.from(UTF8.decode(data)
   .replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n'), 'utf8');
+const sortedValue = value => Array.isArray(value) ? value.map(sortedValue) : value && typeof value === 'object' ?
+  Object.fromEntries(Object.keys(value).sort(binaryCompare).map(key => [key, sortedValue(value[key])])) : value;
+const canonical = value => JSON.stringify(sortedValue(value));
 
 const validateJsonOrJsonLines = (data, label) => {
   const text = UTF8.decode(data).trim();
@@ -68,6 +95,14 @@ const safeFileName = (value, label) => {
   return value;
 };
 
+const exactKeys = (value, expected, label) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      canonical(Object.keys(value).sort(binaryCompare)) !== canonical([...expected].sort(binaryCompare))) {
+    throw new Error(`${label} has an invalid shape`);
+  }
+  return value;
+};
+
 const validateGitObject = (value, label) => {
   if (!GIT_OBJECT.test(value || '')) {
     throw new Error(`${label} must be a lowercase Git object ID`);
@@ -84,44 +119,220 @@ const noteBindings = entries => Object.freeze(Object.fromEntries(NOTE_PATHS.map(
   return [notePath, Object.freeze({bytes: entry.bytes, sha256: entry.sha256})];
 })));
 
-const exactArchivePair = async ({directory, metadata, subjectBaseName}) => {
-  if (!Array.isArray(metadata?.archives) || metadata.archives.length !== 2) {
-    throw new Error('Release metadata must describe exactly one ZIP and one XPI');
+const exactTargetMap = (value, label) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).sort(binaryCompare).join(',') !== [...ARTIFACT_TARGETS].sort(binaryCompare).join(',')) {
+    throw new Error(`${label} must describe exactly chromium and firefox`);
   }
-  const describedExtensions = metadata.archives.map(item =>
-    path.posix.extname(safeFileName(item?.file, 'Metadata archive name')).toLowerCase()).sort(binaryCompare);
-  if (describedExtensions.join(',') !== '.xpi,.zip') {
-    throw new Error('Release metadata must describe exactly one ZIP and one XPI');
+  return value;
+};
+
+const validateMetadataShape = (metadata, label) => {
+  if (metadata?.formatVersion !== 4) {
+    throw new Error(`${label} must use format 4`);
   }
+  exactKeys(metadata, METADATA_KEYS, label);
+  if (typeof metadata.source !== 'string' || !metadata.source || metadata.source.includes('\\') ||
+      path.posix.basename(metadata.source) !== metadata.source ||
+      typeof metadata.extensionVersion !== 'string' || !metadata.extensionVersion ||
+      metadata.zipEpoch !== '1980-01-01T00:00:00.000Z' ||
+      !Number.isSafeInteger(metadata.localeCount) || metadata.localeCount < 0 ||
+      !Array.isArray(metadata.rootFiles) || !Array.isArray(metadata.testEvidence) ||
+      !metadata.provenance || typeof metadata.provenance !== 'object' || Array.isArray(metadata.provenance)) {
+    throw new Error(`${label} has invalid shared metadata`);
+  }
+  const rootFiles = new Set();
+  for (const rootFile of metadata.rootFiles) {
+    if (typeof rootFile !== 'string' || !localExtensionPath(rootFile) || rootFiles.has(rootFile)) {
+      throw new Error(`${label} has invalid rootFiles`);
+    }
+    rootFiles.add(rootFile);
+  }
+  const artifacts = exactTargetMap(metadata.artifacts, `${label} artifacts`);
+  const bases = new Set();
+  for (const target of ARTIFACT_TARGETS) {
+    const artifact = exactKeys(artifacts[target], ARTIFACT_KEYS, `${label} ${target} artifact`);
+    const extension = TARGET_EXTENSIONS[target];
+    const file = safeFileName(artifact.file, `${label} ${target} archive name`);
+    if (path.posix.extname(file).toLowerCase() !== extension ||
+        !SHA256.test(artifact.sha256 || '') || !SHA256.test(artifact.treeSha256 || '') ||
+        !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 0 ||
+        !Number.isSafeInteger(artifact.entryCount) || artifact.entryCount < 1 ||
+        !Array.isArray(artifact.inventory) || artifact.inventory.length !== artifact.entryCount) {
+      throw new Error(`${label} has invalid ${target} artifact metadata`);
+    }
+    bases.add(file.slice(0, -extension.length));
+    artifact.inventory.forEach((item, index) => {
+      exactKeys(item, INVENTORY_KEYS, `${label} ${target} inventory[${index}]`);
+    });
+    inventorySha256(artifact.inventory);
+  }
+  if (bases.size !== 1) {
+    throw new Error(`${label} artifacts must share one archive base name`);
+  }
+  return metadata;
+};
+
+const validateReleasePolicy = policy => {
+  if (policy?.formatVersion !== 1 || policy?.attestation?.predicateType !== PREDICATE_TYPE ||
+      policy.attestation.repository !== TRUSTED_REPOSITORY ||
+      policy.attestation.signerWorkflow !== TRUSTED_SIGNER_WORKFLOW ||
+      policy.attestation.trustedRootSha256 !== TRUSTED_ROOT_SHA256) {
+    throw new Error('Release policy has an invalid attestation trust identity');
+  }
+  if (policy.releaseRef !== TRUSTED_RELEASE_REF ||
+      policy.releaseRef !== `refs/tags/v${policy.releaseVersion}` || !TAG_REF.test(policy.releaseRef || '')) {
+    throw new Error('Release policy does not describe the trusted release ref and version');
+  }
+  safeFileName(policy.archiveBaseName, 'Release archive base name');
+  return policy;
+};
+
+const releaseSubjectNames = policy => Object.freeze(Object.fromEntries(ARTIFACT_TARGETS.map(target =>
+  [target, `${policy.archiveBaseName}${TARGET_EXTENSIONS[target]}`])));
+
+export const validateReleaseSubjectMetadata = ({sourceMetadata, subjectMetadata, policy}) => {
+  validateReleasePolicy(policy);
+  validateMetadataShape(sourceMetadata, 'Source metadata');
+  validateMetadataShape(subjectMetadata, 'Release-subject metadata');
+  if (sourceMetadata.extensionVersion !== policy.releaseVersion ||
+      subjectMetadata.extensionVersion !== policy.releaseVersion) {
+    throw new Error('Release-subject metadata version does not match release policy');
+  }
+  const expected = structuredClone(sourceMetadata);
+  const names = releaseSubjectNames(policy);
+  for (const target of ARTIFACT_TARGETS) {
+    expected.artifacts[target].file = names[target];
+  }
+  if (canonical(subjectMetadata) !== canonical(expected)) {
+    throw new Error('Release-subject metadata may differ from source metadata only in target archive filenames');
+  }
+  return subjectMetadata;
+};
+
+export const deriveReleaseSubjectMetadata = ({metadata, policy}) => {
+  validateReleasePolicy(policy);
+  validateMetadataShape(metadata, 'Source metadata');
+  const result = structuredClone(metadata);
+  const names = releaseSubjectNames(policy);
+  for (const target of ARTIFACT_TARGETS) {
+    result.artifacts[target].file = names[target];
+  }
+  validateReleaseSubjectMetadata({policy, sourceMetadata: metadata, subjectMetadata: result});
+  return result;
+};
+
+export const writeReleaseSubjectMetadata = async ({metadataPath, outputPath, policyPath}) => {
+  metadataPath = path.resolve(metadataPath);
+  outputPath = path.resolve(outputPath);
+  policyPath = path.resolve(policyPath);
+  if (metadataPath === outputPath) {
+    throw new Error('Source and release-subject metadata must be distinct files');
+  }
+  const [metadataBytes, policyBytes] = await Promise.all([
+    readFile(metadataPath),
+    readFile(policyPath)
+  ]);
+  const metadata = JSON.parse(metadataBytes.toString('utf8'));
+  const policy = JSON.parse(normalizedText(policyBytes).toString('utf8'));
+  const result = deriveReleaseSubjectMetadata({metadata, policy});
+  const resultBytes = Buffer.from(`${JSON.stringify(result, null, 2)}\n`, 'utf8');
+  await writeFile(outputPath, resultBytes);
+  return Object.freeze({
+    metadata: result,
+    metadataPath: outputPath,
+    metadataSha256: sha256(resultBytes),
+    sourceMetadataSha256: sha256(metadataBytes)
+  });
+};
+
+const localExtensionPath = value => typeof value === 'string' && value.length > 0 &&
+  !/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value) &&
+  !value.split(/[?#]/, 1)[0].split('/').includes('..');
+
+const parseManifest = (entry, target) => {
+  try {
+    return JSON.parse(UTF8.decode(entry.data));
+  }
+  catch (error) {
+    throw new Error(`${target} manifest.json is not valid UTF-8 JSON`, {cause: error});
+  }
+};
+
+const validateManifestOnlyDelta = (records, extensionVersion) => {
+  const chromiumEntries = records.chromium.inspected.entries;
+  const firefoxEntries = records.firefox.inspected.entries;
+  if (chromiumEntries.length !== firefoxEntries.length || chromiumEntries.some((entry, index) =>
+    entry.path !== firefoxEntries[index]?.path)) {
+    throw new Error('Chromium and Firefox archive path sets differ');
+  }
+  for (const [index, chromium] of chromiumEntries.entries()) {
+    if (chromium.path === 'manifest.json') continue;
+    const firefox = firefoxEntries[index];
+    if (chromium.bytes !== firefox.bytes || chromium.sha256 !== firefox.sha256 ||
+        !chromium.data.equals(firefox.data)) {
+      throw new Error(`Chromium and Firefox non-manifest entry differs: ${chromium.path}`);
+    }
+  }
+  const chromiumEntry = chromiumEntries.find(entry => entry.path === 'manifest.json');
+  const firefoxEntry = firefoxEntries.find(entry => entry.path === 'manifest.json');
+  if (!chromiumEntry || !firefoxEntry || chromiumEntry.data.equals(firefoxEntry.data)) {
+    throw new Error('Release artifacts require one distinct manifest.json per target');
+  }
+  const chromium = parseManifest(chromiumEntry, 'Chromium');
+  const firefox = parseManifest(firefoxEntry, 'Firefox');
+  const {background: chromiumBackground, ...chromiumCommon} = chromium;
+  const {background: firefoxBackground, ...firefoxCommon} = firefox;
+  if (canonical(chromiumCommon) !== canonical(firefoxCommon)) {
+    throw new Error('Chromium and Firefox manifests differ outside background');
+  }
+  if (chromium.manifest_version !== 3 || firefox.manifest_version !== 3 ||
+      chromium.version !== extensionVersion || firefox.version !== extensionVersion) {
+    throw new Error('Target manifests do not match the release manifest version and extension version');
+  }
+  if (canonical(Object.keys(chromiumBackground || {}).sort(binaryCompare)) !==
+      canonical(['service_worker', 'type']) || chromiumBackground.service_worker !== 'worker/core.mjs' ||
+      chromiumBackground.type !== 'module' || !localExtensionPath(chromiumBackground.service_worker) ||
+      !chromiumEntries.some(entry => entry.path === chromiumBackground.service_worker)) {
+    throw new Error('Chromium manifest background must be the local module service worker only');
+  }
+  if (canonical(Object.keys(firefoxBackground || {}).sort(binaryCompare)) !== canonical(['page']) ||
+      firefoxBackground.page !== '/firefox/background.html' || !localExtensionPath(firefoxBackground.page) ||
+      !firefoxEntries.some(entry => entry.path === firefoxBackground.page.replace(/^\/+/, ''))) {
+    throw new Error('Firefox manifest background must be the local background page only');
+  }
+  return Object.freeze({chromium: chromiumEntry, firefox: firefoxEntry});
+};
+
+const exactArtifactPair = async ({directory, metadata, subjectBaseName}) => {
+  const artifacts = exactTargetMap(metadata?.artifacts, 'Release metadata artifacts');
   safeFileName(`${subjectBaseName}.zip`, 'Release archive base name');
-  const metadataDigests = new Set(metadata.archives.map(item => item?.sha256));
-  const metadataSizes = new Set(metadata.archives.map(item => item?.bytes));
-  if (metadataDigests.size !== 1 || metadataSizes.size !== 1 ||
-      !SHA256.test([...metadataDigests][0] || '') || !Number.isSafeInteger([...metadataSizes][0]) ||
-      [...metadataSizes][0] < 0) {
-    throw new Error('Release metadata must describe byte-identical ZIP and XPI bytes');
-  }
-  const records = [];
-  for (const extension of ['.xpi', '.zip']) {
+  const records = {};
+  for (const target of ARTIFACT_TARGETS) {
+    const artifact = artifacts[target];
+    const extension = TARGET_EXTENSIONS[target];
+    const describedFile = safeFileName(artifact?.file, `${target} metadata archive name`);
     const name = `${subjectBaseName}${extension}`;
+    if (describedFile !== name || path.posix.extname(describedFile).toLowerCase() !== extension ||
+        !SHA256.test(artifact?.sha256 || '') || !SHA256.test(artifact?.treeSha256 || '') ||
+        !Number.isSafeInteger(artifact?.bytes) || artifact.bytes < 0 ||
+        !Number.isSafeInteger(artifact?.entryCount) || artifact.entryCount < 1 ||
+        !Array.isArray(artifact?.inventory) || artifact.inventory.length !== artifact.entryCount) {
+      throw new Error(`Release metadata has invalid ${target} artifact metadata`);
+    }
+    inventorySha256(artifact.inventory);
     const inspected = await inspectArchive(path.join(directory, name));
-    if (inspected.archiveSha256 !== [...metadataDigests][0] || inspected.archiveBytes !== [...metadataSizes][0]) {
+    if (inspected.archiveSha256 !== artifact.sha256 || inspected.archiveBytes !== artifact.bytes) {
       throw new Error(`Archive bytes do not match release metadata: ${name}`);
     }
-    if (inspected.treeSha256 !== metadata.sourceTreeSha256 ||
-        JSON.stringify(inspected.inventory) !== JSON.stringify(metadata.inventory)) {
+    if (inspected.treeSha256 !== artifact.treeSha256 ||
+        canonical(inspected.inventory) !== canonical(artifact.inventory)) {
       throw new Error(`Archive inventory does not match release metadata: ${name}`);
     }
-    records.push({inspected, name});
+    records[target] = Object.freeze({artifact, inspected, name, target});
   }
-  records.sort((a, b) => binaryCompare(a.name, b.name));
-  const extensions = records.map(record => path.posix.extname(record.name).toLowerCase());
-  if (extensions.join(',') !== '.xpi,.zip' ||
-      records[0].inspected.archiveSha256 !== records[1].inspected.archiveSha256 ||
-      records[0].inspected.archiveBytes !== records[1].inspected.archiveBytes) {
-    throw new Error('Release subjects must be byte-identical XPI and ZIP aliases');
-  }
-  return records;
+  const manifests = validateManifestOnlyDelta(records, metadata.extensionVersion);
+  return Object.freeze({manifests, records: Object.freeze(records)});
 };
 
 const loadPassedGate = async (file, label, expected, validate) => {
@@ -140,24 +351,67 @@ const loadPassedGate = async (file, label, expected, validate) => {
   return {bytes: bytes.length, sha256: sha256(bytes)};
 };
 
-const validateReproducibilityGate = (gate, extensionVersion) => {
+const validateTargetBindings = (targets, label) => {
+  exactTargetMap(targets, `${label} target map`);
+  for (const target of ARTIFACT_TARGETS) {
+    const value = targets[target];
+    for (const field of ['archiveSha256', 'inventorySha256', 'treeSha256']) {
+      if (!SHA256.test(value?.[field] || '')) {
+        throw new Error(`${label} ${target}.${field} is invalid`);
+      }
+    }
+    if (value.archiveBytes !== undefined && (!Number.isSafeInteger(value.archiveBytes) || value.archiveBytes < 0)) {
+      throw new Error(`${label} ${target}.archiveBytes is invalid`);
+    }
+    if (value.inventoryEntries !== undefined &&
+        (!Number.isSafeInteger(value.inventoryEntries) || value.inventoryEntries < 1)) {
+      throw new Error(`${label} ${target}.inventoryEntries is invalid`);
+    }
+  }
+  return targets;
+};
+
+const validateReproducibilityGate = (gate, extensionVersion, sourceMetadataSha256) => {
   const builders = Array.isArray(gate?.builders) ? gate.builders : [];
-  if (gate?.schemaVersion !== 1 || !Array.isArray(gate?.failures) || gate.failures.length !== 0 ||
+  if (gate?.schemaVersion !== 2 || !Array.isArray(gate?.failures) || gate.failures.length !== 0 ||
       gate?.canonical?.builderId !== 'linux' || gate.canonical.extensionVersion !== extensionVersion ||
       builders.length !== 2 ||
       !builders.some(item => item?.id === 'linux' && item?.runnerOs === 'Linux' && item?.runnerImage) ||
       !builders.some(item => item?.id === 'windows' && item?.runnerOs === 'Windows' && item?.runnerImage)) {
     throw new Error('Cross-builder gate does not contain the exact clean Linux/Windows passing evidence');
   }
+  const canonicalTargets = validateTargetBindings(gate.canonical.targets, 'Cross-builder canonical');
+  builders.forEach(builder => {
+    const targets = validateTargetBindings(builder.targets, `${builder.id || 'unknown'} builder`);
+    if (canonical(targets) !== canonical(canonicalTargets)) {
+      throw new Error(`${builder.id || 'unknown'} builder target bindings differ from the canonical builder`);
+    }
+    if (builder.extensionVersion !== extensionVersion || builder.commitSha !== gate.canonical.commitSha ||
+        builder.gitTree !== gate.canonical.gitTree) {
+      throw new Error(`${builder.id || 'unknown'} builder source or version differs from the canonical builder`);
+    }
+    if (!SHA256.test(builder.metadataSha256 || '')) {
+      throw new Error(`${builder.id || 'unknown'} builder metadata SHA-256 is invalid`);
+    }
+  });
+  const canonicalBuilder = builders.find(builder => builder.id === gate.canonical.builderId);
+  if (builders.some(builder => builder.metadataSha256 !== canonicalBuilder.metadataSha256)) {
+    throw new Error('Cross-builder metadata SHA-256 values differ');
+  }
+  if (sourceMetadataSha256 && canonicalBuilder.metadataSha256 !== sourceMetadataSha256) {
+    throw new Error('Source metadata bytes do not match the canonical cross-builder metadata SHA-256');
+  }
 };
 
 const validateBrowserGate = gate => {
   const targets = Array.isArray(gate?.targets) ? gate.targets : [];
-  if (gate?.schemaVersion !== 1 || !Array.isArray(gate?.failures) || gate.failures.length !== 0 ||
+  if (gate?.schemaVersion !== 2 || !Array.isArray(gate?.failures) || gate.failures.length !== 0 ||
       gate?.reproducibility?.status !== 'passed' || targets.length !== REQUIRED_BROWSER_TARGETS.length ||
-      REQUIRED_BROWSER_TARGETS.some((id, index) => targets[index]?.id !== id || targets[index]?.status !== 'passed')) {
-    throw new Error('Browser-canary gate does not contain the exact five unquarantined passing targets');
+      REQUIRED_BROWSER_TARGETS.some((id, index) => targets[index]?.id !== id || targets[index]?.status !== 'passed') ||
+      targets.some(target => target.artifact !== (target.id.startsWith('firefox-') ? 'firefox' : 'chromium'))) {
+    throw new Error('Browser-canary gate does not contain the exact seven unquarantined target-aware passes');
   }
+  validateTargetBindings(gate.artifacts, 'Browser-canary artifact');
 };
 
 export const createReleasePredicate = async ({
@@ -168,26 +422,38 @@ export const createReleasePredicate = async ({
   metadataPath,
   policyPath,
   ref,
-  reproducibilityGatePath
+  reproducibilityGatePath,
+  sourceMetadataPath,
+  subjectMetadataPath
 }) => {
   artifactDirectory = path.resolve(artifactDirectory);
-  const [metadataBytes, workingPolicyBytes] = await Promise.all([
+  const [metadataBytes, workingPolicyBytes, sourceMetadataBytes, subjectMetadataBytes] = await Promise.all([
     readFile(path.resolve(metadataPath)),
-    readFile(path.resolve(policyPath))
+    readFile(path.resolve(policyPath)),
+    sourceMetadataPath ? readFile(path.resolve(sourceMetadataPath)) : undefined,
+    subjectMetadataPath ? readFile(path.resolve(subjectMetadataPath)) : undefined
   ]);
   const metadata = JSON.parse(metadataBytes.toString('utf8'));
   const policy = JSON.parse(normalizedText(workingPolicyBytes).toString('utf8'));
-  if (metadata?.formatVersion !== 3 || !SHA256.test(metadata?.sourceTreeSha256 || '')) {
-    throw new Error('Candidate metadata must use format 3 and contain a source-tree SHA-256');
-  }
+  validateReleasePolicy(policy);
+  validateMetadataShape(metadata, 'Candidate metadata');
   if (metadata?.extensionVersion !== policy?.releaseVersion) {
     throw new Error('Candidate version does not match release policy');
   }
-  if (policy?.formatVersion !== 1 || policy?.attestation?.predicateType !== PREDICATE_TYPE ||
-      policy.attestation.repository !== TRUSTED_REPOSITORY ||
-      policy.attestation.signerWorkflow !== TRUSTED_SIGNER_WORKFLOW ||
-      policy.attestation.trustedRootSha256 !== TRUSTED_ROOT_SHA256) {
-    throw new Error('Release policy has an invalid attestation trust identity');
+  let sourceMetadataSha256;
+  if (sourceMetadataBytes) {
+    const sourceMetadata = JSON.parse(sourceMetadataBytes.toString('utf8'));
+    const subjectMetadata = subjectMetadataBytes ?
+      JSON.parse(subjectMetadataBytes.toString('utf8')) : metadata;
+    validateReleaseSubjectMetadata({policy, sourceMetadata, subjectMetadata});
+    if (metadata.extensionVersion !== subjectMetadata.extensionVersion ||
+        canonical(metadata.artifacts) !== canonical(subjectMetadata.artifacts)) {
+      throw new Error('Candidate metadata artifacts do not match the attested release-subject metadata');
+    }
+    sourceMetadataSha256 = sha256(sourceMetadataBytes);
+  }
+  else if (subjectMetadataBytes) {
+    throw new Error('Attested release-subject metadata requires source metadata');
   }
   if (ref !== TRUSTED_RELEASE_REF || ref !== policy.releaseRef ||
       ref !== `refs/tags/v${policy.releaseVersion}` || !TAG_REF.test(ref)) {
@@ -195,51 +461,65 @@ export const createReleasePredicate = async ({
   }
   validateGitObject(commitSha, 'Commit SHA');
   validateGitObject(gitTree, 'Git tree');
-  const archives = await exactArchivePair({
+  const pair = await exactArtifactPair({
     directory: artifactDirectory,
     metadata,
     subjectBaseName: policy.archiveBaseName
   });
-  const policyEntry = archives[0].inspected.entries.find(entry => entry.path === 'docs/release-policy.json');
+  const policyEntry = pair.records.chromium.inspected.entries.find(
+    entry => entry.path === 'docs/release-policy.json');
   if (!policyEntry || !normalizedText(workingPolicyBytes).equals(policyEntry.data) ||
       !normalizedText(policyEntry.data).equals(policyEntry.data)) {
     throw new Error('Release policy bytes do not match the normalized in-archive policy');
   }
-  const notes = noteBindings(archives[0].inspected.entries);
-  if (archives[1].inspected.entries.some((entry, index) =>
-    entry.path !== archives[0].inspected.entries[index]?.path ||
-    entry.sha256 !== archives[0].inspected.entries[index]?.sha256)) {
-    throw new Error('ZIP and XPI normalized archive entries differ');
-  }
-  const archiveSha256 = archives[0].inspected.archiveSha256;
+  const notes = noteBindings(pair.records.chromium.inspected.entries);
   const expectedReproducibilityGate = {
-    'canonical.archiveSha256': archiveSha256,
-    'canonical.inventorySha256': inventorySha256(metadata.inventory),
-    'canonical.sourceTreeSha256': metadata.sourceTreeSha256,
     'canonical.commitSha': commitSha,
     'canonical.gitTree': gitTree
   };
+  const expectedBrowserGate = {};
+  for (const target of ARTIFACT_TARGETS) {
+    const artifact = metadata.artifacts[target];
+    expectedReproducibilityGate[`canonical.targets.${target}.archiveSha256`] = artifact.sha256;
+    expectedReproducibilityGate[`canonical.targets.${target}.inventorySha256`] =
+      inventorySha256(artifact.inventory);
+    expectedReproducibilityGate[`canonical.targets.${target}.treeSha256`] = artifact.treeSha256;
+    expectedBrowserGate[`artifacts.${target}.archiveSha256`] = artifact.sha256;
+    expectedBrowserGate[`artifacts.${target}.inventorySha256`] = inventorySha256(artifact.inventory);
+    expectedBrowserGate[`artifacts.${target}.treeSha256`] = artifact.treeSha256;
+  }
   const [reproducibility, browsers] = await Promise.all([
     loadPassedGate(path.resolve(reproducibilityGatePath), 'Cross-builder gate',
-      expectedReproducibilityGate, gate => validateReproducibilityGate(gate, metadata.extensionVersion)),
-    loadPassedGate(path.resolve(browserGatePath), 'Browser-canary gate', {
-      archiveSha256,
-      'reproducibility.inventorySha256': inventorySha256(metadata.inventory),
-      sourceTreeSha256: metadata.sourceTreeSha256
-    }, validateBrowserGate)
+      expectedReproducibilityGate,
+      gate => validateReproducibilityGate(gate, metadata.extensionVersion, sourceMetadataSha256)),
+    loadPassedGate(path.resolve(browserGatePath), 'Browser-canary gate', expectedBrowserGate,
+      validateBrowserGate)
   ]);
-  const subjects = archives.map(record => Object.freeze({
+  const orderedRecords = ARTIFACT_TARGETS.map(target => pair.records[target])
+    .sort((a, b) => binaryCompare(a.name, b.name));
+  const subjects = orderedRecords.map(record => Object.freeze({
     digest: Object.freeze({sha256: record.inspected.archiveSha256}),
     name: record.name
   }));
+  const candidateArtifacts = Object.freeze(Object.fromEntries(ARTIFACT_TARGETS.map(target => {
+    const record = pair.records[target];
+    const manifest = pair.manifests[target];
+    return [target, Object.freeze({
+      archiveBytes: record.inspected.archiveBytes,
+      archiveSha256: record.inspected.archiveSha256,
+      file: record.name,
+      inventoryEntries: record.inspected.inventory.length,
+      inventorySha256: inventorySha256(record.inspected.inventory),
+      manifest: Object.freeze({bytes: manifest.bytes, sha256: manifest.sha256}),
+      treeSha256: record.inspected.treeSha256
+    })];
+  })));
   return Object.freeze({
     predicate: Object.freeze({
       candidate: Object.freeze({
-        archiveBytes: archives[0].inspected.archiveBytes,
+        artifacts: candidateArtifacts,
         extensionVersion: metadata.extensionVersion,
-        inventoryEntries: metadata.inventory.length,
-        notes,
-        sourceTreeSha256: metadata.sourceTreeSha256
+        notes
       }),
       evidence: Object.freeze({browsers, reproducibility}),
       policy: Object.freeze({
@@ -247,17 +527,13 @@ export const createReleasePredicate = async ({
         formatVersion: policy.formatVersion,
         sha256: policyEntry.sha256
       }),
-      schemaVersion: 1,
+      schemaVersion: 2,
       source: Object.freeze({commitSha, gitTree, ref})
     }),
     predicateType: PREDICATE_TYPE,
     subjects
   });
 };
-
-const sortedValue = value => Array.isArray(value) ? value.map(sortedValue) : value && typeof value === 'object' ?
-  Object.fromEntries(Object.keys(value).sort(binaryCompare).map(key => [key, sortedValue(value[key])])) : value;
-const canonical = value => JSON.stringify(sortedValue(value));
 
 const sortedSubjects = subjects => [...subjects].map(subject => sortedValue(subject))
   .sort((a, b) => binaryCompare(a.name || '', b.name || ''));
@@ -329,6 +605,8 @@ const verifyReleaseAttestationWithExecutor = async ({
   policyPath,
   ref,
   reproducibilityGatePath,
+  sourceMetadataPath,
+  subjectMetadataPath,
   trustedRootPath
 }, executeGh) => {
   if (bundlePath && trustedRootPath && path.resolve(bundlePath) === path.resolve(trustedRootPath)) {
@@ -359,6 +637,16 @@ const verifyReleaseAttestationWithExecutor = async ({
       trustFiles[label] = Object.freeze({bytes: data.length, sha256: sha256(data)});
     }
   }
+  if (!sourceMetadataPath || !subjectMetadataPath) {
+    throw new Error('Release attestation verification requires source and release-subject metadata files');
+  }
+  const independentMetadataPaths = [sourceMetadataPath, subjectMetadataPath].map(file => path.resolve(file));
+  if (independentMetadataPaths[0] === independentMetadataPaths[1] ||
+      independentMetadataPaths.includes(path.resolve(bundlePath)) ||
+      independentMetadataPaths.includes(path.resolve(trustedRootPath))) {
+    throw new Error('Source metadata, release-subject metadata, bundle, and trusted root must be distinct files');
+  }
+  await Promise.all(independentMetadataPaths.map(file => access(file)));
   const expected = await createReleasePredicate({
     artifactDirectory,
     browserGatePath,
@@ -367,30 +655,37 @@ const verifyReleaseAttestationWithExecutor = async ({
     metadataPath,
     policyPath,
     ref,
-    reproducibilityGatePath
+    reproducibilityGatePath,
+    sourceMetadataPath,
+    subjectMetadataPath
   });
   const repository = TRUSTED_REPOSITORY;
   const signerWorkflow = TRUSTED_SIGNER_WORKFLOW;
-  const zip = expected.subjects.find(subject => subject.name.endsWith('.zip'));
-  const {arguments_, result} = await runGhVerify({
-    artifactPath: path.join(path.resolve(artifactDirectory), zip.name),
-    bundlePath: path.resolve(bundlePath),
-    commitSha,
-    predicateType: expected.predicateType,
-    ref,
-    repository,
-    signerWorkflow,
-    trustedRootPath: path.resolve(trustedRootPath)
-  }, executeGh);
-  const statement = result?.verificationResult?.statement;
-  if (!statement || statement.predicateType !== expected.predicateType) {
-    throw new Error('Verified attestation has the wrong predicate type');
+  const ghArguments = {};
+  for (const target of ARTIFACT_TARGETS) {
+    const subject = expected.subjects.find(candidate =>
+      candidate.name.endsWith(TARGET_EXTENSIONS[target]));
+    const {arguments_, result} = await runGhVerify({
+      artifactPath: path.join(path.resolve(artifactDirectory), subject.name),
+      bundlePath: path.resolve(bundlePath),
+      commitSha,
+      predicateType: expected.predicateType,
+      ref,
+      repository,
+      signerWorkflow,
+      trustedRootPath: path.resolve(trustedRootPath)
+    }, executeGh);
+    ghArguments[target] = Object.freeze(arguments_);
+    const statement = result?.verificationResult?.statement;
+    if (!statement || statement.predicateType !== expected.predicateType) {
+      throw new Error(`Verified ${target} attestation has the wrong predicate type`);
+    }
+    assertExact(sortedSubjects(statement.subject || []), sortedSubjects(expected.subjects),
+      `Verified ${target} attestation subject set`);
+    assertExact(statement.predicate, expected.predicate, `Verified ${target} attestation predicate`);
   }
-  assertExact(sortedSubjects(statement.subject || []), sortedSubjects(expected.subjects),
-    'Verified attestation subject set');
-  assertExact(statement.predicate, expected.predicate, 'Verified attestation predicate');
   return Object.freeze({
-    ghArguments: arguments_,
+    ghArguments: Object.freeze(ghArguments),
     bundle: trustFiles.bundle,
     predicate: expected.predicate,
     predicateType: expected.predicateType,
@@ -454,13 +749,26 @@ const commonOptions = options => ({
 
 const main = async () => {
   const {command, options} = parseArguments(process.argv.slice(2));
+  if (command === 'subject-metadata') {
+    rejectUnknownOptions(options, new Set(['metadata', 'output', 'policy']));
+    const result = await writeReleaseSubjectMetadata({
+      metadataPath: required(options, 'metadata'),
+      outputPath: required(options, 'output'),
+      policyPath: required(options, 'policy')
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
   if (command === 'predicate') {
     rejectUnknownOptions(options, new Set([
       'artifact-dir', 'browser-gate', 'commit', 'metadata', 'output', 'policy', 'ref',
-      'reproducibility-gate', 'tree'
+      'reproducibility-gate', 'source-metadata', 'tree'
     ]));
     const output = path.resolve(required(options, 'output'));
-    const result = await createReleasePredicate(commonOptions(options));
+    const result = await createReleasePredicate({
+      ...commonOptions(options),
+      sourceMetadataPath: required(options, 'source-metadata')
+    });
     await writeFile(output, `${JSON.stringify(result.predicate, null, 2)}\n`, 'utf8');
     process.stdout.write(`${JSON.stringify({...result, predicatePath: output}, null, 2)}\n`);
     return;
@@ -468,11 +776,13 @@ const main = async () => {
   if (command === 'verify') {
     rejectUnknownOptions(options, new Set([
       'artifact-dir', 'browser-gate', 'bundle', 'commit', 'metadata', 'output', 'policy',
-      'ref', 'reproducibility-gate', 'tree', 'trusted-root'
+      'ref', 'reproducibility-gate', 'source-metadata', 'subject-metadata', 'tree', 'trusted-root'
     ]));
     const report = await verifyReleaseAttestation({
       ...commonOptions(options),
       bundlePath: required(options, 'bundle'),
+      sourceMetadataPath: required(options, 'source-metadata'),
+      subjectMetadataPath: required(options, 'subject-metadata'),
       trustedRootPath: required(options, 'trusted-root')
     });
     if (options.output) {
@@ -481,7 +791,7 @@ const main = async () => {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return;
   }
-  throw new Error('Usage: release-attestation.mjs predicate|verify --artifact-dir DIR --metadata FILE --policy FILE --browser-gate FILE --reproducibility-gate FILE --commit SHA --tree SHA --ref refs/tags/vVERSION ...');
+  throw new Error('Usage: release-attestation.mjs subject-metadata|predicate|verify --metadata FILE --policy FILE ...');
 };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

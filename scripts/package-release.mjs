@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {TextDecoder} from 'node:util';
 
 import {assertReleaseContext} from './release-context.mjs';
+import {deriveReleaseManifests} from './manifest-policy.mjs';
 
 const ZIP_EPOCH = '1980-01-01T00:00:00.000Z';
 const ZIP_DOS_DATE = 0x0021;
@@ -21,6 +22,13 @@ const TEXT_EXTENSIONS = new Set([
 const TEXT_FILENAMES = new Set(['LICENSE']);
 
 const binaryPathCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+const sortedJson = value => Array.isArray(value) ? value.map(sortedJson) :
+  value && typeof value === 'object' ? Object.fromEntries(Object.keys(value)
+    .sort(binaryPathCompare)
+    .map(key => [key, sortedJson(value[key])])) : value;
+
+const normalizedJsonData = value => Buffer.from(`${JSON.stringify(sortedJson(value), null, 2)}\n`, 'utf8');
 
 const crcTable = Array.from({length: 256}, (_, byte) => {
   let value = byte;
@@ -241,6 +249,50 @@ const validateManifest = (manifest, availablePaths) => {
   return references.sort((a, b) => binaryPathCompare(a.label, b.label));
 };
 
+const targetEntries = (entries, manifest) => entries.map(entry => entry.name === 'manifest.json' ? {
+  name: entry.name,
+  data: normalizedJsonData(manifest)
+} : entry);
+
+const validateFirefoxBackgroundLoader = entries => {
+  const byName = new Map(entries.map(entry => [entry.name, entry.data]));
+  for (const required of ['firefox/background.html', 'firefox/compatibility.mjs', 'worker/core.mjs']) {
+    if (!byName.has(required)) {
+      throw new Error(`Firefox background loader dependency is missing from the package: ${required}`);
+    }
+  }
+  const html = byName.get('firefox/background.html').toString('utf8');
+  const compatibilityTag = '<script type="module" src="compatibility.mjs"></script>';
+  const coreTag = '<script type="module" src="/worker/core.mjs"></script>';
+  const compatibilityIndex = html.indexOf(compatibilityTag);
+  const coreIndex = html.indexOf(coreTag);
+  if (compatibilityIndex < 0 || coreIndex < 0 || compatibilityIndex >= coreIndex ||
+      html.indexOf(compatibilityTag, compatibilityIndex + compatibilityTag.length) >= 0 ||
+      html.indexOf(coreTag, coreIndex + coreTag.length) >= 0) {
+    throw new Error('Firefox background page must load compatibility.mjs exactly once before worker/core.mjs');
+  }
+};
+
+const assertManifestOnlyTargetDifference = (chromium, firefox) => {
+  if (chromium.length !== firefox.length) {
+    throw new Error('Chromium and Firefox package inventories must contain the same paths');
+  }
+  const differences = [];
+  for (let index = 0; index < chromium.length; index += 1) {
+    const left = chromium[index];
+    const right = firefox[index];
+    if (left.name !== right.name) {
+      throw new Error('Chromium and Firefox package inventories must contain the same ordered paths');
+    }
+    if (!left.data.equals(right.data)) {
+      differences.push(left.name);
+    }
+  }
+  if (differences.length !== 1 || differences[0] !== 'manifest.json') {
+    throw new Error(`Chromium and Firefox packages must differ only at manifest.json; received: ${differences.join(', ') || '(none)'}`);
+  }
+};
+
 const collectMessageKeys = value => {
   const keys = new Set();
   const visit = item => {
@@ -450,8 +502,22 @@ export const packageRelease = async ({
   }
 
   const manifest = json.get('manifest.json');
-  const resources = validateManifest(manifest, availablePaths);
-  const locales = validateLocales(manifest, json, availablePaths);
+  const manifests = deriveReleaseManifests(manifest);
+  const entriesByTarget = {
+    chromium: targetEntries(entries, manifests.chromium),
+    firefox: targetEntries(entries, manifests.firefox)
+  };
+  validateFirefoxBackgroundLoader(entries);
+  assertManifestOnlyTargetDifference(entriesByTarget.chromium, entriesByTarget.firefox);
+  const resources = {
+    chromium: validateManifest(manifests.chromium, availablePaths),
+    firefox: validateManifest(manifests.firefox, availablePaths)
+  };
+  const locales = validateLocales(manifests.chromium, json, availablePaths);
+  const firefoxLocales = validateLocales(manifests.firefox, json, availablePaths);
+  if (JSON.stringify(locales) !== JSON.stringify(firefoxLocales)) {
+    throw new Error('Chromium and Firefox locale inventories differ');
+  }
 
   baseName ||= `auto-tab-discard-${manifest.version}`;
   if (!/^[a-z\d][a-z\d._-]*$/i.test(baseName)) {
@@ -498,15 +564,31 @@ export const packageRelease = async ({
   }
   normalizedEvidence.sort((a, b) => binaryPathCompare(a.id, b.id));
 
-  const archive = createZip(entries);
   await mkdir(outputDirectory, {recursive: true});
-  const archiveFiles = [`${baseName}.xpi`, `${baseName}.zip`].sort(binaryPathCompare);
-  for (const file of archiveFiles) {
+  const targetFiles = {
+    chromium: `${baseName}.zip`,
+    firefox: `${baseName}.xpi`
+  };
+  const artifacts = {};
+  for (const target of ['chromium', 'firefox']) {
+    const targetEntryList = entriesByTarget[target];
+    const archive = createZip(targetEntryList);
+    const file = targetFiles[target];
     await writeFile(path.join(outputDirectory, file), archive);
+    artifacts[target] = {
+      file,
+      bytes: archive.length,
+      sha256: sha256(archive),
+      treeSha256: hashEntries(targetEntryList),
+      entryCount: targetEntryList.length,
+      inventory: targetEntryList.map(entry => ({
+        path: entry.name,
+        bytes: entry.data.length,
+        sha256: sha256(entry.data)
+      }))
+    };
   }
-  const digest = sha256(archive);
-  const sourceTreeSha256 = hashEntries(entries);
-  const archives = archiveFiles.map(file => ({file, sha256: digest, bytes: archive.length}));
+  const archives = Object.entries(artifacts).map(([target, artifact]) => ({target, ...artifact}));
   const provenanceNotePaths = [
     'FORK_NOTES.md',
     'docs/MIGRATIONS.md',
@@ -518,20 +600,12 @@ export const packageRelease = async ({
   }));
   const releaseNotes = entries.find(entry => entry.name === 'FORK_NOTES.md');
   const metadata = {
-    formatVersion: 3,
+    formatVersion: 4,
     source: path.basename(sourceRoot),
     extensionVersion: manifest.version,
     zipEpoch: ZIP_EPOCH,
-    entryCount: entries.length,
-    inventory: entries.map(entry => ({
-      path: entry.name,
-      bytes: entry.data.length,
-      sha256: sha256(entry.data)
-    })),
-    manifestResourceCount: resources.length,
     localeCount: locales.length,
     rootFiles,
-    sourceTreeSha256,
     provenance: releaseMode ? {
       commitSha: releaseContext.commitSha,
       gitTree: releaseContext.gitTree,
@@ -541,19 +615,24 @@ export const packageRelease = async ({
       mode: 'programmatic-fixture'
     },
     testEvidence: normalizedEvidence,
-    archives
+    artifacts
   };
   const metadataPath = path.join(outputDirectory, 'checksums.json');
   const sumsPath = path.join(outputDirectory, 'SHA256SUMS');
   await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, 'utf8');
-  await writeFile(sumsPath, `${archives.map(item => `${item.sha256}  ${item.file}`).join('\n')}\n`, 'utf8');
+  await writeFile(sumsPath, `${[...archives]
+    .sort((a, b) => binaryPathCompare(a.file, b.file))
+    .map(item => `${item.sha256}  ${item.file}`).join('\n')}\n`, 'utf8');
 
   return {
     archives,
-    entries: entries.map(entry => entry.name),
+    artifacts,
+    entries: Object.fromEntries(Object.entries(entriesByTarget)
+      .map(([target, targetEntryList]) => [target, targetEntryList.map(entry => entry.name)])),
     excluded,
     locales,
     manifest,
+    manifests,
     metadata,
     metadataPath,
     outputDirectory,
@@ -597,7 +676,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     for (const archive of result.archives) {
       process.stdout.write(`${archive.sha256}  ${path.join(result.outputDirectory, archive.file)}\n`);
     }
-    process.stdout.write(`Validated ${result.entries.length} files, ${result.resources.length} manifest resources, and wrote ${result.metadataPath}\n`);
+    process.stdout.write(`Validated ${result.entries.chromium.length} Chromium files and ${result.entries.firefox.length} Firefox files, and wrote ${result.metadataPath}\n`);
   }).catch(error => {
     process.stderr.write(`${error.stack || error.message}\n`);
     process.exitCode = 1;

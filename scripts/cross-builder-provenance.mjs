@@ -9,6 +9,8 @@ import {fileURLToPath} from 'node:url';
 const SHA256 = /^[a-f\d]{64}$/;
 const GIT_OBJECT = /^[a-f\d]{40,64}$/;
 const BUILDER_ID = /^[a-z][a-z\d-]{0,31}$/;
+const artifactTargets = Object.freeze(['chromium', 'firefox']);
+const targetExtensions = Object.freeze({chromium: '.zip', firefox: '.xpi'});
 const requiredBuilders = Object.freeze(new Map([
   ['linux', 'Linux'],
   ['windows', 'Windows']
@@ -70,57 +72,60 @@ export const inventorySha256 = inventory => {
   return hash.digest('hex');
 };
 
-const archiveSummary = artifact => {
-  if (!Array.isArray(artifact?.archives) || artifact.archives.length !== 2) {
-    throw new Error('builder artifact must describe exactly one ZIP and one XPI');
+const exactTargetKeys = (value, label) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).sort(binaryCompare).join(',') !== [...artifactTargets].sort(binaryCompare).join(',')) {
+    throw new Error(`${label} must describe exactly chromium and firefox`);
   }
-  const extensions = new Set();
+  return value;
+};
+
+const targetSummaries = artifact => {
+  const artifacts = exactTargetKeys(artifact?.artifacts, 'builder artifact metadata');
   const bases = new Set();
-  const digests = new Set();
-  const sizes = new Set();
-  for (const item of artifact.archives) {
+  const summaries = {};
+  for (const target of artifactTargets) {
+    const item = artifacts[target];
     const file = String(item?.file || '');
     if (!file || file.includes('\\') || path.posix.basename(file) !== file) {
-      throw new Error('builder artifact archive path is unsafe');
+      throw new Error(`builder artifact ${target} archive path is unsafe`);
     }
     const extension = path.posix.extname(file).toLowerCase();
-    if (!['.zip', '.xpi'].includes(extension) || extensions.has(extension)) {
-      throw new Error('builder artifact must describe one ZIP and one XPI');
+    if (extension !== targetExtensions[target]) {
+      throw new Error(`builder artifact ${target} must use ${targetExtensions[target]}`);
     }
     bases.add(file.slice(0, -extension.length));
-    if (!SHA256.test(item?.sha256 || '') || !Number.isSafeInteger(item?.bytes) || item.bytes < 0) {
-      throw new Error(`builder artifact has invalid archive metadata for ${item?.file || '(unknown)'}`);
+    if (!SHA256.test(item?.sha256 || '') || !SHA256.test(item?.treeSha256 || '') ||
+        !Number.isSafeInteger(item?.bytes) || item.bytes < 0 ||
+        !Number.isSafeInteger(item?.entryCount) || item.entryCount < 1) {
+      throw new Error(`builder artifact has invalid ${target} metadata`);
     }
-    extensions.add(extension);
-    digests.add(item.sha256);
-    sizes.add(item.bytes);
-  }
-  if (digests.size !== 1 || sizes.size !== 1) {
-    throw new Error('ZIP and XPI must be byte-identical aliases');
+    validateInventory(item.inventory);
+    if (item.entryCount !== item.inventory.length) {
+      throw new Error(`builder artifact ${target} entry count does not match its inventory`);
+    }
+    summaries[target] = Object.freeze({
+      archiveBytes: item.bytes,
+      archiveSha256: item.sha256,
+      inventoryEntries: item.entryCount,
+      inventorySha256: inventorySha256(item.inventory),
+      treeSha256: item.treeSha256
+    });
   }
   if (bases.size !== 1) {
-    throw new Error('ZIP and XPI must share one archive base name');
+    throw new Error('Chromium and Firefox archives must share one archive base name');
   }
-  return {
-    bytes: [...sizes][0],
-    sha256: [...digests][0]
-  };
+  return Object.freeze(summaries);
 };
 
 const validateArtifact = artifact => {
-  if (artifact?.formatVersion !== 3) {
-    throw new Error('builder artifact metadata formatVersion must be 3');
-  }
-  if (!SHA256.test(artifact?.sourceTreeSha256 || '')) {
-    throw new Error('builder artifact has no valid source-tree SHA-256');
+  if (artifact?.formatVersion !== 4) {
+    throw new Error('builder artifact metadata formatVersion must be 4');
   }
   if (typeof artifact?.extensionVersion !== 'string' || !artifact.extensionVersion) {
     throw new Error('builder artifact has no extension version');
   }
-  validateInventory(artifact.inventory);
-  if (artifact.entryCount !== artifact.inventory.length) {
-    throw new Error('builder artifact entry count does not match its inventory');
-  }
+  targetSummaries(artifact);
   return artifact;
 };
 
@@ -134,7 +139,7 @@ export const createBuilderProvenance = ({
   runnerOs
 }) => {
   validateArtifact(artifact);
-  const archive = archiveSummary(artifact);
+  const targets = targetSummaries(artifact);
   if (!BUILDER_ID.test(builderId || '')) {
     throw new Error('builder ID is invalid');
   }
@@ -150,20 +155,16 @@ export const createBuilderProvenance = ({
 
   return Object.freeze({
     artifact: Object.freeze({
-      archiveBytes: archive.bytes,
-      archiveSha256: archive.sha256,
       extensionVersion: artifact.extensionVersion,
-      inventoryEntries: artifact.inventory.length,
-      inventorySha256: inventorySha256(artifact.inventory),
       metadataSha256,
-      sourceTreeSha256: artifact.sourceTreeSha256
+      targets
     }),
     builder: Object.freeze({
       id: builderId,
       runnerImage,
       runnerOs
     }),
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: Object.freeze({
       cleanCheckout: true,
       commitSha,
@@ -180,9 +181,9 @@ const compareField = (failures, candidate, canonical, label) => {
 
 const validateProvenance = ({artifact, provenance}) => {
   validateArtifact(artifact);
-  const archive = archiveSummary(artifact);
-  if (provenance?.schemaVersion !== 1 || provenance?.source?.cleanCheckout !== true) {
-    throw new Error('builder provenance must attest schema 1 and a clean checkout');
+  const targets = targetSummaries(artifact);
+  if (provenance?.schemaVersion !== 2 || provenance?.source?.cleanCheckout !== true) {
+    throw new Error('builder provenance must attest schema 2 and a clean checkout');
   }
   if (!BUILDER_ID.test(provenance?.builder?.id || '') ||
       typeof provenance?.builder?.runnerOs !== 'string' || !provenance.builder.runnerOs ||
@@ -193,26 +194,34 @@ const validateProvenance = ({artifact, provenance}) => {
       !GIT_OBJECT.test(provenance?.source?.gitTree || '')) {
     throw new Error('builder provenance Git identity is invalid');
   }
-  for (const field of ['archiveSha256', 'inventorySha256', 'metadataSha256', 'sourceTreeSha256']) {
-    if (!SHA256.test(provenance?.artifact?.[field] || '')) {
-      throw new Error(`builder provenance ${field} is invalid`);
+  if (!SHA256.test(provenance?.artifact?.metadataSha256 || '')) {
+    throw new Error('builder provenance metadataSha256 is invalid');
+  }
+  const provenanceTargets = exactTargetKeys(provenance?.artifact?.targets, 'builder provenance target map');
+  for (const target of artifactTargets) {
+    for (const field of ['archiveSha256', 'inventorySha256', 'treeSha256']) {
+      if (!SHA256.test(provenanceTargets[target]?.[field] || '')) {
+        throw new Error(`builder provenance ${target}.${field} is invalid`);
+      }
+    }
+    if (!Number.isSafeInteger(provenanceTargets[target]?.archiveBytes) ||
+        !Number.isSafeInteger(provenanceTargets[target]?.inventoryEntries)) {
+      throw new Error(`builder provenance ${target} counts are invalid`);
     }
   }
-  if (!Number.isSafeInteger(provenance?.artifact?.archiveBytes) ||
-      !Number.isSafeInteger(provenance?.artifact?.inventoryEntries)) {
-    throw new Error('builder provenance counts are invalid');
-  }
   const failures = [];
-  compareField(failures, provenance.artifact.archiveSha256, archive.sha256,
-    `${provenance.builder.id} attested/archive SHA-256`);
-  compareField(failures, provenance.artifact.archiveBytes, archive.bytes,
-    `${provenance.builder.id} attested/archive bytes`);
-  compareField(failures, provenance.artifact.sourceTreeSha256, artifact.sourceTreeSha256,
-    `${provenance.builder.id} attested/source-tree SHA-256`);
-  compareField(failures, provenance.artifact.inventorySha256, inventorySha256(artifact.inventory),
-    `${provenance.builder.id} attested/inventory SHA-256`);
-  compareField(failures, provenance.artifact.inventoryEntries, artifact.inventory.length,
-    `${provenance.builder.id} attested/inventory entries`);
+  for (const target of artifactTargets) {
+    for (const [field, label] of [
+      ['archiveSha256', 'archive SHA-256'],
+      ['archiveBytes', 'archive byte count'],
+      ['treeSha256', 'tree SHA-256'],
+      ['inventorySha256', 'inventory SHA-256'],
+      ['inventoryEntries', 'inventory entry count']
+    ]) {
+      compareField(failures, provenanceTargets[target][field], targets[target][field],
+        `${provenance.builder.id} attested/${target} ${label}`);
+    }
+  }
   compareField(failures, provenance.artifact.extensionVersion, artifact.extensionVersion,
     `${provenance.builder.id} attested/extension version`);
   return failures;
@@ -268,15 +277,22 @@ export const verifyCrossBuilderProvenance = ({builders, canonicalBuilder = 'linu
       }
       const candidate = record.provenance;
       for (const [field, label] of [
-        ['archiveSha256', 'archive SHA-256'],
-        ['archiveBytes', 'archive byte count'],
-        ['sourceTreeSha256', 'source-tree SHA-256'],
-        ['inventorySha256', 'inventory SHA-256'],
-        ['inventoryEntries', 'inventory entry count'],
         ['metadataSha256', 'metadata SHA-256'],
         ['extensionVersion', 'extension version']
       ]) {
         compareField(failures, candidate.artifact[field], reference.artifact[field], `${id}/${label}`);
+      }
+      for (const target of artifactTargets) {
+        for (const [field, label] of [
+          ['archiveSha256', 'archive SHA-256'],
+          ['archiveBytes', 'archive byte count'],
+          ['treeSha256', 'tree SHA-256'],
+          ['inventorySha256', 'inventory SHA-256'],
+          ['inventoryEntries', 'inventory entry count']
+        ]) {
+          compareField(failures, candidate.artifact.targets[target][field],
+            reference.artifact.targets[target][field], `${id}/${target} ${label}`);
+        }
       }
       compareField(failures, candidate.source.commitSha, reference.source.commitSha,
         `${id}/Git commit`);
@@ -286,52 +302,48 @@ export const verifyCrossBuilderProvenance = ({builders, canonicalBuilder = 'linu
   }
 
   const canonicalEvidence = canonical ? Object.freeze({
-    archiveSha256: canonical.provenance.artifact.archiveSha256,
     builderId: canonicalBuilder,
     commitSha: canonical.provenance.source.commitSha,
     extensionVersion: canonical.provenance.artifact.extensionVersion,
     gitTree: canonical.provenance.source.gitTree,
-    inventorySha256: canonical.provenance.artifact.inventorySha256,
-    sourceTreeSha256: canonical.provenance.artifact.sourceTreeSha256
+    targets: canonical.provenance.artifact.targets
   }) : null;
   const uniqueFailures = [...new Set(failures)].sort();
   return Object.freeze({
     builders: [...byId.values()].sort((a, b) => a.provenance.builder.id.localeCompare(b.provenance.builder.id))
       .map(record => Object.freeze({
-        archiveSha256: record.provenance.artifact.archiveSha256,
         commitSha: record.provenance.source.commitSha,
         extensionVersion: record.provenance.artifact.extensionVersion,
         gitTree: record.provenance.source.gitTree,
         id: record.provenance.builder.id,
-        inventorySha256: record.provenance.artifact.inventorySha256,
         metadataSha256: record.provenance.artifact.metadataSha256,
         runnerImage: record.provenance.builder.runnerImage,
         runnerOs: record.provenance.builder.runnerOs,
-        sourceTreeSha256: record.provenance.artifact.sourceTreeSha256
+        targets: record.provenance.artifact.targets
       })),
     canonical: canonicalEvidence,
     failures: uniqueFailures,
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: uniqueFailures.length ? 'failed' : 'passed'
   });
 };
 
 const observeArchives = async (directory, metadata) => {
   const failures = [];
-  for (const archive of metadata.archives || []) {
+  for (const [target, archive] of Object.entries(metadata.artifacts || {})) {
     let data;
     try {
       data = await readFile(path.join(directory, archive.file));
     }
     catch (error) {
-      failures.push(`${path.basename(directory)}/${archive.file} is unavailable`);
+      failures.push(`${path.basename(directory)}/${target}/${archive.file} is unavailable`);
       continue;
     }
     if (sha256(data) !== archive.sha256) {
-      failures.push(`${path.basename(directory)}/${archive.file} bytes do not match metadata SHA-256`);
+      failures.push(`${path.basename(directory)}/${target}/${archive.file} bytes do not match metadata SHA-256`);
     }
     if (data.length !== archive.bytes) {
-      failures.push(`${path.basename(directory)}/${archive.file} bytes do not match metadata size`);
+      failures.push(`${path.basename(directory)}/${target}/${archive.file} bytes do not match metadata size`);
     }
   }
   return failures;

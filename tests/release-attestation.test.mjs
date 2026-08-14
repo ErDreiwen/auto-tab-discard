@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
@@ -20,9 +20,11 @@ import {
 } from '../scripts/release-gate.mjs';
 import {
   createReleasePredicate,
+  deriveReleaseSubjectMetadata,
   ghVerifyArguments,
   PREDICATE_TYPE,
   TRUSTED_ROOT_SHA256,
+  validateReleaseSubjectMetadata,
   verifyReleaseAttestation,
   verifyReleaseAttestationForTest
 } from '../scripts/release-attestation.mjs';
@@ -36,49 +38,109 @@ const commitSha = 'd'.repeat(40);
 const gitTree = 'e'.repeat(40);
 const ref = 'refs/tags/v0.6.9.2';
 
-const fixture = async t => {
+const mutateStoredEntry = async (archivePath, entryPath, transform) => {
+  const archive = Buffer.from(await readFile(archivePath));
+  let offset = 0;
+  while (offset + 30 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
+    const bytes = archive.readUInt32LE(offset + 18);
+    const nameBytes = archive.readUInt16LE(offset + 26);
+    const extraBytes = archive.readUInt16LE(offset + 28);
+    const name = archive.subarray(offset + 30, offset + 30 + nameBytes).toString('utf8');
+    const dataStart = offset + 30 + nameBytes + extraBytes;
+    if (name === entryPath) {
+      const original = Buffer.from(archive.subarray(dataStart, dataStart + bytes));
+      const replacement = Buffer.from(transform(original));
+      assert.equal(replacement.length, original.length, 'archive mutation must preserve the stored entry size');
+      replacement.copy(archive, dataStart);
+      await writeFile(archivePath, archive);
+      return;
+    }
+    offset = dataStart + bytes;
+  }
+  throw new Error(`Archive entry not found: ${entryPath}`);
+};
+
+const refreshArtifactMetadata = async (options, target) => {
+  const metadata = JSON.parse(await readFile(options.metadataPath, 'utf8'));
+  const artifact = metadata.artifacts[target];
+  const inspected = await inspectArchive(path.join(options.artifactDirectory, artifact.file));
+  Object.assign(artifact, {
+    bytes: inspected.archiveBytes,
+    entryCount: inspected.inventory.length,
+    inventory: inspected.inventory,
+    sha256: inspected.archiveSha256,
+    treeSha256: inspected.treeSha256
+  });
+  await writeFile(options.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+};
+
+const fixture = async (t, {baseName} = {}) => {
   const root = await mkdtemp(path.join(tmpdir(), 'release-attestation-'));
   t.after(() => rm(root, {recursive: true, force: true}));
   const artifactDirectory = path.join(root, 'candidate');
   const packaged = await packageRelease({
+    ...(baseName ? {baseName} : {}),
     outputDirectory: artifactDirectory,
     releaseMode: false,
     repositoryRoot,
     sourceRoot: path.join(repositoryRoot, 'v3')
   });
+  const metadataSha256 = sha256(await readFile(packaged.metadataPath));
+  const targetEvidence = Object.fromEntries(['chromium', 'firefox'].map(target => {
+    const artifact = packaged.metadata.artifacts[target];
+    return [target, {
+      archiveBytes: artifact.bytes,
+      archiveSha256: artifact.sha256,
+      inventoryEntries: artifact.entryCount,
+      inventorySha256: inventorySha256(artifact.inventory),
+      treeSha256: artifact.treeSha256
+    }];
+  }));
   const canonical = {
-    archiveSha256: packaged.archives[0].sha256,
     builderId: 'linux',
     commitSha,
     extensionVersion: packaged.metadata.extensionVersion,
     gitTree,
-    inventorySha256: inventorySha256(packaged.metadata.inventory),
-    sourceTreeSha256: packaged.metadata.sourceTreeSha256
+    targets: targetEvidence
   };
   const reproducibility = {
     builders: [
-      {id: 'linux', runnerImage: 'ubuntu-clean-image', runnerOs: 'Linux'},
-      {id: 'windows', runnerImage: 'windows-clean-image', runnerOs: 'Windows'}
+      {
+        commitSha, extensionVersion: packaged.metadata.extensionVersion, gitTree, id: 'linux',
+        metadataSha256, runnerImage: 'ubuntu-clean-image', runnerOs: 'Linux', targets: targetEvidence
+      },
+      {
+        commitSha, extensionVersion: packaged.metadata.extensionVersion, gitTree, id: 'windows',
+        metadataSha256, runnerImage: 'windows-clean-image', runnerOs: 'Windows', targets: targetEvidence
+      }
     ],
     canonical,
     failures: [],
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: 'passed'
   };
   const browsers = {
-    archiveSha256: canonical.archiveSha256,
+    artifacts: Object.fromEntries(['chromium', 'firefox'].map(target => {
+      const artifact = packaged.metadata.artifacts[target];
+      return [target, {
+        archiveSha256: artifact.sha256,
+        inventorySha256: inventorySha256(artifact.inventory),
+        treeSha256: artifact.treeSha256
+      }];
+    })),
     failures: [],
-    reproducibility: {inventorySha256: canonical.inventorySha256, status: 'passed'},
-    schemaVersion: 1,
-    sourceTreeSha256: canonical.sourceTreeSha256,
+    reproducibility: {builderId: 'linux', status: 'passed'},
+    schemaVersion: 2,
     status: 'passed',
     targets: [
       'chrome-minimum',
       'chrome-stable',
       'chrome-beta',
       'edge-stable',
-      'edge-beta'
-    ].map(id => ({id, status: 'passed'}))
+      'edge-beta',
+      'firefox-minimum',
+      'firefox-stable'
+    ].map(id => ({artifact: id.startsWith('firefox-') ? 'firefox' : 'chromium', id, status: 'passed'}))
   };
   const reproducibilityGatePath = path.join(root, 'cross-builder-gate.json');
   const browserGatePath = path.join(root, 'browser-canary-gate.json');
@@ -104,6 +166,20 @@ const fixture = async t => {
   return {browsers, canonical, options, packaged, reproducibility, root};
 };
 
+const verificationFixture = async t => {
+  const result = await fixture(t);
+  const sourceMetadataPath = path.join(result.root, 'source-checksums.json');
+  const subjectMetadataPath = path.join(result.root, 'checksums.json');
+  await Promise.all([
+    copyFile(result.options.metadataPath, sourceMetadataPath),
+    copyFile(result.options.metadataPath, subjectMetadataPath)
+  ]);
+  return {
+    ...result,
+    options: {...result.options, sourceMetadataPath, subjectMetadataPath}
+  };
+};
+
 test('versioned predicate binds exact subjects and normalized in-archive release notes', async t => {
   const {options, packaged} = await fixture(t);
   const result = await createReleasePredicate(options);
@@ -112,12 +188,32 @@ test('versioned predicate binds exact subjects and normalized in-archive release
     'auto-tab-discard-0.6.9.2.xpi',
     'auto-tab-discard-0.6.9.2.zip'
   ]);
-  assert.ok(result.subjects.every(subject => subject.digest.sha256 === packaged.archives[0].sha256));
+  assert.deepEqual(Object.fromEntries(result.subjects.map(subject => [path.extname(subject.name), subject.digest.sha256])), {
+    '.xpi': packaged.metadata.artifacts.firefox.sha256,
+    '.zip': packaged.metadata.artifacts.chromium.sha256
+  });
   assert.deepEqual(result.predicate.source, {commitSha, gitTree, ref});
-  assert.equal(result.predicate.candidate.sourceTreeSha256, packaged.metadata.sourceTreeSha256);
   assert.equal(result.predicate.candidate.extensionVersion, '0.6.9.2');
+  assert.equal(result.predicate.schemaVersion, 2);
 
-  const inspected = await inspectArchive(path.join(options.artifactDirectory, result.subjects[0].name));
+  const inspected = await inspectArchive(path.join(options.artifactDirectory,
+    result.predicate.candidate.artifacts.chromium.file));
+  for (const target of ['chromium', 'firefox']) {
+    const candidate = result.predicate.candidate.artifacts[target];
+    const metadata = packaged.metadata.artifacts[target];
+    assert.deepEqual(candidate, {
+      archiveBytes: metadata.bytes,
+      archiveSha256: metadata.sha256,
+      file: target === 'chromium' ? 'auto-tab-discard-0.6.9.2.zip' : 'auto-tab-discard-0.6.9.2.xpi',
+      inventoryEntries: metadata.entryCount,
+      inventorySha256: inventorySha256(metadata.inventory),
+      manifest: metadata.inventory.find(entry => entry.path === 'manifest.json') && {
+        bytes: metadata.inventory.find(entry => entry.path === 'manifest.json').bytes,
+        sha256: metadata.inventory.find(entry => entry.path === 'manifest.json').sha256
+      },
+      treeSha256: metadata.treeSha256
+    });
+  }
   for (const notePath of ['FORK_NOTES.md', 'docs/MIGRATIONS.md', 'docs/PERMISSION_CHANGES.md']) {
     const entry = inspected.entries.find(item => item.path === notePath);
     assert.deepEqual(result.predicate.candidate.notes[notePath], {
@@ -138,6 +234,109 @@ test('versioned predicate binds exact subjects and normalized in-archive release
     sha256(await readFile(options.reproducibilityGatePath)));
 });
 
+test('workflow canary metadata derives only versioned subject filenames and remains source-bound', async t => {
+  const {options, packaged, reproducibility, root} = await fixture(t, {
+    baseName: 'auto-tab-discard-canary'
+  });
+  const sourceMetadataPath = options.metadataPath;
+  const sourceBytes = await readFile(sourceMetadataPath);
+  const sourceMetadata = JSON.parse(sourceBytes.toString('utf8'));
+  const policy = JSON.parse(await readFile(options.policyPath, 'utf8'));
+  const releaseDirectory = path.join(root, 'release-subjects');
+  const releaseMetadataPath = path.join(releaseDirectory, 'checksums.json');
+  await mkdir(releaseDirectory);
+  for (const target of ['chromium', 'firefox']) {
+    const source = packaged.metadata.artifacts[target];
+    const extension = target === 'chromium' ? '.zip' : '.xpi';
+    await copyFile(path.join(options.artifactDirectory, source.file),
+      path.join(options.artifactDirectory, `auto-tab-discard-0.6.9.2${extension}`));
+  }
+
+  await exec(process.execPath, [
+    path.join(repositoryRoot, 'scripts', 'release-attestation.mjs'),
+    'subject-metadata',
+    '--metadata', sourceMetadataPath,
+    '--policy', options.policyPath,
+    '--output', releaseMetadataPath
+  ], {cwd: repositoryRoot, encoding: 'utf8'});
+  const releaseBytes = await readFile(releaseMetadataPath);
+  const releaseMetadata = JSON.parse(releaseBytes.toString('utf8'));
+  const expected = deriveReleaseSubjectMetadata({metadata: sourceMetadata, policy});
+  assert.deepEqual(releaseMetadata, expected);
+  assert.deepEqual(releaseMetadata.artifacts.chromium.file, 'auto-tab-discard-0.6.9.2.zip');
+  assert.deepEqual(releaseMetadata.artifacts.firefox.file, 'auto-tab-discard-0.6.9.2.xpi');
+  const restored = structuredClone(releaseMetadata);
+  for (const target of ['chromium', 'firefox']) {
+    restored.artifacts[target].file = sourceMetadata.artifacts[target].file;
+  }
+  assert.deepEqual(restored, sourceMetadata);
+  assert.equal(reproducibility.builders[0].metadataSha256, sha256(sourceBytes));
+  assert.equal(reproducibility.builders[1].metadataSha256, sha256(sourceBytes));
+
+  const predicateOptions = {
+    ...options,
+    metadataPath: releaseMetadataPath,
+    sourceMetadataPath
+  };
+  const result = await createReleasePredicate(predicateOptions);
+  assert.deepEqual(result.subjects.map(subject => subject.name), [
+    'auto-tab-discard-0.6.9.2.xpi',
+    'auto-tab-discard-0.6.9.2.zip'
+  ]);
+
+  await t.test('a non-filename change in the release copy is rejected', async () => {
+    const drifted = structuredClone(releaseMetadata);
+    drifted.localeCount += 1;
+    assert.throws(() => validateReleaseSubjectMetadata({
+      policy,
+      sourceMetadata,
+      subjectMetadata: drifted
+    }), /only in target archive filenames/);
+    const driftedPath = path.join(releaseDirectory, 'drifted-checksums.json');
+    await writeFile(driftedPath, `${JSON.stringify(drifted, null, 2)}\n`);
+    await assert.rejects(createReleasePredicate({...predicateOptions, metadataPath: driftedPath}),
+      /only in target archive filenames/);
+  });
+
+  await t.test('validly shaped source drift is rejected by the cross-builder metadata hash', async () => {
+    const driftedSource = structuredClone(sourceMetadata);
+    driftedSource.localeCount += 1;
+    const driftedRelease = deriveReleaseSubjectMetadata({metadata: driftedSource, policy});
+    const driftedSourcePath = path.join(releaseDirectory, 'drifted-source.json');
+    const driftedReleasePath = path.join(releaseDirectory, 'drifted-release.json');
+    await Promise.all([
+      writeFile(driftedSourcePath, `${JSON.stringify(driftedSource, null, 2)}\n`),
+      writeFile(driftedReleasePath, `${JSON.stringify(driftedRelease, null, 2)}\n`)
+    ]);
+    await assert.rejects(createReleasePredicate({
+      ...predicateOptions,
+      metadataPath: driftedReleasePath,
+      sourceMetadataPath: driftedSourcePath
+    }), /Source metadata bytes do not match the canonical cross-builder metadata SHA-256/);
+  });
+});
+
+test('release-subject metadata derivation rejects malformed format-4 inputs', async t => {
+  const {options} = await fixture(t);
+  const sourceMetadata = JSON.parse(await readFile(options.metadataPath, 'utf8'));
+  const policy = JSON.parse(await readFile(options.policyPath, 'utf8'));
+  for (const [name, mutate, expected] of [
+    ['top-level drift', value => { value.unexpected = true; }, /Source metadata has an invalid shape/],
+    ['target-map drift', value => { value.artifacts.safari = structuredClone(value.artifacts.firefox); },
+      /exactly chromium and firefox/],
+    ['artifact-record drift', value => { value.artifacts.chromium.unexpected = true; },
+      /chromium artifact has an invalid shape/],
+    ['version drift', value => { value.extensionVersion = '0.6.9.3'; },
+      /version does not match release policy/]
+  ]) {
+    await t.test(name, () => {
+      const drifted = structuredClone(sourceMetadata);
+      mutate(drifted);
+      assert.throws(() => deriveReleaseSubjectMetadata({metadata: drifted, policy}), expected);
+    });
+  }
+});
+
 test('reviewed trusted-root snapshot exactly matches the release-policy pin', async () => {
   const policy = JSON.parse(await readFile(path.join(repositoryRoot, 'docs', 'release-policy.json'), 'utf8'));
   const root = normalizedText(await readFile(path.join(
@@ -151,11 +350,11 @@ test('reviewed trusted-root snapshot exactly matches the release-policy pin', as
 });
 
 test('semantic verifier invokes gh with every fixed offline trust constraint', async t => {
-  const {options, root} = await fixture(t);
+  const {options, root} = await verificationFixture(t);
   const expected = await createReleasePredicate(options);
-  let invocation;
+  const invocations = [];
   const executeGh = async (file, arguments_, executionOptions) => {
-    invocation = {arguments_, executionOptions, file};
+    invocations.push({arguments_, executionOptions, file});
     return {
       stderr: '',
       stdout: JSON.stringify([{
@@ -182,39 +381,42 @@ test('semantic verifier invokes gh with every fixed offline trust constraint', a
     normalization: 'UTF-8, BOM stripped, LF',
     sha256: TRUSTED_ROOT_SHA256
   });
-  assert.equal(invocation.file, 'gh');
-  assert.deepEqual(invocation.arguments_, ghVerifyArguments({
-    artifactPath: path.join(path.resolve(options.artifactDirectory), 'auto-tab-discard-0.6.9.2.zip'),
-    bundlePath: path.resolve(options.bundlePath),
-    commitSha,
-    predicateType: PREDICATE_TYPE,
-    ref,
-    repository: 'ErDreiwen/auto-tab-discard',
-    signerWorkflow: 'ErDreiwen/auto-tab-discard/.github/workflows/browser-canaries.yml',
-    trustedRootPath: path.resolve(options.trustedRootPath)
-  }));
-  for (const [flag, value] of [
-    ['--bundle', path.resolve(options.bundlePath)],
-    ['--custom-trusted-root', path.resolve(options.trustedRootPath)],
-    ['--repo', 'ErDreiwen/auto-tab-discard'],
-    ['--signer-workflow', 'ErDreiwen/auto-tab-discard/.github/workflows/browser-canaries.yml'],
-    ['--signer-digest', commitSha],
-    ['--source-digest', commitSha],
-    ['--source-ref', ref],
-    ['--predicate-type', PREDICATE_TYPE],
-    ['--digest-alg', 'sha256'],
-    ['--cert-oidc-issuer', 'https://token.actions.githubusercontent.com']
-  ]) {
-    const index = invocation.arguments_.indexOf(flag);
-    assert.ok(index >= 0, flag);
-    assert.equal(invocation.arguments_[index + 1], value, flag);
+  assert.deepEqual(invocations.map(invocation => path.extname(invocation.arguments_[2])), ['.zip', '.xpi']);
+  for (const invocation of invocations) {
+    assert.equal(invocation.file, 'gh');
+    assert.deepEqual(invocation.arguments_, ghVerifyArguments({
+      artifactPath: invocation.arguments_[2],
+      bundlePath: path.resolve(options.bundlePath),
+      commitSha,
+      predicateType: PREDICATE_TYPE,
+      ref,
+      repository: 'ErDreiwen/auto-tab-discard',
+      signerWorkflow: 'ErDreiwen/auto-tab-discard/.github/workflows/browser-canaries.yml',
+      trustedRootPath: path.resolve(options.trustedRootPath)
+    }));
+    for (const [flag, value] of [
+      ['--bundle', path.resolve(options.bundlePath)],
+      ['--custom-trusted-root', path.resolve(options.trustedRootPath)],
+      ['--repo', 'ErDreiwen/auto-tab-discard'],
+      ['--signer-workflow', 'ErDreiwen/auto-tab-discard/.github/workflows/browser-canaries.yml'],
+      ['--signer-digest', commitSha],
+      ['--source-digest', commitSha],
+      ['--source-ref', ref],
+      ['--predicate-type', PREDICATE_TYPE],
+      ['--digest-alg', 'sha256'],
+      ['--cert-oidc-issuer', 'https://token.actions.githubusercontent.com']
+    ]) {
+      const index = invocation.arguments_.indexOf(flag);
+      assert.ok(index >= 0, flag);
+      assert.equal(invocation.arguments_[index + 1], value, flag);
+    }
+    assert.ok(invocation.arguments_.includes('--deny-self-hosted-runners'));
+    assert.deepEqual(invocation.executionOptions, {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true
+    });
   }
-  assert.ok(invocation.arguments_.includes('--deny-self-hosted-runners'));
-  assert.deepEqual(invocation.executionOptions, {
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-    windowsHide: true
-  });
   const crlfRootPath = path.join(root, 'reviewed-root-crlf.jsonl');
   await writeFile(crlfRootPath, (await readFile(options.trustedRootPath, 'utf8')).replace(/\n/g, '\r\n'));
   const crlfResult = await verifyReleaseAttestationForTest(
@@ -233,7 +435,7 @@ test('semantic verifier invokes gh with every fixed offline trust constraint', a
 test('offline verification rejects multiple results and every semantic mismatch', async t => {
   for (const scenario of ['none', 'multiple', 'wrong-type', 'missing-subject', 'changed-predicate']) {
     await t.test(scenario, async t => {
-      const {options} = await fixture(t);
+      const {options} = await verificationFixture(t);
       const expected = await createReleasePredicate(options);
       const statement = {
         predicate: structuredClone(expected.predicate),
@@ -256,7 +458,7 @@ test('offline verification rejects multiple results and every semantic mismatch'
   }
 
   await t.test('fake gh failure and invalid JSON are fatal', async t => {
-    const {options} = await fixture(t);
+    const {options} = await verificationFixture(t);
     await assert.rejects(verifyReleaseAttestationForTest(options, async () => {
       const error = new Error('fake gh failed');
       error.stderr = 'offline signature verification failed';
@@ -271,7 +473,7 @@ test('offline verification rejects multiple results and every semantic mismatch'
 
 test('predicate and verifier fail closed on missing trust, stale evidence, and altered bytes', async t => {
   await t.test('missing or conflated trust inputs', async t => {
-    const {options, root} = await fixture(t);
+    const {options, root} = await verificationFixture(t);
     await assert.rejects(verifyReleaseAttestation({...options, bundlePath: undefined}),
       /independently supplied bundle/);
     await assert.rejects(verifyReleaseAttestation({...options, trustedRootPath: undefined}),
@@ -289,6 +491,44 @@ test('predicate and verifier fail closed on missing trust, stale evidence, and a
     assert.equal(invoked, false);
     await writeFile(options.bundlePath, 'not-json');
     await assert.rejects(verifyReleaseAttestation(options), /Attestation bundle file is not valid JSON or JSONL/);
+  });
+
+  await t.test('retained source and release-subject metadata are mandatory and tamper-evident', async t => {
+    const {options} = await verificationFixture(t);
+    let invoked = false;
+    const executeGh = async () => {
+      invoked = true;
+      return {stderr: '', stdout: '[]'};
+    };
+    await assert.rejects(verifyReleaseAttestationForTest(
+      {...options, sourceMetadataPath: undefined}, executeGh),
+    /requires source and release-subject metadata files/);
+    await assert.rejects(verifyReleaseAttestationForTest(
+      {...options, subjectMetadataPath: undefined}, executeGh),
+    /requires source and release-subject metadata files/);
+    await assert.rejects(verifyReleaseAttestationForTest(
+      {...options, subjectMetadataPath: options.sourceMetadataPath}, executeGh),
+    /must be distinct files/);
+
+    const originalSource = JSON.parse(await readFile(options.sourceMetadataPath, 'utf8'));
+    const originalSubject = JSON.parse(await readFile(options.subjectMetadataPath, 'utf8'));
+    const subjectDrift = structuredClone(originalSubject);
+    subjectDrift.localeCount += 1;
+    await writeFile(options.subjectMetadataPath, `${JSON.stringify(subjectDrift, null, 2)}\n`);
+    await assert.rejects(verifyReleaseAttestationForTest(options, executeGh),
+      /only in target archive filenames/);
+
+    const sourceDrift = structuredClone(originalSource);
+    sourceDrift.localeCount += 1;
+    const policy = JSON.parse(await readFile(options.policyPath, 'utf8'));
+    const consistentSubjectDrift = deriveReleaseSubjectMetadata({metadata: sourceDrift, policy});
+    await Promise.all([
+      writeFile(options.sourceMetadataPath, `${JSON.stringify(sourceDrift, null, 2)}\n`),
+      writeFile(options.subjectMetadataPath, `${JSON.stringify(consistentSubjectDrift, null, 2)}\n`)
+    ]);
+    await assert.rejects(verifyReleaseAttestationForTest(options, executeGh),
+      /Source metadata bytes do not match the canonical cross-builder metadata SHA-256/);
+    assert.equal(invoked, false);
   });
 
   await t.test('failed hosted evidence', async t => {
@@ -310,6 +550,52 @@ test('predicate and verifier fail closed on missing trust, stale evidence, and a
     const bytes = await readFile(zip);
     await writeFile(zip, Buffer.concat([bytes, Buffer.from('tamper')]));
     await assert.rejects(createReleasePredicate(options), /Archive bytes do not match release metadata/);
+  });
+
+  await t.test('non-manifest target drift', async t => {
+    const {options, packaged} = await fixture(t);
+    const xpi = path.join(options.artifactDirectory, packaged.metadata.artifacts.firefox.file);
+    await mutateStoredEntry(xpi, 'LICENSE', data => {
+      data[0] ^= 1;
+      return data;
+    });
+    await refreshArtifactMetadata(options, 'firefox');
+    await assert.rejects(createReleasePredicate(options),
+      /Chromium and Firefox non-manifest entry differs: LICENSE/);
+  });
+
+  await t.test('invalid target background manifest', async t => {
+    const {options, packaged} = await fixture(t);
+    const zip = path.join(options.artifactDirectory, packaged.metadata.artifacts.chromium.file);
+    await mutateStoredEntry(zip, 'manifest.json', data => {
+      const manifest = data.toString('utf8');
+      assert.match(manifest, /worker\/core\.mjs/);
+      return Buffer.from(manifest.replace('worker/core.mjs', 'worker/fake.mjs'));
+    });
+    await refreshArtifactMetadata(options, 'chromium');
+    await assert.rejects(createReleasePredicate(options),
+      /Chromium manifest background must be the local module service worker only/);
+  });
+
+  await t.test('target manifests differ outside background', async t => {
+    const {options, packaged} = await fixture(t);
+    const zip = path.join(options.artifactDirectory, packaged.metadata.artifacts.chromium.file);
+    await mutateStoredEntry(zip, 'manifest.json', data => {
+      const manifest = data.toString('utf8');
+      assert.match(manifest, /Hardened/);
+      return Buffer.from(manifest.replace('Hardened', 'Tampered'));
+    });
+    await refreshArtifactMetadata(options, 'chromium');
+    await assert.rejects(createReleasePredicate(options),
+      /Chromium and Firefox manifests differ outside background/);
+  });
+
+  await t.test('artifact target map has an unexpected key', async t => {
+    const {options, packaged} = await fixture(t);
+    const metadata = JSON.parse(await readFile(options.metadataPath, 'utf8'));
+    metadata.artifacts.safari = structuredClone(packaged.metadata.artifacts.firefox);
+    await writeFile(options.metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+    await assert.rejects(createReleasePredicate(options), /exactly chromium and firefox/);
   });
 
   await t.test('untrusted ref', async t => {
@@ -343,7 +629,7 @@ test('predicate and verifier fail closed on missing trust, stale evidence, and a
     const {browsers, options} = await fixture(t);
     browsers.targets.pop();
     await writeFile(options.browserGatePath, `${JSON.stringify(browsers, null, 2)}\n`);
-    await assert.rejects(createReleasePredicate(options), /exact five unquarantined passing targets/);
+    await assert.rejects(createReleasePredicate(options), /exact seven unquarantined target-aware passes/);
   });
 });
 
@@ -369,14 +655,19 @@ test('release workflow signs only the protected trusted tag after both hosted ga
     'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
     'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02',
     'browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd',
-    'browser-actions/setup-edge@e2f31d5d9f2e6d75e72516221b4df8528e6325cf'
+    'browser-actions/setup-edge@e2f31d5d9f2e6d75e72516221b4df8528e6325cf',
+    'browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795'
   ];
-  assert.equal(actions.length, 31);
+  assert.equal(actions.length, 32);
   assert.ok(actions.every(action => /@[a-f\d]{40}$/.test(action)), actions.join('\n'));
   assert.deepEqual([...new Set(actions)].sort(), allowedActions.sort());
+  assert.match(job, /release-attestation\.mjs subject-metadata\s*\\\s*\n\s*--metadata build\/canary\/checksums\.json\s*\\\s*\n\s*--policy docs\/release-policy\.json\s*\\\s*\n\s*--output build\/release-attestation\/checksums\.json/);
+  assert.match(job, /release-attestation\.mjs predicate[\s\S]*--metadata build\/release-attestation\/checksums\.json\s*\\\s*\n\s*--source-metadata build\/canary\/checksums\.json/);
   assert.match(job, /subject-path:\s*\|\s*\n\s*auto-tab-discard-0\.6\.9\.2\.xpi\s*\n\s*auto-tab-discard-0\.6\.9\.2\.zip/);
   assert.match(job, new RegExp(`predicate-type: ${PREDICATE_TYPE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
   assert.match(job, /release-attestation\.bundle\.json/);
+  assert.match(job, /cp build\/canary\/checksums\.json build\/release-attestation\/source-checksums\.json/);
+  assert.doesNotMatch(job, /cp build\/canary\/checksums\.json build\/release-attestation\/\s*(?:\n|$)/);
   assert.match(job, /retention-days: 90/);
   assert.doesNotMatch(job, /pull_request_target|self-hosted|secrets\./);
 });
@@ -386,6 +677,8 @@ test('release gate exposes a deterministic candidate but cannot pass without att
   assert.match(source, /candidateReady: candidateBlockers\.length === 0/);
   assert.match(source, /deterministic candidate bytes were produced but are not releasable/);
   assert.match(source, /verifyReleaseAttestation\(\{/);
+  assert.match(source, /sourceMetadataPath: path\.join\(attestationDirectory, 'source-checksums\.json'\)/);
+  assert.match(source, /subjectMetadataPath: path\.join\(attestationDirectory, 'checksums\.json'\)/);
   assert.match(source, /report\.status = 'passed'/);
   assert.ok(source.indexOf('verifyReleaseAttestation({') < source.indexOf("report.status = 'passed'"));
   assert.match(source, /if \(report\.blockers\.length\) \{\s*report\.status = 'blocked'/);

@@ -5,9 +5,60 @@ const binaryCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 const sortedUnique = values => [...new Set(values || [])].sort(binaryCompare);
 const difference = (left, right) => left.filter(item => !right.includes(item));
 
+const CHROMIUM_BACKGROUND = Object.freeze({
+  service_worker: 'worker/core.mjs',
+  type: 'module'
+});
+const FIREFOX_BACKGROUND = Object.freeze({
+  page: '/firefox/background.html'
+});
+const SOURCE_BACKGROUND_KEYS = Object.freeze(['page', 'service_worker', 'type']);
+
 const localExtensionPath = value => typeof value === 'string' &&
+  value.length > 0 &&
   !/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value) &&
   !value.split(/[?#]/, 1)[0].split('/').includes('..');
+
+const backgroundPolicyErrors = manifest => {
+  const background = manifest?.background;
+  const errors = [];
+  if (!background || typeof background !== 'object' || Array.isArray(background)) {
+    return ['background must be the canonical dual-browser object'];
+  }
+  const keys = Object.keys(background).sort(binaryCompare);
+  if (keys.length !== SOURCE_BACKGROUND_KEYS.length ||
+      keys.some((key, index) => key !== SOURCE_BACKGROUND_KEYS[index])) {
+    errors.push('background must contain exactly page, service_worker, and type');
+  }
+  if (!localExtensionPath(background.service_worker) || background.type !== 'module') {
+    errors.push('background.service_worker must be a local ES module');
+  }
+  if (background.service_worker !== CHROMIUM_BACKGROUND.service_worker) {
+    errors.push(`background.service_worker must be ${CHROMIUM_BACKGROUND.service_worker}`);
+  }
+  if (!localExtensionPath(background.page)) {
+    errors.push('background.page must be local when present');
+  }
+  if (background.page !== FIREFOX_BACKGROUND.page) {
+    errors.push(`background.page must be ${FIREFOX_BACKGROUND.page}`);
+  }
+  return errors;
+};
+
+// The checked-in manifest is an auditable dual-browser source description, not
+// a browser-loadable artifact. Chrome 102 refuses MV3 when background.page is
+// present, while Firefox uses the page loader and does not enable extension
+// service workers. Packaging must therefore derive two exact manifests.
+export const deriveReleaseManifests = manifest => {
+  const errors = backgroundPolicyErrors(manifest);
+  if (errors.length) {
+    throw new Error(`Canonical release background is invalid: ${errors.join('; ')}`);
+  }
+  return Object.freeze({
+    chromium: Object.freeze({...manifest, background: CHROMIUM_BACKGROUND}),
+    firefox: Object.freeze({...manifest, background: FIREFOX_BACKGROUND})
+  });
+};
 
 export const createPermissionChangeReport = (manifest, baseline) => {
   const currentPermissions = sortedUnique(manifest.permissions);
@@ -74,12 +125,7 @@ export const lintManifestPolicy = ({manifest, baseline, policy}) => {
   if (disallowedHosts.length) {
     errors.push(`host_permissions exceed release policy: ${disallowedHosts.join(', ')}`);
   }
-  if (!localExtensionPath(manifest.background?.service_worker) || manifest.background?.type !== 'module') {
-    errors.push('background.service_worker must be a local ES module');
-  }
-  if (manifest.background?.page !== undefined && !localExtensionPath(manifest.background.page)) {
-    errors.push('background.page must be local when present');
-  }
+  errors.push(...backgroundPolicyErrors(manifest));
   if (findRemoteCode(manifest).length) {
     errors.push(`manifest references remote executable code: ${findRemoteCode(manifest).join(', ')}`);
   }

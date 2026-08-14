@@ -327,24 +327,52 @@ export const releaseGate = async ({
     outputDirectory,
     releaseMode: false
   });
-  const archivePath = path.join(outputDirectory,
-    preliminary.archives.find(item => item.file.endsWith('.zip')).file);
-  const extractedRoot = path.join(outputDirectory, 'extracted', preliminary.metadata.sourceTreeSha256);
-  await rm(path.join(outputDirectory, 'extracted'), {recursive: true, force: true});
-  const archiveInventory = await extractArchive(archivePath, extractedRoot);
-  const extractedInventory = await inspectDirectory(extractedRoot);
-  assertSameInventory(archiveInventory, extractedInventory);
-  if (JSON.stringify(preliminary.metadata.inventory) !== JSON.stringify(archiveInventory.inventory)) {
-    throw new Error('Packager inclusion manifest does not match the ZIP inventory');
-  }
-  if (archiveInventory.treeSha256 !== preliminary.metadata.sourceTreeSha256) {
-    throw new Error('Packager source digest does not match extracted artifact tree');
-  }
+  const extractedBase = path.join(outputDirectory, 'extracted');
+  await rm(extractedBase, {recursive: true, force: true});
+  const extractPackagedArtifact = async target => {
+    const described = preliminary.metadata.artifacts?.[target];
+    if (!described) {
+      throw new Error(`Packager metadata does not describe the ${target} artifact`);
+    }
+    const archivePath = path.join(outputDirectory, described.file);
+    const extractedRoot = path.join(extractedBase, target, described.treeSha256);
+    const archiveInventory = await extractArchive(archivePath, extractedRoot);
+    const extractedInventory = await inspectDirectory(extractedRoot);
+    assertSameInventory(archiveInventory, extractedInventory);
+    if (archiveInventory.archiveSha256 !== described.sha256 ||
+        archiveInventory.archiveBytes !== described.bytes ||
+        archiveInventory.treeSha256 !== described.treeSha256 ||
+        archiveInventory.inventory.length !== described.entryCount ||
+        JSON.stringify(archiveInventory.inventory) !== JSON.stringify(described.inventory)) {
+      throw new Error(`Packager metadata does not match the ${target} archive inventory`);
+    }
+    return {archiveInventory, archivePath, extractedRoot};
+  };
+  const chromiumArtifact = await extractPackagedArtifact('chromium');
+  const firefoxArtifact = await extractPackagedArtifact('firefox');
+  const archiveInventory = chromiumArtifact.archiveInventory;
+  const extractedRoot = chromiumArtifact.extractedRoot;
+  const {
+    archiveInventory: firefoxArchiveInventory,
+    extractedRoot: firefoxExtractedRoot
+  } = firefoxArtifact;
   const inventoryPath = path.join(evidenceRoot, 'artifact-inventory.json');
   await writeFile(inventoryPath, `${JSON.stringify({
-    archiveSha256: archiveInventory.archiveSha256,
-    entries: archiveInventory.inventory,
-    treeSha256: archiveInventory.treeSha256
+    artifacts: {
+      chromium: {
+        archiveBytes: archiveInventory.archiveBytes,
+        archiveSha256: archiveInventory.archiveSha256,
+        entries: archiveInventory.inventory,
+        treeSha256: archiveInventory.treeSha256
+      },
+      firefox: {
+        archiveBytes: firefoxArchiveInventory.archiveBytes,
+        archiveSha256: firefoxArchiveInventory.archiveSha256,
+        entries: firefoxArchiveInventory.inventory,
+        treeSha256: firefoxArchiveInventory.treeSha256
+      }
+    },
+    schemaVersion: 2
   }, null, 2)}\n`, 'utf8');
   evidence.push({id: 'artifact-inventory', path: relativeEvidencePath(inventoryPath), status: 'passed'});
 
@@ -578,13 +606,13 @@ export const releaseGate = async ({
       executable: firefoxExecutable,
       script: path.join(repositoryRoot, 'e2e', 'firefox-bidi-smoke.cjs'),
       arguments_: [
-        '--extension', extractedRoot,
+        '--extension', firefoxExtractedRoot,
         '--profile-root', path.join(outputDirectory, 'profiles', 'firefox'),
         '--results-root', path.join(evidenceRoot, 'firefox')
       ],
       reportDirectory: path.join(evidenceRoot, 'firefox'),
       validate: report => report.outcome !== 'passed' ? 'report did not pass' :
-        report.extension?.treeSha256 !== archiveInventory.treeSha256 ?
+        report.extension?.treeSha256 !== firefoxArchiveInventory.treeSha256 ?
           'tested tree digest does not match the release artifact' : undefined
     }));
   }
@@ -599,13 +627,26 @@ export const releaseGate = async ({
 
   const candidateBlockers = [...new Set(blockers)].sort(binaryCompare);
   const report = {
-    archiveSha256: archiveInventory.archiveSha256,
+    artifacts: {
+      chromium: {
+        archiveBytes: archiveInventory.archiveBytes,
+        archiveFile: preliminary.metadata.artifacts.chromium.file,
+        archiveSha256: archiveInventory.archiveSha256,
+        treeSha256: archiveInventory.treeSha256
+      },
+      firefox: {
+        archiveBytes: firefoxArchiveInventory.archiveBytes,
+        archiveFile: preliminary.metadata.artifacts.firefox.file,
+        archiveSha256: firefoxArchiveInventory.archiveSha256,
+        treeSha256: firefoxArchiveInventory.treeSha256
+      }
+    },
     attestation: null,
     blockers: candidateBlockers,
     candidateReady: candidateBlockers.length === 0,
     commitSha: releaseContext.commitSha,
     evidence: evidence.sort((a, b) => binaryCompare(a.id, b.id)),
-    sourceTreeSha256: archiveInventory.treeSha256,
+    schemaVersion: 2,
     status: 'blocked'
   };
   if (candidateBlockers.length === 0) {
@@ -615,11 +656,21 @@ export const releaseGate = async ({
       releaseMode: true,
       testEvidence: report.evidence
     });
-    const finalArchive = await inspectArchive(path.join(outputDirectory,
-      final.archives.find(item => item.file.endsWith('.zip')).file));
-    if (finalArchive.archiveSha256 !== archiveInventory.archiveSha256 ||
-        finalArchive.treeSha256 !== archiveInventory.treeSha256) {
-      throw new Error('Final provenance packaging changed the browser-tested archive bytes');
+    for (const [target, tested] of Object.entries({
+      chromium: archiveInventory,
+      firefox: firefoxArchiveInventory
+    })) {
+      const described = final.metadata.artifacts?.[target];
+      if (!described) {
+        throw new Error(`Final provenance packaging omitted the ${target} artifact`);
+      }
+      const finalArchive = await inspectArchive(path.join(outputDirectory, described.file));
+      if (finalArchive.archiveSha256 !== tested.archiveSha256 ||
+          finalArchive.archiveBytes !== tested.archiveBytes ||
+          finalArchive.treeSha256 !== tested.treeSha256 ||
+          JSON.stringify(finalArchive.inventory) !== JSON.stringify(tested.inventory)) {
+        throw new Error(`Final provenance packaging changed the browser-tested ${target} archive bytes`);
+      }
     }
 
     const attestationInputs = [attestationBundle, trustedRoot, hostedBrowserGate, hostedReproducibilityGate];
@@ -631,6 +682,7 @@ export const releaseGate = async ({
     }
     else {
       try {
+        const attestationDirectory = path.dirname(path.resolve(attestationBundle));
         const verification = await verifyReleaseAttestation({
           artifactDirectory: outputDirectory,
           browserGatePath: hostedBrowserGate,
@@ -641,6 +693,8 @@ export const releaseGate = async ({
           policyPath: path.join(repositoryRoot, 'docs', 'release-policy.json'),
           ref: policy.policy.releaseRef,
           reproducibilityGatePath: hostedReproducibilityGate,
+          sourceMetadataPath: path.join(attestationDirectory, 'source-checksums.json'),
+          subjectMetadataPath: path.join(attestationDirectory, 'checksums.json'),
           trustedRootPath: trustedRoot
         });
         const verificationPath = path.join(evidenceRoot, 'release-attestation-verification.json');

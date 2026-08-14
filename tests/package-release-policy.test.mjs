@@ -15,6 +15,7 @@ const evidence = [{id: 'fixture-gate', path: 'tests/evidence.json', status: 'pas
 const createRepository = async (t, manifest = {}) => {
   const root = await mkdtemp(path.join(tmpdir(), 'strict-package-'));
   t.after(() => rm(root, {recursive: true, force: true}));
+  await mkdir(path.join(root, 'v3', 'firefox'), {recursive: true});
   await mkdir(path.join(root, 'v3', 'worker'), {recursive: true});
   await mkdir(path.join(root, 'docs'), {recursive: true});
   await mkdir(path.join(root, 'tests'), {recursive: true});
@@ -24,12 +25,22 @@ const createRepository = async (t, manifest = {}) => {
   await writeFile(path.join(root, 'docs', 'MIGRATIONS.md'), '# Migrations\n');
   await writeFile(path.join(root, 'docs', 'PERMISSION_CHANGES.md'), '# Permissions\n');
   await writeFile(path.join(root, 'tests', 'evidence.json'), '{"passed":true}\n');
+  await writeFile(path.join(root, 'v3', 'firefox', 'background.html'), [
+    '<script type="module" src="compatibility.mjs"></script>',
+    '<script type="module" src="/worker/core.mjs"></script>',
+    ''
+  ].join('\n'));
+  await writeFile(path.join(root, 'v3', 'firefox', 'compatibility.mjs'), 'export {};\n');
   await writeFile(path.join(root, 'v3', 'worker', 'core.mjs'), 'export {};\n');
   await writeFile(path.join(root, 'v3', 'manifest.json'), `${JSON.stringify({
     manifest_version: 3,
     name: 'Expected Name',
     version: '2.0.0',
-    background: {service_worker: 'worker/core.mjs', type: 'module'},
+    background: {
+      page: '/firefox/background.html',
+      service_worker: 'worker/core.mjs',
+      type: 'module'
+    },
     ...manifest
   }, null, 2)}\n`);
   await writeFile(path.join(root, 'docs', 'release-policy.json'), `${JSON.stringify({
@@ -61,6 +72,46 @@ test('strict packaging enforces evidence, manifest identity, version, and archiv
   await t.test('archive name mismatch', async t => {
     const root = await createRepository(t);
     await assert.rejects(packageRelease({repositoryRoot: root, baseName: 'wrong-name', testEvidence: evidence}), /archive name mismatch/);
+  });
+});
+
+test('target derivation fails closed on a noncanonical background or Firefox loader', async t => {
+  await t.test('source background has an extra scripts fallback', async t => {
+    const root = await createRepository(t, {background: {
+      page: '/firefox/background.html',
+      scripts: ['firefox/compatibility.mjs', 'worker/core.mjs'],
+      service_worker: 'worker/core.mjs',
+      type: 'module'
+    }});
+    await assert.rejects(packageRelease({
+      repositoryRoot: root,
+      outputDirectory: path.join(root, 'build', 'invalid-background'),
+      releaseMode: false
+    }), /background must contain exactly page, service_worker, and type/);
+  });
+
+  await t.test('background page reverses compatibility and core ordering', async t => {
+    const root = await createRepository(t);
+    await writeFile(path.join(root, 'v3', 'firefox', 'background.html'), [
+      '<script type="module" src="/worker/core.mjs"></script>',
+      '<script type="module" src="compatibility.mjs"></script>',
+      ''
+    ].join('\n'));
+    await assert.rejects(packageRelease({
+      repositoryRoot: root,
+      outputDirectory: path.join(root, 'build', 'invalid-loader-order'),
+      releaseMode: false
+    }), /must load compatibility\.mjs exactly once before worker\/core\.mjs/);
+  });
+
+  await t.test('background page dependency is absent', async t => {
+    const root = await createRepository(t);
+    await rm(path.join(root, 'v3', 'firefox', 'compatibility.mjs'));
+    await assert.rejects(packageRelease({
+      repositoryRoot: root,
+      outputDirectory: path.join(root, 'build', 'missing-loader-dependency'),
+      releaseMode: false
+    }), /Firefox background loader dependency is missing.*firefox\/compatibility\.mjs/);
   });
 });
 
@@ -108,7 +159,10 @@ test('strict packaging records commit, tree, release-note digest, source digest,
   ]);
   assert.ok(Object.values(result.metadata.provenance.notes)
     .every(note => note.bytes > 0 && /^[a-f\d]{64}$/.test(note.sha256)));
-  assert.match(result.metadata.sourceTreeSha256, /^[a-f\d]{64}$/);
+  assert.match(result.metadata.artifacts.chromium.treeSha256, /^[a-f\d]{64}$/);
+  assert.match(result.metadata.artifacts.firefox.treeSha256, /^[a-f\d]{64}$/);
+  assert.notEqual(result.metadata.artifacts.chromium.treeSha256,
+    result.metadata.artifacts.firefox.treeSha256);
   assert.deepEqual(result.metadata.testEvidence.map(({id, path: evidencePath, status}) => ({id, path: evidencePath, status})), evidence);
   assert.match(result.metadata.testEvidence[0].sha256, /^[a-f\d]{64}$/);
   assert.ok(result.metadata.testEvidence[0].bytes > 0);

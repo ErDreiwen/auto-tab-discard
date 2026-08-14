@@ -104,7 +104,7 @@ jobs:
         with:
           name: ${{ env.REPRO_ARTIFACT_NAME }}
           path: build/repro/windows
-      - name: Require byte-identical archives, trees, inventories, and source provenance
+      - name: Require reproducible Chromium and Firefox archives, trees, inventories, and source provenance
         run: >-
           node scripts/cross-builder-provenance.mjs verify
           --builder-dir build/repro/linux
@@ -127,30 +127,45 @@ jobs:
       matrix:
         include:
           - id: chrome-minimum
+            artifact: chromium
             browser: chrome
             channel: minimum
             runner: windows-2022
           - id: chrome-stable
+            artifact: chromium
             browser: chrome
             channel: stable
             runner: windows-latest
           - id: chrome-beta
+            artifact: chromium
             browser: chrome
             channel: beta
             runner: windows-latest
           - id: edge-stable
+            artifact: chromium
             browser: edge
             channel: stable
             runner: windows-latest
           - id: edge-beta
+            artifact: chromium
             browser: edge
             channel: beta
+            runner: windows-latest
+          - id: firefox-minimum
+            artifact: firefox
+            browser: firefox
+            channel: minimum
+            runner: windows-2022
+          - id: firefox-stable
+            artifact: firefox
+            browser: firefox
+            channel: stable
             runner: windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ matrix.channel == 'minimum' && '16.20.2' || '24' }}
+          node-version: ${{ matrix.id == 'chrome-minimum' && '16.20.2' || '24' }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ env.CANARY_ARTIFACT_NAME }}
@@ -158,16 +173,22 @@ jobs:
       - name: Extract the attested extension archive
         shell: pwsh
         run: |
-          $archive = Get-Item -LiteralPath build/canary/auto-tab-discard-canary.zip
-          Expand-Archive -LiteralPath $archive.FullName -DestinationPath build/canary/extracted
+          $archiveName = 'auto-tab-discard-canary.zip'
+          if ('${{ matrix.artifact }}' -eq 'firefox') {
+            $archiveName = 'auto-tab-discard-canary.xpi'
+          }
+          $archive = Get-Item -LiteralPath (Join-Path build/canary $archiveName)
+          $destination = Join-Path (Resolve-Path build/canary) extracted
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($archive.FullName, $destination)
       - name: Install current Playwright driver
-        if: matrix.channel != 'minimum'
+        if: matrix.browser != 'firefox' && matrix.id != 'chrome-minimum'
         shell: pwsh
         run: npm install --prefix build/playwright --no-save --no-package-lock "playwright@${{ env.CURRENT_PLAYWRIGHT_VERSION }}"
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - name: Install declared-minimum Chromium driver and engine
-        if: matrix.channel == 'minimum'
+        if: matrix.id == 'chrome-minimum'
         shell: pwsh
         run: |
           $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
@@ -181,12 +202,12 @@ jobs:
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/build/minimum-browsers
       - uses: browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd # v2.1.2
-        if: matrix.browser == 'chrome' && matrix.channel != 'minimum'
+        if: matrix.browser == 'chrome' && matrix.id != 'chrome-minimum'
         id: chrome
         with:
           chrome-version: ${{ matrix.channel }}
       - name: Select Chrome channel binary
-        if: matrix.browser == 'chrome' && matrix.channel != 'minimum'
+        if: matrix.browser == 'chrome' && matrix.id != 'chrome-minimum'
         shell: pwsh
         run: |
           "CANARY_EXECUTABLE=${{ steps.chrome.outputs.chrome-path }}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -207,8 +228,69 @@ jobs:
             -EnvironmentFile $env:GITHUB_ENV
         env:
           EDGE_ACTION_PATH: ${{ steps.edge.outputs.edge-path }}
+      - uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1.7.2
+        if: matrix.id == 'firefox-minimum'
+        id: firefox_minimum
+        with:
+          firefox-version: '140.0'
+      - name: Select exact Firefox 140 minimum binary
+        if: matrix.id == 'firefox-minimum'
+        shell: pwsh
+        run: |
+          $executable = '${{ steps.firefox_minimum.outputs.firefox-path }}'
+          if (-not $executable -or -not (Test-Path -LiteralPath $executable)) {
+            throw 'browser-actions/setup-firefox did not return an existing Firefox 140 executable'
+          }
+          $reported = (& $executable --version 2>&1 | Out-String).Trim()
+          if ($reported -notmatch '^Mozilla Firefox (\d+(?:\.\d+)+)$') {
+            throw "The selected Firefox executable returned an invalid version: $reported"
+          }
+          $version = $Matches[1]
+          if ($version -ne '140.0') {
+            throw "The selected Firefox executable is not the exact declared minimum: $version"
+          }
+          "CANARY_EXECUTABLE=$executable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLER=browser-actions/setup-firefox@v1.7.2+verified-executable-version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLED_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Select preinstalled Firefox Stable binary
+        if: matrix.id == 'firefox-stable'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            (Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Mozilla Firefox/firefox.exe'),
+            (Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Mozilla Firefox/firefox.exe')
+          )
+          $executable = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+          if (-not $executable) {
+            throw 'The github-hosted runner image has no preinstalled Firefox Stable binary'
+          }
+          $version = (Get-Item -LiteralPath $executable).VersionInfo.ProductVersion
+          if ($version -notmatch '^\d+(?:\.\d+)+') {
+            throw "The preinstalled Firefox version is invalid: $version"
+          }
+          "CANARY_EXECUTABLE=$executable" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLER=github-hosted-runner-image-preinstalled-firefox" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CANARY_INSTALLED_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Run Chromium minimum compatibility smoke against the exact ZIP tree
+        if: matrix.id == 'chrome-minimum'
+        id: chromium_minimum_smoke
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/canary/raw | Out-Null
+          node e2e/chromium-minimum-smoke.cjs `
+            --executable $env:CANARY_EXECUTABLE `
+            --expected-version 102.0.5005.40 `
+            --expected-playwright-version 1.22.2 `
+            --extension (Resolve-Path build/canary/extracted) `
+            --profile-root (Join-Path $env:RUNNER_TEMP '${{ matrix.id }}-profiles') `
+            --results-root (Resolve-Path build/canary/raw)
+        env:
+          CODEX_NODE_MODULES: ${{ github.workspace }}/build/playwright/node_modules
+          PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/build/minimum-browsers
       - name: Run popup matrix against the extracted artifact
-        id: matrix
+        if: matrix.browser != 'firefox' && matrix.id != 'chrome-minimum'
+        id: chromium_matrix
         continue-on-error: true
         shell: pwsh
         run: |
@@ -223,22 +305,41 @@ jobs:
           if ('${{ matrix.browser }}' -eq 'edge') {
             $arguments += '--allow-edge'
           }
-          if ('${{ matrix.channel }}' -eq 'minimum') {
-            $arguments += '--playwright-managed-launch'
-          }
           node @arguments
         env:
           CODEX_NODE_MODULES: ${{ github.workspace }}/build/playwright/node_modules
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/build/minimum-browsers
+      - name: Run Firefox compatibility smoke against the exact XPI artifact
+        if: matrix.browser == 'firefox'
+        id: firefox_smoke
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build/canary/raw | Out-Null
+          $arguments = @(
+            'e2e/firefox-bidi-smoke.cjs',
+            '--executable', $env:CANARY_EXECUTABLE,
+            '--extension', (Resolve-Path build/canary/extracted),
+            '--profile-root', (Join-Path $env:RUNNER_TEMP '${{ matrix.id }}-profiles'),
+            '--results-root', (Resolve-Path build/canary/raw)
+          )
+          if ('${{ matrix.id }}' -eq 'firefox-minimum') {
+            $arguments += @(
+              '--minimum-startup-only',
+              '--expected-version', '140.0',
+              '--archive', (Resolve-Path build/canary/auto-tab-discard-canary.xpi)
+            )
+          }
+          node @arguments
       - name: Upload sanitized popup-matrix diagnostics
-        if: steps.matrix.outcome == 'failure'
+        if: steps.chromium_minimum_smoke.outcome == 'failure' || steps.chromium_matrix.outcome == 'failure' || steps.firefox_smoke.outcome == 'failure'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: popup-matrix-diagnostics-${{ matrix.id }}-${{ github.sha }}
           path: build/canary/raw/*.json
           if-no-files-found: error
           retention-days: 14
-      - name: Attest browser version, capabilities, and artifact hashes
+      - name: Attest browser version, capabilities, and target artifact hashes
         if: always()
         shell: pwsh
         run: |
@@ -290,7 +391,7 @@ jobs:
           pattern: canary-evidence-*-${{ github.sha }}
           path: build/canary/evidence
           merge-multiple: true
-      - name: Require every channel on one artifact hash
+      - name: Require every channel on its browser-specific artifact hash
         run: >-
           node scripts/browser-canary-policy.mjs verify
           --policy .github/browser-canary-policy.json
@@ -345,16 +446,21 @@ jobs:
         with:
           name: browser-canary-gate-${{ github.sha }}
           path: build/release-attestation/browsers
-      - name: Re-name the byte-identical canonical subjects and build the custom predicate
+      - name: Re-name both canonical browser subjects and build the custom predicate
         shell: bash
         run: |
           set -euo pipefail
           cp build/canary/auto-tab-discard-canary.xpi auto-tab-discard-0.6.9.2.xpi
           cp build/canary/auto-tab-discard-canary.zip auto-tab-discard-0.6.9.2.zip
+          node scripts/release-attestation.mjs subject-metadata \
+            --metadata build/canary/checksums.json \
+            --policy docs/release-policy.json \
+            --output build/release-attestation/checksums.json
           tree="$(git rev-parse 'HEAD^{tree}')"
           node scripts/release-attestation.mjs predicate \
             --artifact-dir . \
-            --metadata build/canary/checksums.json \
+            --metadata build/release-attestation/checksums.json \
+            --source-metadata build/canary/checksums.json \
             --policy docs/release-policy.json \
             --browser-gate build/release-attestation/browsers/browser-canary-gate.json \
             --reproducibility-gate build/release-attestation/reproducibility/cross-builder-gate.json \
@@ -369,7 +475,7 @@ jobs:
           subject-path: |
             auto-tab-discard-0.6.9.2.xpi
             auto-tab-discard-0.6.9.2.zip
-          predicate-type: https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v1
+          predicate-type: https://github.com/ErDreiwen/auto-tab-discard/attestations/release/v2
           predicate-path: build/release-attestation/predicate.json
       - name: Retain the independently verifiable bundle and its exact inputs
         shell: bash
@@ -379,7 +485,7 @@ jobs:
             build/release-attestation/release-attestation.bundle.json
           cp auto-tab-discard-0.6.9.2.xpi build/release-attestation/
           cp auto-tab-discard-0.6.9.2.zip build/release-attestation/
-          cp build/canary/checksums.json build/release-attestation/
+          cp build/canary/checksums.json build/release-attestation/source-checksums.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trusted-release-attestation-${{ github.sha }}
