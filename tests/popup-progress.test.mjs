@@ -644,6 +644,34 @@ test('lost shared lineage keeps the exact no-keeper physical-only partial at fou
   assert.equal(Object.hasOwn(result.outcomes, frozenPredecessor.id), false);
 });
 
+test('raw release successor replaces its logical predecessor after shared lineage retirement', async () => {
+  const manager = createPopupProgressManager({resolveId: id => id, store: memoryStore()});
+  const predecessor = {id: 910};
+  const successor = {discarded: false, frozen: false, id: 1010, status: 'complete'};
+  const result = await manager.run({cmd: 'release-tab', windowId: 30}, async progress => {
+    await progress.addTargets([predecessor]);
+    const release = trackPopupTabTask(
+      progress,
+      async () => successor,
+      POPUP_CODES.TAB_RELEASED
+    );
+    const released = await release(predecessor);
+    return {released: [released]};
+  });
+
+  assert.equal(result.state, 'complete');
+  assert.equal(result.total, 1);
+  assert.equal(result.completed, 1);
+  assert.deepEqual(result.summary, {failed: 0, skipped: 0, success: 1});
+  assert.deepEqual(result.targetIds, [1010]);
+  assert.equal(Object.hasOwn(result.outcomes, 910), false);
+  assert.deepEqual(result.outcomes[1010], {
+    code: POPUP_CODES.TAB_RELEASED,
+    status: 'success',
+    tabId: 1010
+  });
+});
+
 test('popup cancellation is wired to the real queued and running takeover tokens', async () => {
   const [menu, popup] = await Promise.all([
     readFile(new URL('../v3/worker/menu.mjs', import.meta.url), 'utf8'),

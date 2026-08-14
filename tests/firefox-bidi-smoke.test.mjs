@@ -19,7 +19,8 @@ const {
   firefoxCrashLocations,
   safeProfile,
   sanitizeText,
-  snapshotExternalFirefoxCrashState
+  snapshotExternalFirefoxCrashState,
+  summarizePopupCommand
 } = require('../e2e/firefox-bidi-smoke.cjs');
 
 test('Firefox smoke sanitizes private paths, extension origins, and fixture identities', () => {
@@ -99,6 +100,36 @@ test('Firefox smoke source uses raw BiDi, temporary path install, scoped runtime
   assert.match(source,
     /report\.profile\.crashArtifacts = artifacts;[\s\S]*report\.profile\.crashLocationsChecked =[\s\S]*report\.profile\.externalCrashState = externalCrashChanges;[\s\S]*ensure\(externalCrashChanges\.changed === 0[\s\S]*ensure\(artifacts === 0/,
   'profile and external crash evidence must be recorded before either assertion can fail');
+});
+
+test('Firefox smoke retains fixed terminal command counts before physical-state waits', async () => {
+  const source = await readFile(new URL('../e2e/firefox-bidi-smoke.cjs', import.meta.url), 'utf8');
+  assert.deepEqual(summarizePopupCommand({
+    ok: true,
+    value: {
+      completed: 1,
+      outcomes: {99: {reason: 'SECRET raw reason', tabId: 99}},
+      state: 'complete',
+      summary: {failed: 0, skipped: 0, success: 1},
+      targetIds: [99],
+      total: 1,
+      windowId: 88
+    }
+  }), {
+    completed: 1,
+    ok: true,
+    state: 'complete',
+    summary: {failed: 0, skipped: 0, success: 1},
+    total: 1
+  });
+  assert.doesNotMatch(JSON.stringify(summarizePopupCommand({
+    ok: false,
+    value: {state: 'RAW_PRIVATE_STATE', summary: {failed: 'SECRET'}}
+  })), /RAW_PRIVATE|SECRET/);
+  assert.match(source,
+    /report\.fixture\.commands = \{ordinary: ordinaryCommandSummary\}[\s\S]*ensureSuccessfulPopupCommand/);
+  assert.match(source,
+    /summary\.completed === summary\.total[\s\S]*summary\.summary\.failed === 0[\s\S]*summary\.summary\.success >= 1[\s\S]*summary\.summary\.success \+ summary\.summary\.skipped === summary\.total/);
 });
 
 test('Firefox crash reporting is non-reporting, isolated, and checked across every exact crash location', async t => {

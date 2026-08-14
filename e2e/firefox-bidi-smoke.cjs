@@ -442,6 +442,33 @@ const runPopupCommand = async (bidi, context, command) => {
   return response.response;
 };
 
+const summarizePopupCommand = response => {
+  const progress = response?.value;
+  const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const terminal = new Set(['cancelled', 'complete', 'failed', 'interrupted', 'partial']);
+  return {
+    completed: count(progress?.completed),
+    ok: response?.ok === true,
+    state: terminal.has(progress?.state) ? progress.state : 'unknown',
+    summary: {
+      failed: count(progress?.summary?.failed),
+      skipped: count(progress?.summary?.skipped),
+      success: count(progress?.summary?.success)
+    },
+    total: count(progress?.total)
+  };
+};
+
+const ensureSuccessfulPopupCommand = (summary, command, {exactTotal} = {}) => ensure(
+  summary.ok === true && summary.state === 'complete' &&
+  Number.isSafeInteger(summary.total) && summary.total >= 1 &&
+  summary.completed === summary.total && summary.summary.failed === 0 &&
+  summary.summary.success >= 1 &&
+  summary.summary.success + summary.summary.skipped === summary.total &&
+  (exactTotal === undefined || summary.total === exactTotal),
+  `${command} did not return exact successful terminal accounting`
+);
+
 const startFixture = async () => {
   const token = randomUUID();
   const prefix = `/firefox-bidi-smoke/${token}`;
@@ -1331,8 +1358,9 @@ const run = async () => {
     const ordinaryTitle = ordinaryLoaded.title;
     protocolPhase = 'ordinary-command';
     const ordinaryCommand = await runPopupCommand(bidi, controllerContext, 'discard-tab');
-    ensure(ordinaryCommand?.ok === true,
-      `discard-tab failed: ${ordinaryCommand?.error || 'no successful response'}`);
+    const ordinaryCommandSummary = summarizePopupCommand(ordinaryCommand);
+    report.fixture.commands = {ordinary: ordinaryCommandSummary};
+    ensureSuccessfulPopupCommand(ordinaryCommandSummary, 'discard-tab', {exactTotal: 1});
     const ordinaryDiscarded = await waitFor(async () => {
       const tab = await tabByUrl(bidi, controllerContext, fixture.urls.ordinary);
       return isAuthoritativeDiscard(tab) ? tab : false;
@@ -1368,8 +1396,9 @@ const run = async () => {
     await activateTab(bidi, controllerContext, controllerTab.id);
     protocolPhase = 'scoped-command';
     const scopedCommand = await runPopupCommand(bidi, controllerContext, 'discard-window');
-    ensure(scopedCommand?.ok === true,
-      `discard-window failed: ${scopedCommand?.error || 'no successful response'}`);
+    const scopedCommandSummary = summarizePopupCommand(scopedCommand);
+    report.fixture.commands.scoped = scopedCommandSummary;
+    ensureSuccessfulPopupCommand(scopedCommandSummary, 'discard-window');
     const scopedDiscarded = await waitFor(async () => {
       const tab = await tabByUrl(bidi, controllerContext, fixture.urls.scoped);
       return isAuthoritativeDiscard(tab) ? tab : false;
@@ -1439,14 +1468,8 @@ const run = async () => {
     const firstRequest = Math.min(requestEvents.ordinary[0].at, requestEvents.scoped[0].at);
     report.fixture = {
       commands: {
-        ordinary: {
-          ok: ordinaryCommand.ok === true,
-          value: ordinaryCommand.value === true
-        },
-        scoped: {
-          ok: scopedCommand.ok === true,
-          value: scopedCommand.value === true
-        }
+        ordinary: ordinaryCommandSummary,
+        scoped: scopedCommandSummary
       },
       monitor: monitored,
       requests: {
@@ -1611,5 +1634,6 @@ module.exports = {
   safeProfile,
   sanitize,
   sanitizeText,
-  snapshotExternalFirefoxCrashState
+  snapshotExternalFirefoxCrashState,
+  summarizePopupCommand
 };

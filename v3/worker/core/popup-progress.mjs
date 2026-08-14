@@ -100,7 +100,8 @@ const trackPopupTabTask = (
     const retainedFrozen = value?.code === POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN;
     const failed = retainedFrozen || value === false ||
       value?.status === 'failed' || value?.status === 'skipped';
-    const settledTab = Number.isInteger(value?.tab?.id) ? value.tab : tab;
+    const settledTab = Number.isInteger(value?.tab?.id) ? value.tab :
+      Number.isInteger(value?.id) ? value : tab;
     await progress.replaceTarget(tab, settledTab);
     await progress.settle(
       settledTab,
