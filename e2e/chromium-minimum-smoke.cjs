@@ -514,7 +514,7 @@ const run = async () => {
       })
     });
     validateRuntimeRoundTrip(readiness.probe);
-    pass('storage runtime message completes a module-worker Web Lock round trip', {
+    pass('storage runtime message completes a module-worker round trip', {
       attempts: readiness.attempts,
       serviceWorkerWebLockAcquired: true,
       serviceWorkerTargetChurn: Math.max(0, observedWorkerTargets.size - 1),

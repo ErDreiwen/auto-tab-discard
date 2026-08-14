@@ -110,6 +110,14 @@ test('runtime readiness retries target/listener races but accepts only a real se
     error.readiness.attempts === 2 && error.readiness.lastOutcome === 'timed-out');
 });
 
+test('Chromium minimum emits the stable runtime-round-trip assertion consumed by canary policy', async () => {
+  const harness = await readFile(path.join(repositoryRoot, 'e2e', 'chromium-minimum-smoke.cjs'), 'utf8');
+  const policy = await readFile(path.join(repositoryRoot, 'scripts', 'browser-canary-policy.mjs'), 'utf8');
+  const assertionName = 'storage runtime message completes a module-worker round trip';
+  assert.match(harness, new RegExp(`pass\\('${assertionName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}'`));
+  assert.match(policy, new RegExp(`report, '${assertionName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}'`));
+});
+
 test('Chromium minimum profile guard and diagnostics keep cleanup isolated and sanitized', () => {
   const root = path.join(repositoryRoot, 'build', 'minimum-profiles');
   assert.equal(safeProfile(root, path.join(root, 'atd-cm-abcdef0123456789')), true);
