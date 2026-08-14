@@ -718,6 +718,7 @@ const diffExternalFirefoxCrashState = (before, after) => {
       crashReports: {changed: 0, created: 0, removed: 0},
       pendingPings: {changed: 0, created: 0, removed: 0}
     },
+    allowedCrashReporterSettings: {changed: 0, created: 0},
     allowedInstallTime: {changed: 0, created: 0},
     changed: 0,
     created: 0,
@@ -738,6 +739,12 @@ const diffExternalFirefoxCrashState = (before, after) => {
       if (category === 'crashReports' && !relative.includes('/') && /^InstallTime/i.test(relative) &&
           (kind === 'created' || kind === 'changed')) {
         summary.allowedInstallTime[kind] += 1;
+        continue;
+      }
+      if (category === 'crashReports' && !relative.includes('/') &&
+          /^crashreporter_settings\.json$/i.test(relative) &&
+          (kind === 'created' || kind === 'changed')) {
+        summary.allowedCrashReporterSettings[kind] += 1;
         continue;
       }
       summary[kind] += 1;
@@ -1492,15 +1499,15 @@ const run = async () => {
       ensure(!browser?.child || processExitVerified,
         'Firefox crash/profile cleanup was skipped because kernel Job exit was not verified');
       ensure(externalCrashBefore, 'Firefox external crash state was not captured before launch');
+      const artifacts = crashArtifacts(profile);
+      report.profile.crashArtifacts = artifacts;
+      report.profile.crashLocationsChecked = firefoxCrashLocations(profile).map(location => location.name);
       const externalCrashAfter = snapshotExternalFirefoxCrashState();
       const externalCrashChanges = diffExternalFirefoxCrashState(externalCrashBefore, externalCrashAfter);
       report.profile.externalCrashState = externalCrashChanges;
       ensure(externalCrashChanges.changed === 0 && externalCrashChanges.created === 0 &&
         externalCrashChanges.removed === 0,
       'Firefox changed external crash-report or pending-ping state during the smoke run');
-      const artifacts = crashArtifacts(profile);
-      report.profile.crashArtifacts = artifacts;
-      report.profile.crashLocationsChecked = firefoxCrashLocations(profile).map(location => location.name);
       ensure(artifacts === 0, 'Firefox produced a crash artifact during the smoke run');
       await waitFor(() => {
         try {

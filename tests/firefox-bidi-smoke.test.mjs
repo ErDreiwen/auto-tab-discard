@@ -96,6 +96,9 @@ test('Firefox smoke source uses raw BiDi, temporary path install, scoped runtime
   assert.doesNotMatch(emergencyCleanup, /removeProfile/);
   assert.match(source, /cleanup\.jobEmptyVerified === true &&[\s\S]*cleanup\.ownerExited === true/);
   assert.match(source, /ensure\(!browser\?\.child \|\| processExitVerified,[\s\S]*crash\/profile cleanup was skipped/);
+  assert.match(source,
+    /report\.profile\.crashArtifacts = artifacts;[\s\S]*report\.profile\.crashLocationsChecked =[\s\S]*report\.profile\.externalCrashState = externalCrashChanges;[\s\S]*ensure\(externalCrashChanges\.changed === 0[\s\S]*ensure\(artifacts === 0/,
+  'profile and external crash evidence must be recorded before either assertion can fail');
 });
 
 test('Firefox crash reporting is non-reporting, isolated, and checked across every exact crash location', async t => {
@@ -167,6 +170,7 @@ test('Firefox crash reporting is non-reporting, isolated, and checked across eve
       crashReports: {changed: 1, created: 0, removed: 0},
       pendingPings: {changed: 0, created: 1, removed: 0}
     },
+    allowedCrashReporterSettings: {changed: 0, created: 0},
     allowedInstallTime: {changed: 1, created: 1},
     changed: 1,
     created: 1,
@@ -255,6 +259,75 @@ test('Firefox crash reporting is non-reporting, isolated, and checked across eve
   assert.match(scanner, /fstatSync/);
   assert.match(scanner, /readSync/);
   assert.doesNotMatch(scanner, /readFileSync/);
+});
+
+test('Firefox external crash-state diff allows only top-level crash reporter settings creation and change', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'atd-firefox-settings-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  const appData = path.join(root, 'appdata');
+  const environment = {APPDATA: appData};
+  const options = {resolveApplicationData: () => appData};
+  const [{root: crashReports}] = externalFirefoxCrashRoots(environment, 'win32', options);
+  await mkdir(crashReports, {recursive: true});
+
+  const beforeCreation = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  const settings = path.join(crashReports, 'CrAsHrEpOrTeR_SeTtInGs.JsOn');
+  await writeFile(settings, '{"submit_report":true}');
+  const afterCreation = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  assert.deepEqual(diffExternalFirefoxCrashState(beforeCreation, afterCreation), {
+    categories: {
+      crashReports: {changed: 0, created: 0, removed: 0},
+      pendingPings: {changed: 0, created: 0, removed: 0}
+    },
+    allowedCrashReporterSettings: {changed: 0, created: 1},
+    allowedInstallTime: {changed: 0, created: 0},
+    changed: 0,
+    created: 0,
+    removed: 0
+  });
+
+  await writeFile(settings, '{"submit_report":false,"changed":true}');
+  const afterChange = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  assert.deepEqual(diffExternalFirefoxCrashState(afterCreation, afterChange), {
+    categories: {
+      crashReports: {changed: 0, created: 0, removed: 0},
+      pendingPings: {changed: 0, created: 0, removed: 0}
+    },
+    allowedCrashReporterSettings: {changed: 1, created: 0},
+    allowedInstallTime: {changed: 0, created: 0},
+    changed: 0,
+    created: 0,
+    removed: 0
+  });
+});
+
+test('Firefox external crash-state diff rejects settings removal, lookalikes, and nested names', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'atd-firefox-settings-negative-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  const appData = path.join(root, 'appdata');
+  const environment = {APPDATA: appData};
+  const options = {resolveApplicationData: () => appData};
+  const [{root: crashReports}] = externalFirefoxCrashRoots(environment, 'win32', options);
+  await mkdir(path.join(crashReports, 'nested'), {recursive: true});
+  const settings = path.join(crashReports, 'crashreporter_settings.json');
+  await writeFile(settings, '{"submit_report":true}');
+  const before = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+
+  await rm(settings);
+  await writeFile(path.join(crashReports, 'crashreporter_settings.json.bak'), 'lookalike');
+  await writeFile(path.join(crashReports, 'nested', 'crashreporter_settings.json'), 'nested');
+  const after = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  assert.deepEqual(diffExternalFirefoxCrashState(before, after), {
+    categories: {
+      crashReports: {changed: 0, created: 2, removed: 1},
+      pendingPings: {changed: 0, created: 0, removed: 0}
+    },
+    allowedCrashReporterSettings: {changed: 0, created: 0},
+    allowedInstallTime: {changed: 0, created: 0},
+    changed: 0,
+    created: 2,
+    removed: 1
+  });
 });
 
 test('Firefox minimum mode installs the exact XPI and proves Firefox 140 background startup without privileged BiDi', async () => {
