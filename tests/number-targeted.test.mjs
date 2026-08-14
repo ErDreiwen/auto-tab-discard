@@ -465,7 +465,8 @@ test('targeted renderer decisions expose metadata, policy, age, and limit reason
   assert.match((await runOne(target(37), {}, meta(), state => {
     state.metadataFailures.add(37);
   })).reason, /metadata scan failed/i);
-  assert.match((await runOne(target(38), {}, null)).reason, /no inspectable document/i);
+  assert.match((await runOne(target(38), {}, null)).reason,
+    /metadata scan failed: top-frame metadata result was incomplete/i);
   assert.match((await runOne(target(39), {'max.single.discard': 0}, meta())).reason,
     /discard limit/i);
 

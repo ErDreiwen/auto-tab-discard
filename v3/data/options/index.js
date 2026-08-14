@@ -61,6 +61,9 @@ if (!navigator.getBattery) {
 
 const info = document.getElementById('info');
 const diagnosticsInfo = document.getElementById('diagnostics-info');
+const frameAccessEnable = document.getElementById('enable-frame-access');
+const frameAccessDisable = document.getElementById('disable-frame-access');
+const frameAccessInfo = document.getElementById('frame-access-info');
 let settingsMutating = false;
 
 const message = (key, fallback) => chrome.i18n.getMessage(key) || fallback;
@@ -93,6 +96,55 @@ const call = (target, method, ...args) => new Promise((resolve, reject) => {
     done(error);
   }
 });
+
+const FRAME_ACCESS_PERMISSION = Object.freeze({permissions: Object.freeze(['webNavigation'])});
+const renderFrameAccess = ({available = true, granted = false} = {}) => {
+  frameAccessEnable.disabled = !available || granted;
+  frameAccessDisable.disabled = !available || !granted;
+  frameAccessInfo.textContent = available ? (granted ? message(
+    'options_frame_access_enabled',
+    'Full framed-page protection is enabled.'
+  ) : message(
+    'options_frame_access_limited',
+    'Optional frame access is off. Bounded same-origin frames are checked; unknown branches stay protected.'
+  )) : message(
+    'options_frame_access_unavailable',
+    'This browser cannot manage optional frame access. Unknown frame branches stay protected.'
+  );
+};
+const refreshFrameAccess = async () => {
+  if (typeof chrome.permissions?.contains !== 'function') {
+    renderFrameAccess({available: false});
+    return;
+  }
+  try {
+    renderFrameAccess({
+      granted: await call(chrome.permissions, 'contains', FRAME_ACCESS_PERMISSION)
+    });
+  }
+  catch (e) {
+    renderFrameAccess({available: false});
+  }
+};
+
+frameAccessEnable.addEventListener('click', () => {
+  // The browser requires request() to begin synchronously inside the click
+  // handler. Do not add an asynchronous step before this call.
+  frameAccessEnable.disabled = true;
+  call(chrome.permissions, 'request', FRAME_ACCESS_PERMISSION).then(
+    () => refreshFrameAccess(),
+    () => renderFrameAccess({available: false})
+  );
+});
+frameAccessDisable.addEventListener('click', () => {
+  frameAccessDisable.disabled = true;
+  call(chrome.permissions, 'remove', FRAME_ACCESS_PERMISSION).then(
+    () => refreshFrameAccess(),
+    () => renderFrameAccess({available: false})
+  );
+});
+chrome.permissions?.onAdded?.addListener(() => void refreshFrameAccess());
+chrome.permissions?.onRemoved?.addListener(() => void refreshFrameAccess());
 
 const diagnosticsRequest = async method => {
   const response = await boundedRuntimeMessage(chrome.runtime, {method});
@@ -369,7 +421,10 @@ document.getElementById('support').addEventListener('click', () => chrome.tabs.c
   url: `${FORK_REPOSITORY}/issues`
 }));
 
-document.addEventListener('DOMContentLoaded', restore);
+document.addEventListener('DOMContentLoaded', () => {
+  restore();
+  void refreshFrameAccess();
+});
 
 // restart if needed
 const onChanged = (prefs, areaName) => {

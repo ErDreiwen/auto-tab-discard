@@ -285,6 +285,16 @@
       <input type="button" value="Open GitHub issues" data-i18n="options_feedback_btn" data-i18n-value="value">
     </div>
 
+    <section id="frame-protection" aria-labelledby="frame-protection-title">
+      <h2 id="frame-protection-title" data-i18n="options_frame_access_title">Framed-page protection</h2>
+      <p id="frame-access-description" class="wnt backup-note" data-i18n="options_frame_access_description">Optional: let Auto Tab Discard enumerate frame identifiers so it can check every frame within a strict work limit. The browser may describe this permission as “Read your browsing history.” The extension does not store or log frame URLs. Without it, bounded same-origin frames are still checked; inaccessible or oversized frame trees stay protected.</p>
+      <p>
+        <input type="button" id="enable-frame-access" value="Enable full framed-page protection" data-i18n="options_frame_access_enable" data-i18n-value="value" aria-describedby="frame-access-description frame-access-info">
+        <input type="button" id="disable-frame-access" value="Disable optional frame access" data-i18n="options_frame_access_disable" data-i18n-value="value" aria-describedby="frame-access-description frame-access-info">
+        <span id="frame-access-info" role="status" aria-live="polite" aria-atomic="true"></span>
+      </p>
+    </section>
+
     <section id="diagnostics" aria-labelledby="diagnostics-title">
       <h2 id="diagnostics-title" data-i18n="options_diagnostics_title">Diagnostics</h2>
       <p class="wnt backup-note" data-i18n="options_diagnostics_privacy">Diagnostic history stays on this device until you download it. The sanitized log excludes URLs, page titles, hostnames, site rules, tab and window identifiers, and raw error messages.</p>

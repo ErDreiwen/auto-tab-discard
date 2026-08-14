@@ -89,6 +89,7 @@ const passingMinimumChromeReport = (version = '102.0.5005.40') => ({
     'Playwright reports the exact pinned minimum driver',
     'packaged module service-worker target is present',
     'extension options page exposes matching runtime identity and version',
+    'frame enumeration remains an ungranted optional permission at Chromium minimum',
     'storage runtime message completes a module-worker round trip'
   ].map(name => ({name, passed: true})),
   browser: {version},
@@ -149,6 +150,7 @@ const passingMinimumFirefoxReport = (version = '140.0') => ({
   assertions: [
     'temporary Firefox XPI install via webExtension.install',
     'Firefox 140 background page and core runtime started without privileged BiDi scope',
+    'frame enumeration remains an ungranted optional permission at Firefox minimum',
     'exact launched Firefox tree exited and isolated profile was deleted'
   ].map(name => ({name, passed: true})),
   browser: {version},
@@ -315,6 +317,7 @@ test('Chromium minimum evidence requires the exact 102 build and compatibility c
   assert.equal(valid.capabilities.exactMinimumVersion, true);
   assert.equal(valid.capabilities.exactPlaywrightDriver, true);
   assert.equal(valid.capabilities.extensionPageRuntime, true);
+  assert.equal(valid.capabilities.optionalFramePermissionDefaultOff, true);
   assert.equal(valid.capabilities.runtimeRoundTrip, true);
   assert.equal(valid.capabilities.serviceWorkerTarget, true);
 
@@ -345,6 +348,21 @@ test('Chromium minimum evidence requires the exact 102 build and compatibility c
     report: missingRoundTripReport
   });
   assert.ok(missingRoundTrip.failures.some(failure => failure.kind === 'capability:runtimeRoundTrip'));
+
+  const missingFramePermissionReport = passingMinimumChromeReport();
+  missingFramePermissionReport.assertions = missingFramePermissionReport.assertions.filter(assertion =>
+    !assertion.name.includes('ungranted optional permission'));
+  const missingFramePermission = createCanaryEvidence({
+    artifact,
+    browser: 'chrome',
+    channel: 'minimum',
+    installedVersion: '102.0.5005.40',
+    installer: 'test/missing-frame-permission',
+    policy,
+    report: missingFramePermissionReport
+  });
+  assert.ok(missingFramePermission.failures.some(failure =>
+    failure.kind === 'capability:optionalFramePermissionDefaultOff'));
 
   const wrongDriverReport = passingMinimumChromeReport();
   wrongDriverReport.driver.version = '1.23.0';
@@ -425,6 +443,7 @@ test('Firefox minimum evidence requires exact 140.0, the XPI hash, and backgroun
   assert.equal(valid.status, 'passed');
   assert.equal(valid.capabilities.artifactArchiveAttested, true);
   assert.equal(valid.capabilities.backgroundRuntimeStarted, true);
+  assert.equal(valid.capabilities.optionalFramePermissionDefaultOff, true);
   assert.equal(valid.capabilities.temporaryArchiveInstall, true);
 
   for (const [name, report, installedVersion, failure] of [
@@ -437,7 +456,12 @@ test('Firefox minimum evidence requires exact 140.0, the XPI hash, and backgroun
       ...passingMinimumFirefoxReport(),
       assertions: passingMinimumFirefoxReport().assertions.filter(assertion =>
         !assertion.name.includes('background page and core runtime'))
-    }, '140.0', 'capability:backgroundRuntimeStarted']
+    }, '140.0', 'capability:backgroundRuntimeStarted'],
+    ['missing optional permission proof', {
+      ...passingMinimumFirefoxReport(),
+      assertions: passingMinimumFirefoxReport().assertions.filter(assertion =>
+        !assertion.name.includes('ungranted optional permission'))
+    }, '140.0', 'capability:optionalFramePermissionDefaultOff']
   ]) {
     const evidence = createCanaryEvidence({
       artifact,

@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "診断を消去しました。"
   },
+  "options_frame_access_title": {
+    "message": "フレーム付きページの保護"
+  },
+  "options_frame_access_description": {
+    "message": "任意: Auto Tab Discard にフレーム識別子の列挙を許可すると、厳格な処理上限内ですべてのフレームを確認できます。ブラウザーでは、この権限が「閲覧履歴の読み取り」と表示される場合があります。拡張機能はフレームの URL を保存または記録しません。許可しない場合も、上限内の同一オリジンフレームは確認され、アクセス不能または大きすぎるフレームツリーは保護されたままになります。"
+  },
+  "options_frame_access_enable": {
+    "message": "完全なフレーム保護を有効にする"
+  },
+  "options_frame_access_disable": {
+    "message": "任意のフレームアクセスを無効にする"
+  },
+  "options_frame_access_enabled": {
+    "message": "フレーム付きページの完全な保護が有効です。"
+  },
+  "options_frame_access_limited": {
+    "message": "任意のフレームアクセスは無効です。上限内の同一オリジンフレームは確認され、不明な分岐は保護されたままになります。"
+  },
+  "options_frame_access_unavailable": {
+    "message": "このブラウザーでは任意のフレームアクセスを管理できません。不明なフレーム分岐は保護されたままになります。"
+  },
   "options_diagnostics_empty": {
     "message": "利用できるサニタイズ済み診断はありません。"
   }

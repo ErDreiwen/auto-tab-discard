@@ -10,6 +10,11 @@ const transactionSource = await readFile(
   new URL('../v3/worker/core/settings-import-transaction.mjs', import.meta.url),
   'utf8'
 );
+const frameMetadataSource = await readFile(
+  new URL('../v3/worker/core/frame-metadata.mjs', import.meta.url),
+  'utf8'
+);
+const popupSource = await readFile(new URL('../v3/data/popup/index.mjs', import.meta.url), 'utf8');
 
 test('options page loads as a module and presents distinct raw and sanitized exports', () => {
   assert.match(html, /<script type="module" src="index\.js"><\/script>/);
@@ -71,6 +76,49 @@ test('missing locale entries retain explicit English diagnostic fallback text', 
   assert.match(html, />Diagnostics<\/h2>/);
   assert.match(html, /value="Download latest\.log"/);
   assert.match(html, /value="Clear diagnostic history"/);
+});
+
+test('optional bounded frame access is disclosed, accessible, and requested only by an Options click', () => {
+  assert.match(html, /id="frame-protection"[^>]+aria-labelledby="frame-protection-title"/);
+  assert.match(html, /id="frame-access-description"[^>]+options_frame_access_description/);
+  assert.match(html,
+    /id="enable-frame-access"[^>]+options_frame_access_enable[^>]+aria-describedby="frame-access-description frame-access-info"/);
+  assert.match(html,
+    /id="disable-frame-access"[^>]+options_frame_access_disable[^>]+aria-describedby="frame-access-description frame-access-info"/);
+  assert.match(html,
+    /id="frame-access-info"[^>]+role="status"[^>]+aria-live="polite"[^>]+aria-atomic="true"/);
+  assert.match(html, /Read your browsing history/);
+  assert.match(html, /does not store or log frame URLs/);
+  assert.match(html, /bounded same-origin frames are still checked/);
+
+  const handlerStart = source.indexOf("frameAccessEnable.addEventListener('click'");
+  const handlerEnd = source.indexOf("frameAccessDisable.addEventListener('click'", handlerStart);
+  const enableHandler = source.slice(handlerStart, handlerEnd);
+  assert.ok(handlerStart > 0 && handlerEnd > handlerStart);
+  assert.match(enableHandler,
+    /call\(chrome\.permissions, 'request', FRAME_ACCESS_PERMISSION\)/);
+  assert.doesNotMatch(enableHandler, /\bawait\b/,
+    'permissions.request must start synchronously inside the user gesture');
+  assert.match(source,
+    /call\(chrome\.permissions, 'request', FRAME_ACCESS_PERMISSION\)\.then\(\s*\(\) => refreshFrameAccess\(\)/);
+  assert.match(source,
+    /call\(chrome\.permissions, 'remove', FRAME_ACCESS_PERMISSION\)\.then\(\s*\(\) => refreshFrameAccess\(\)/);
+  assert.match(source,
+    /granted: await call\(chrome\.permissions, 'contains', FRAME_ACCESS_PERMISSION\)/);
+  assert.match(source, /operation\?\.then/,
+    'the Options adapter must retain Promise browser support');
+  assert.match(source, /target\[method\]\(\.\.\.args, value =>/,
+    'the Options adapter must retain callback browser support');
+  assert.match(source, /options_frame_access_limited/);
+  assert.match(source, /options_frame_access_unavailable/);
+  assert.doesNotMatch(enableHandler, /storage\.(?:local|sync|session)|localStorage/,
+    'the permission grant is browser-owned and must not be mirrored in settings');
+
+  const requestPattern = /call\(chrome\.permissions, 'request', FRAME_ACCESS_PERMISSION\)/g;
+  assert.equal((source.match(requestPattern) || []).length, 1);
+  assert.equal((popupSource.match(requestPattern) || []).length, 0);
+  assert.equal((frameMetadataSource.match(requestPattern) || []).length, 0,
+    'automatic worker scans must never prompt for optional permission');
 });
 
 test('import validates completely before its durable transaction or reload', () => {

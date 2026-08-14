@@ -12,8 +12,12 @@ test('current manifest passes static policy with a distinct fork identity', asyn
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.permissionReport.permissions.added, []);
   assert.deepEqual(report.permissionReport.permissions.removed, []);
+  assert.deepEqual(report.permissionReport.optionalPermissions.added, ['webNavigation']);
+  assert.deepEqual(report.permissionReport.optionalPermissions.removed, []);
   assert.deepEqual(report.permissionReport.hostPermissions.added, []);
   assert.deepEqual(report.permissionReport.hostPermissions.removed, []);
+  assert.deepEqual(report.permissionReport.optionalHostPermissions.added, []);
+  assert.deepEqual(report.permissionReport.optionalHostPermissions.removed, []);
   assert.equal(report.independentSubmissionReady, true);
   assert.deepEqual(report.blockers, []);
 });
@@ -23,7 +27,9 @@ test('static policy reports permission changes and unsafe store metadata', async
   const changed = structuredClone(manifest);
   changed.name = 'Unexpected Fork Name';
   changed.permissions = [...changed.permissions, 'tabs'];
+  changed.optional_permissions = [...changed.optional_permissions, 'topSites'];
   changed.host_permissions = [...changed.host_permissions, 'https://example.invalid/*'];
+  changed.optional_host_permissions = ['https://optional.invalid/*'];
   changed.update_url = 'https://example.invalid/update.xml';
   changed.background.service_worker = 'https://example.invalid/worker.js';
   changed.homepage_url = 'https://webextension.org/listing/tab-discard.html';
@@ -32,10 +38,16 @@ test('static policy reports permission changes and unsafe store metadata', async
   assert.ok(report.errors.some(error => error.startsWith('manifest name mismatch:')));
   assert.ok(report.errors.includes('forbidden manifest key: update_url'));
   assert.ok(report.errors.includes('permissions exceed release policy: tabs'));
+  assert.ok(report.errors.includes('optional_permissions exceed release policy: topSites'));
   assert.ok(report.errors.includes('host_permissions exceed release policy: https://example.invalid/*'));
+  assert.ok(report.errors.includes(
+    'optional_host_permissions exceed release policy: https://optional.invalid/*'
+  ));
   assert.ok(report.errors.includes('background.service_worker must be a local ES module'));
   assert.ok(report.permissionReport.permissions.added.includes('tabs'));
+  assert.ok(report.permissionReport.optionalPermissions.added.includes('topSites'));
   assert.ok(report.permissionReport.hostPermissions.added.includes('https://example.invalid/*'));
+  assert.ok(report.permissionReport.optionalHostPermissions.added.includes('https://optional.invalid/*'));
   assert.ok(report.blockers.includes('manifest still uses the upstream Gecko ID'));
   assert.ok(report.blockers.includes('manifest does not use the release policy fork Gecko ID'));
   assert.ok(report.blockers.includes('manifest does not use the release policy fork homepage'));

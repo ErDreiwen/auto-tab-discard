@@ -3,7 +3,10 @@ import {log, query, match} from '../core/utils.mjs';
 import {discard} from '../core/discard.mjs';
 import {ownership} from '../core/ownership.mjs';
 import {starters} from '../core/startup.mjs';
-import {createFrameMetadataCollector} from '../core/frame-metadata.mjs';
+import {
+  createFrameMetadataCollector,
+  createOptionalFrameEnumerator
+} from '../core/frame-metadata.mjs';
 import {createAlarmCatchUp} from '../core/alarm-catch-up.mjs';
 import {markerFallback} from '../core/marker-fallback.mjs';
 import {FAILURE_CAUSES, failureCauseFrom} from '../core/failure-causes.mjs';
@@ -33,6 +36,7 @@ const number = {
 };
 const pluginFilters = {}; // this object adds custom filters to the number-based discarding
 const frameMetadata = createFrameMetadataCollector({
+  enumerateFrames: createOptionalFrameEnumerator(chrome),
   execute: details => ownership.withNativeMutationGuard(() =>
     chrome.scripting.executeScript(details),
   details?.target?.tabId
@@ -949,8 +953,7 @@ starters.push(() => chrome.app && query({
         }
         return ownership.withNativeMutationGuard(() => chrome.scripting.executeScript({
           target: {
-            tabId: tab.id,
-            allFrames: cs.all_frames
+            tabId: tab.id
           },
           files: cs.js
         }), tab.id);

@@ -62,9 +62,13 @@ export const deriveReleaseManifests = manifest => {
 
 export const createPermissionChangeReport = (manifest, baseline) => {
   const currentPermissions = sortedUnique(manifest.permissions);
+  const currentOptionalPermissions = sortedUnique(manifest.optional_permissions);
   const currentHostPermissions = sortedUnique(manifest.host_permissions);
+  const currentOptionalHostPermissions = sortedUnique(manifest.optional_host_permissions);
   const baselinePermissions = sortedUnique(baseline.permissions);
+  const baselineOptionalPermissions = sortedUnique(baseline.optionalPermissions);
   const baselineHostPermissions = sortedUnique(baseline.hostPermissions);
+  const baselineOptionalHostPermissions = sortedUnique(baseline.optionalHostPermissions);
   return {
     baselineVersion: baseline.version,
     releaseVersion: manifest.version,
@@ -73,10 +77,20 @@ export const createPermissionChangeReport = (manifest, baseline) => {
       removed: difference(baselinePermissions, currentPermissions),
       current: currentPermissions
     },
+    optionalPermissions: {
+      added: difference(currentOptionalPermissions, baselineOptionalPermissions),
+      removed: difference(baselineOptionalPermissions, currentOptionalPermissions),
+      current: currentOptionalPermissions
+    },
     hostPermissions: {
       added: difference(currentHostPermissions, baselineHostPermissions),
       removed: difference(baselineHostPermissions, currentHostPermissions),
       current: currentHostPermissions
+    },
+    optionalHostPermissions: {
+      added: difference(currentOptionalHostPermissions, baselineOptionalHostPermissions),
+      removed: difference(baselineOptionalHostPermissions, currentOptionalHostPermissions),
+      current: currentOptionalHostPermissions
     }
   };
 };
@@ -118,12 +132,26 @@ export const lintManifestPolicy = ({manifest, baseline, policy}) => {
   }
   const permissionReport = createPermissionChangeReport(manifest, baseline);
   const disallowedPermissions = difference(permissionReport.permissions.current, sortedUnique(policy.allowedPermissions));
+  const disallowedOptionalPermissions = difference(
+    permissionReport.optionalPermissions.current,
+    sortedUnique(policy.allowedOptionalPermissions)
+  );
   const disallowedHosts = difference(permissionReport.hostPermissions.current, sortedUnique(policy.allowedHostPermissions));
+  const disallowedOptionalHosts = difference(
+    permissionReport.optionalHostPermissions.current,
+    sortedUnique(policy.allowedOptionalHostPermissions)
+  );
   if (disallowedPermissions.length) {
     errors.push(`permissions exceed release policy: ${disallowedPermissions.join(', ')}`);
   }
+  if (disallowedOptionalPermissions.length) {
+    errors.push(`optional_permissions exceed release policy: ${disallowedOptionalPermissions.join(', ')}`);
+  }
   if (disallowedHosts.length) {
     errors.push(`host_permissions exceed release policy: ${disallowedHosts.join(', ')}`);
+  }
+  if (disallowedOptionalHosts.length) {
+    errors.push(`optional_host_permissions exceed release policy: ${disallowedOptionalHosts.join(', ')}`);
   }
   errors.push(...backgroundPolicyErrors(manifest));
   if (findRemoteCode(manifest).length) {

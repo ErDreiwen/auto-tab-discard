@@ -18,6 +18,7 @@
     "exactPlaywrightDriver",
     "extensionPageRuntime",
     "isolatedProfileRemoved",
+    "optionalFramePermissionDefaultOff",
     "runtimeRoundTrip",
     "serviceWorkerTarget",
     "versionReported"
@@ -80,6 +81,7 @@
     "backgroundRuntimeStarted",
     "crashFree",
     "isolatedProfileRemoved",
+    "optionalFramePermissionDefaultOff",
     "temporaryArchiveInstall",
     "versionReported"
   ],

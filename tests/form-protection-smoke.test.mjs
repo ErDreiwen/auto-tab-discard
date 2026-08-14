@@ -83,6 +83,15 @@ test('form browser smoke covers every required edit class and clear transition',
   for (const transition of ['reverted-edit', 'native-reset', 'genuine-submit']) {
     assert.match(source, new RegExp(`label: '${transition}'`), transition);
   }
+  assert.match(source, /SUBFRAME_TRANSITION = 'subframe-reverted-edit'/);
+  assert.match(formSmoke.fixtureDocument('subframe-reverted-edit'),
+    /id="frame-editor"[^>]+src="\/frame\?case=subframe-reverted-edit"/);
+  assert.match(formSmoke.subframeDocument('subframe-reverted-edit'),
+    /id="frame-text"[^>]+value="saved frame text"/);
+  assert.match(source, /input\.fill\('unsaved frame text'\)/);
+  assert.match(source, /input\.fill\('saved frame text'\)/);
+  assert.match(source, /discarded-after-subframe-revert/);
+  assert.match(source, /fixture\.frameCount\(label\), 1/);
 });
 
 test('form browser smoke uses the real targeted check and requires precise protected/discarded outcomes', () => {
@@ -97,6 +106,19 @@ test('form browser smoke uses the real targeted check and requires precise prote
   assert.match(source, /closeIsolated\(/);
   assert.match(source, /reportFormat: 'sanitized-v1'/);
   assert.match(source, /JSON\.stringify\(sanitizeReport\(report\), null, 2\)/);
+});
+
+test('exact-artifact form fallback is proven with optional frame access absent', () => {
+  assert.match(source, /manifest\.optional_permissions, \['webNavigation'\]/);
+  assert.match(source, /manifest\.permissions\?\.includes\('webNavigation'\), false/);
+  assert.match(source,
+    /chrome\.permissions\.contains\(\{permissions: \['webNavigation'\]\}, granted =>/);
+  assert.match(source, /assert\.equal\(framePermissionGranted, false/);
+  assert.match(source, /declaredOptional: true/);
+  assert.match(source, /initiallyGranted: framePermissionGranted/);
+  assert.match(source, /required: false/);
+  assert.doesNotMatch(source, /permissions\.request|permissions\.remove/,
+    'the fallback smoke must neither prompt for nor mutate optional permission state');
 });
 
 test('isolated Chromium reports use the release artifact tree digest contract', () => {

@@ -25,6 +25,9 @@
     "alarms",
     "scripting"
   ],
+  "optional_permissions": [
+    "webNavigation"
+  ],
   "host_permissions": [
     "*://*/*"
   ],

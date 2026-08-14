@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "진단을 지웠습니다."
   },
+  "options_frame_access_title": {
+    "message": "프레임 페이지 보호"
+  },
+  "options_frame_access_description": {
+    "message": "선택 사항: Auto Tab Discard가 프레임 식별자를 열거하도록 허용하면 엄격한 작업 한도 내에서 모든 프레임을 확인할 수 있습니다. 브라우저는 이 권한을 ‘인터넷 사용 기록 읽기’로 표시할 수 있습니다. 확장 프로그램은 프레임 URL을 저장하거나 기록하지 않습니다. 권한이 없어도 한도 내의 동일 출처 프레임은 확인하며, 접근할 수 없거나 너무 큰 프레임 트리는 보호 상태로 유지됩니다."
+  },
+  "options_frame_access_enable": {
+    "message": "전체 프레임 보호 사용"
+  },
+  "options_frame_access_disable": {
+    "message": "선택적 프레임 접근 사용 중지"
+  },
+  "options_frame_access_enabled": {
+    "message": "프레임 페이지 전체 보호가 활성화되었습니다."
+  },
+  "options_frame_access_limited": {
+    "message": "선택적 프레임 접근이 꺼져 있습니다. 한도 내의 동일 출처 프레임은 확인하며, 알 수 없는 분기는 보호 상태로 유지됩니다."
+  },
+  "options_frame_access_unavailable": {
+    "message": "이 브라우저에서는 선택적 프레임 접근을 관리할 수 없습니다. 알 수 없는 프레임 분기는 보호 상태로 유지됩니다."
+  },
   "options_diagnostics_empty": {
     "message": "사용할 수 있는 정리된 진단이 없습니다."
   }

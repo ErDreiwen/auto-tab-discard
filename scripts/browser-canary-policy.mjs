@@ -223,6 +223,8 @@ export const deriveMinimumChromeCapabilities = (
   isolatedProfileRemoved: report?.cleanup?.profile?.removed === true &&
     exactWindowsJobExited(report?.cleanup?.process) && report?.cleanup?.process?.graceful === true &&
     report?.cleanup?.process?.forced?.needed === false,
+  optionalFramePermissionDefaultOff: minimumChromeAssertionPassed(
+    report, 'frame enumeration remains an ungranted optional permission at Chromium minimum'),
   runtimeRoundTrip: minimumChromeAssertionPassed(
     report, 'storage runtime message completes a module-worker round trip'),
   serviceWorkerTarget: minimumChromeAssertionPassed(
@@ -268,6 +270,8 @@ export const deriveMinimumFirefoxCapabilities = (
   isolatedProfileRemoved: report?.profile?.removed === true &&
     exactWindowsJobExited(report?.profile?.processTreeCleanup) && firefoxAssertionPassed(
       report, 'exact launched Firefox tree exited and isolated profile was deleted'),
+  optionalFramePermissionDefaultOff: firefoxAssertionPassed(
+    report, 'frame enumeration remains an ungranted optional permission at Firefox minimum'),
   temporaryArchiveInstall: report?.extension?.temporary === true &&
     report?.extension?.installed === true && report?.extension?.idMatchedManifest === true &&
     report?.extension?.installDataType === 'archivePath' && firefoxAssertionPassed(

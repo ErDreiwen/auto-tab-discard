@@ -20,9 +20,13 @@
     "scripting",
     "storage"
   ],
+  "allowedOptionalPermissions": [
+    "webNavigation"
+  ],
   "allowedHostPermissions": [
     "*://*/*"
   ],
+  "allowedOptionalHostPermissions": [],
   "forbiddenManifestKeys": [
     "key",
     "update_url"

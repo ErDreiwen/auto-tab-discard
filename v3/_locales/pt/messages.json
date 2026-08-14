@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnóstico limpo."
   },
+  "options_frame_access_title": {
+    "message": "Proteção de páginas com molduras"
+  },
+  "options_frame_access_description": {
+    "message": "Opcional: permita que o Auto Tab Discard enumere identificadores de molduras para verificar todas as molduras dentro de um limite de trabalho rigoroso. O navegador pode descrever esta permissão como «Ler o histórico de navegação». A extensão não guarda nem regista URLs de molduras. Sem ela, as molduras limitadas da mesma origem continuam a ser verificadas; árvores inacessíveis ou demasiado grandes permanecem protegidas."
+  },
+  "options_frame_access_enable": {
+    "message": "Ativar proteção completa de molduras"
+  },
+  "options_frame_access_disable": {
+    "message": "Desativar acesso opcional a molduras"
+  },
+  "options_frame_access_enabled": {
+    "message": "A proteção completa de páginas com molduras está ativada."
+  },
+  "options_frame_access_limited": {
+    "message": "O acesso opcional a molduras está desativado. As molduras limitadas da mesma origem são verificadas; os ramos desconhecidos permanecem protegidos."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Este navegador não consegue gerir o acesso opcional a molduras. Os ramos desconhecidos permanecem protegidos."
+  },
   "options_diagnostics_empty": {
     "message": "Não estão disponíveis diagnósticos sanitizados."
   }

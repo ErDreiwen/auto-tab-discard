@@ -11,6 +11,7 @@ This fork keeps the upstream extension's behavior and addresses Chromium failure
 - Package the real fork README and MPL-2.0 license, normalize UTF-8 text to LF, and record separate Chromium and Firefox archive, tree, and inventory digests with the release checksums.
 - Add a fail-closed release gate with clean-Git provenance, hashed test-evidence references, safe ZIP extraction/inventory comparison, legacy preference/ownership fixtures, and a deterministic permission-change report.
 - Require non-empty migration, permission-change, and fork notes in every strict release; bind their normalized in-archive digests, exact ZIP/XPI subjects, policy, source identity, and hosted evidence in a versioned protected-tag in-toto attestation whose final offline verification fails closed.
+- Close the iframe-heavy P18 physical-start gap by removing production `allFrames` scripting, capping each metadata collection at 97 renderer starts, and failing closed before watcher work when ephemeral top/subframe document identities change. Required install permissions stay unchanged; an explicit Options click can grant or revoke optional `webNavigation` access after the browser warns **Read your browsing history**, while no-grant mode retains useful bounded same-origin form/media protection and no frame URLs or identities are persisted, logged, or exported.
 
 ### Verification evidence
 

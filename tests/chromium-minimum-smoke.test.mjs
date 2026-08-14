@@ -201,6 +201,16 @@ test('Chromium minimum harness uses a public extension-page realm and fail-close
   assert.match(source, /method: 'storage'/);
   assert.match(source, /webLocks: typeof navigator\.locks\?\.request === 'function'/);
   assert.match(source, /serviceWorkerWebLockAcquired: true/);
+  assert.match(source,
+    /chrome\.permissions\.contains\(\{permissions: \['webNavigation'\]\}, granted =>/);
+  assert.match(source, /identityProbe\.frameAccess\.granted === false/);
+  assert.match(source,
+    /JSON\.stringify\(identityProbe\.frameAccess\.optional\) === '\["webNavigation"\]'/);
+  assert.match(source, /identityProbe\.frameAccess\.required\.includes\('webNavigation'\) === false/);
+  assert.match(source,
+    /frame enumeration remains an ungranted optional permission at Chromium minimum/);
+  assert.doesNotMatch(source, /permissions\.request|permissions\.remove/,
+    'the minimum gate must observe optional permission state without changing it');
   assert.match(source, /ROUND_TRIP_ATTEMPT_TIMEOUT = 2500/);
   assert.match(source, /ROUND_TRIP_READY_TIMEOUT = 30000/);
   assert.match(source, /const runId = randomBytes\(8\)\.toString\('hex'\)/);

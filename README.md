@@ -38,12 +38,21 @@ The full reliability backlog is mirrored in
 current issues and 35 forward risks, each with 4–7 independently verifiable
 subissues and a link to its GitHub tracking record.
 
-The iframe-heavy P18 item still has one explicit browser-bound gap: result
-retention is capped, but `scripting.executeScript({allFrames: true})` starts
-before that cap can apply. This release does not add the warned
-`webNavigation` permission or regress every framed page to fail-closed merely
-to overstate that boundary. The retained stress evidence and permission
-decision are documented in [docs/PERMISSION_CHANGES.md](docs/PERMISSION_CHANGES.md).
+The iframe-heavy P18 path is physically bounded: one collection can start at
+most 97 renderer scripts (one top-frame metadata read, up to 64 targeted frame
+probes, and up to 32 watcher starts), and an over-cap 1,000-frame snapshot starts
+only the top read before failing closed. Required install permissions are
+unchanged. Options offers an explicit **Enable full framed-page protection**
+gesture for the optional `webNavigation` permission and its browser warning,
+**Read your browsing history**. Without that grant, one top-frame script still
+walks a bounded same-origin tree and keeps bounded reversible form baselines;
+inaccessible, changing, over-cap, late rich/PDF-editor, or retained-value-limit
+branches are treated as unknown. Frame URLs are discarded immediately and are
+never retained or logged. With the grant, targeted probes proceed only when
+ephemeral document identities bind the top result, every probe, and a second
+frame snapshot; missing identity support stays protected without spending the
+subframe script budget. The complete boundary and privacy decision is documented in
+[docs/PERMISSION_CHANGES.md](docs/PERMISSION_CHANGES.md).
 
 ### Preview
 

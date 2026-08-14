@@ -443,15 +443,17 @@ GitHub: [#42](https://github.com/ErDreiwen/auto-tab-discard/issues/42) · Checkl
 
 ### P18 — Limit all-frame injection cost on iframe-heavy pages
 
-GitHub: [#43](https://github.com/ErDreiwen/auto-tab-discard/issues/43) · Checklist: 4/5
+GitHub: [#43](https://github.com/ErDreiwen/auto-tab-discard/issues/43) · Checklist: 5/5
 
 - [x] Separate top-frame data from aggregate frame requirements.
 - [x] Inject subframes only for form/media protection.
 - [x] Cap/batch worker-facing results and tolerate frame churn after browser injection.
-- [x] Benchmark a 1,000-frame fixture and retain evidence that all 1,001 frame scripts still start.
-- [ ] Cap physical script starts before browser injection without adding a warned permission or degrading every framed page to fail-closed.
+- [x] Benchmark a 1,000-frame fixture and prove an over-cap page starts one top-frame script and zero subframe scripts.
+- [x] Cap physical script starts before browser injection without adding a required warned permission or degrading every framed page to fail-closed.
 
-The remaining item is deliberately open. `scripting.executeScript({allFrames: true})` starts in every frame before the extension can truncate its returned array, so the current 2,048-result cap is not a browser-bound work cap. Chrome and Firefox expose targeted `frameIds`, but the only standard API that enumerates those IDs is `webNavigation.getAllFrames`; Chrome requires the `webNavigation` permission and documents its install warning as “Read your browsing history.” Making that permission required would expand the release privilege surface, while making it optional needs a disclosed user-gesture flow and a useful no-grant fallback. Neither belongs in this release without product approval. Primary references: [Chrome scripting targets](https://developer.chrome.com/docs/extensions/reference/api/scripting#type-InjectionTarget), [Chrome webNavigation permission](https://developer.chrome.com/docs/extensions/reference/api/webNavigation#permissions), and [Chrome permission warnings](https://developer.chrome.com/docs/extensions/reference/permissions-list#webNavigation).
+The production worker contains no `allFrames` scripting target. Full cross-origin coverage uses `webNavigation.getAllFrames` only after the user enables the declared optional `webNavigation` permission from the localized Options disclosure; it is not a required install/update permission. Enumeration records are immediately reduced to sorted ephemeral frame/document identities, with URLs discarded. An identity-capable first snapshot must exactly bind the top metadata result and every probe result, and a second snapshot must reproduce every identity before watcher work. Duplicate, malformed, mixed, missing, or changed identities fail closed; a granted Chrome 102-style snapshot with no document identities stays protected without starting a subframe script. At most 64 subframes are probed in batches of eight and at most 32 first-time form watchers are injected per scan in batches of eight. Every first watcher pass remains protected until a later probe observes the installed sentinel. The end-to-end physical ceiling therefore remains 97 script starts per collection: one top metadata script, 64 subframe probes, and 32 watcher starts. Missing/inexact results, document replacement, permission churn, frame-set churn, and watcher overflow/failure all remain protected.
+
+Without the optional grant, frameless pages still use one top script. Framed pages use one additional top-targeted script that walks at most 64 same-origin child frames and bounded controls/media per frame. Accessible small trees retain real form/media/Picture-in-Picture protection instead of becoming blanket failures; inaccessible cross-origin branches, churn, and oversized trees fail closed. Its same-origin fallback retains at most 64 standard-control baselines per frame, caps each retained value at 2,048 characters and their per-frame total at 16,384 characters, prunes detached controls, recognizes edit reversals, and preserves value-free uncertainty records for late rich/PDF editors. The warm-up scan remains protected. No URLs or frame/document identities are persisted, logged, or exported; granted-mode identities exist only for the duration of one collection. The 1,000-frame regression proves one physical top start and zero subframe starts, while the 64-frame boundary regression accounts for the exact 97-start maximum. Primary references: [Chrome scripting targets](https://developer.chrome.com/docs/extensions/reference/api/scripting#type-InjectionTarget), [Chrome optional permissions](https://developer.chrome.com/docs/extensions/reference/api/permissions), [Chrome webNavigation](https://developer.chrome.com/docs/extensions/reference/api/webNavigation#method-getAllFrames), and [Chrome permission warnings](https://developer.chrome.com/docs/extensions/reference/permissions-list#webNavigation).
 
 ### P19 — Coalesce alarm catch-up after sleep and throttling
 
@@ -596,14 +598,14 @@ GitHub: [#59](https://github.com/ErDreiwen/auto-tab-discard/issues/59) · Checkl
 
 ### P34 — Build deterministic extension artifacts with provenance
 
-GitHub: [#58](https://github.com/ErDreiwen/auto-tab-discard/issues/58) · Checklist: 6/6
+GitHub: [#58](https://github.com/ErDreiwen/auto-tab-discard/issues/58) · Checklist: 5/6
 
 - [x] Add one deterministic packaging command and inclusion manifest.
 - [x] Emit inventory, tree hash, ZIP/XPI hashes, version, commit, release-note and policy digests, and hashed test references.
 - [x] Reject dirty trees, forbidden files, nested roots, missing resources, and identity/version/archive-name mismatch.
 - [x] Make the strict gate extract the ZIP and run browser smokes only against that extracted artifact with exact tree-digest checks.
 - [x] Obtain byte-identical release outputs from clean hosted Linux and Windows builders for the release commit.
-- [x] Run every required browser gate against that exact canonical artifact and bind the retained reports into the final attestation.
+- [ ] Run every required browser gate against that exact canonical artifact and bind the retained reports into the final attestation.
 
 ### P35 — Gate real upgrades and store-policy compatibility
 

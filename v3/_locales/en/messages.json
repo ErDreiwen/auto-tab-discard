@@ -640,6 +640,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnostics cleared."
   },
+  "options_frame_access_title": {
+    "message": "Framed-page protection"
+  },
+  "options_frame_access_description": {
+    "message": "Optional: let Auto Tab Discard enumerate frame identifiers so it can check every frame within a strict work limit. The browser may describe this permission as “Read your browsing history.” The extension does not store or log frame URLs. Without it, bounded same-origin frames are still checked; inaccessible or oversized frame trees stay protected."
+  },
+  "options_frame_access_enable": {
+    "message": "Enable full framed-page protection"
+  },
+  "options_frame_access_disable": {
+    "message": "Disable optional frame access"
+  },
+  "options_frame_access_enabled": {
+    "message": "Full framed-page protection is enabled."
+  },
+  "options_frame_access_limited": {
+    "message": "Optional frame access is off. Bounded same-origin frames are checked; unknown branches stay protected."
+  },
+  "options_frame_access_unavailable": {
+    "message": "This browser cannot manage optional frame access. Unknown frame branches stay protected."
+  },
   "options_diagnostics_empty": {
     "message": "No sanitized diagnostics are available."
   }

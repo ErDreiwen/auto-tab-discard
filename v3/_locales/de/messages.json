@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnose gelöscht."
   },
+  "options_frame_access_title": {
+    "message": "Schutz für Seiten mit Frames"
+  },
+  "options_frame_access_description": {
+    "message": "Optional: Erlauben Sie Auto Tab Discard, Frame-Kennungen aufzulisten, damit jeder Frame innerhalb einer strengen Arbeitsgrenze geprüft werden kann. Der Browser kann diese Berechtigung als „Browserverlauf lesen“ beschreiben. Die Erweiterung speichert oder protokolliert keine Frame-URLs. Ohne sie werden begrenzte Frames derselben Herkunft weiterhin geprüft; unzugängliche oder zu große Frame-Bäume bleiben geschützt."
+  },
+  "options_frame_access_enable": {
+    "message": "Vollständigen Frame-Schutz aktivieren"
+  },
+  "options_frame_access_disable": {
+    "message": "Optionalen Frame-Zugriff deaktivieren"
+  },
+  "options_frame_access_enabled": {
+    "message": "Der vollständige Schutz für Seiten mit Frames ist aktiviert."
+  },
+  "options_frame_access_limited": {
+    "message": "Der optionale Frame-Zugriff ist deaktiviert. Begrenzte Frames derselben Herkunft werden geprüft; unbekannte Zweige bleiben geschützt."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Dieser Browser kann den optionalen Frame-Zugriff nicht verwalten. Unbekannte Frame-Zweige bleiben geschützt."
+  },
   "options_diagnostics_empty": {
     "message": "Keine bereinigten Diagnosen verfügbar."
   }

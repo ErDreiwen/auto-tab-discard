@@ -87,6 +87,20 @@ const sanitizeReport = value => {
   return visit(value);
 };
 
+const SUBFRAME_TRANSITION = 'subframe-reverted-edit';
+
+const subframeDocument = label => `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ATD framed form protection ${label}</title>
+</head>
+<body>
+  <form><input id="frame-text" name="frame-text" value="saved frame text"></form>
+  <script>window.__frameFixtureReady = true;</script>
+</body>
+</html>`;
+
 const fixtureDocument = label => `<!doctype html>
 <html>
 <head>
@@ -114,6 +128,8 @@ const fixtureDocument = label => `<!doctype html>
     <button id="reset" type="reset">Reset</button>
   </form>
   <iframe name="submit-sink" hidden></iframe>
+  ${label === SUBFRAME_TRANSITION ?
+    `<iframe id="frame-editor" src="/frame?case=${encodeURIComponent(label)}"></iframe>` : ''}
   <script>
     const shadow = document.querySelector('#shadow-host').attachShadow({mode: 'open'});
     shadow.innerHTML = '<input id="shadow-input" value="saved shadow">';
@@ -126,6 +142,7 @@ const fixtureDocument = label => `<!doctype html>
 </html>`;
 
 const startFixture = () => new Promise((resolve, reject) => {
+  const frameRequests = new Map();
   const requests = new Map();
   const submissions = new Map();
   const server = http.createServer((request, response) => {
@@ -138,6 +155,16 @@ const startFixture = () => new Promise((resolve, reject) => {
         'content-type': 'text/html; charset=utf-8'
       });
       response.end(fixtureDocument(label));
+      return;
+    }
+    if (url.pathname === '/frame') {
+      const label = url.searchParams.get('case') || 'unknown';
+      frameRequests.set(label, (frameRequests.get(label) || 0) + 1);
+      response.writeHead(200, {
+        'cache-control': 'no-store',
+        'content-type': 'text/html; charset=utf-8'
+      });
+      response.end(subframeDocument(label));
       return;
     }
     if (url.pathname === '/submitted') {
@@ -158,6 +185,7 @@ const startFixture = () => new Promise((resolve, reject) => {
     const {port} = server.address();
     resolve({
       count: label => requests.get(label) || 0,
+      frameCount: label => frameRequests.get(label) || 0,
       stop: () => new Promise((resolveStop, rejectStop) => server.close(error =>
         error ? rejectStop(error) : resolveStop())),
       submissionCount: label => submissions.get(label) || 0,
@@ -310,12 +338,13 @@ const main = async () => {
   const runId = `form-protection-${Date.now()}-${process.pid}`;
   const profile = registerSensitivePath(path.join(profileRoot, runId));
   const reportPath = registerSensitivePath(path.join(results, `${runId}.json`));
+  const manifest = JSON.parse(fs.readFileSync(path.join(extension, 'manifest.json'), 'utf8'));
   const report = {
     browser: undefined,
     cleanup: undefined,
     extension: {
       treeSha256: hashDirectory(extension),
-      version: JSON.parse(fs.readFileSync(path.join(extension, 'manifest.json'), 'utf8')).version
+      version: manifest.version
     },
     outcome: 'failed',
     reportFormat: 'sanitized-v1',
@@ -335,6 +364,23 @@ const main = async () => {
       profileRoot
     });
     report.browser = {version: isolated.context.browser().version()};
+    assert.deepEqual(manifest.optional_permissions, ['webNavigation'],
+      'the tested artifact must declare frame enumeration as one optional permission');
+    assert.equal(manifest.permissions?.includes('webNavigation'), false,
+      'the tested artifact must not require frame enumeration at install time');
+    const framePermissionGranted = await isolated.driver.evaluate(() => new Promise((resolve, reject) => {
+      chrome.permissions.contains({permissions: ['webNavigation']}, granted => {
+        const error = chrome.runtime.lastError;
+        error ? reject(Error(error.message || String(error))) : resolve(granted === true);
+      });
+    }));
+    assert.equal(framePermissionGranted, false,
+      'the exact-artifact fallback proof requires optional frame access to remain absent');
+    report.extension.framePermission = {
+      declaredOptional: true,
+      initiallyGranted: framePermissionGranted,
+      required: false
+    };
     await isolated.driver.evaluate(async () => {
       await chrome.storage.local.set({
         audio: false,
@@ -439,6 +485,51 @@ const main = async () => {
         await removeTarget(isolated.driver, target.id);
       }
     }
+
+    {
+      const label = SUBFRAME_TRANSITION;
+      const target = await createTarget(isolated.driver, isolated.context, fixture.url(label));
+      try {
+        const frame = await waitFor(() => target.page.frames().find(candidate => {
+          try {
+            return new URL(candidate.url()).pathname === '/frame';
+          }
+          catch {
+            return false;
+          }
+        }), `${label} same-origin child frame`);
+        await frame.waitForFunction(() => globalThis.__frameFixtureReady === true);
+        const input = frame.locator('#frame-text');
+        await input.fill('unsaved frame text');
+        await assertProtected(
+          isolated.driver,
+          target.id,
+          await runCheck(isolated.driver, target.id),
+          `${label} before revert`
+        );
+        await input.fill('saved frame text');
+        await assertDiscarded(
+          isolated.driver,
+          target.id,
+          await runCheck(isolated.driver, target.id),
+          label
+        );
+        assert.equal(fixture.count(label), 1,
+          `${label}: top document must not reload during fallback checks`);
+        assert.equal(fixture.frameCount(label), 1,
+          `${label}: child document must not reload during fallback checks`);
+        report.scenarios.push({
+          final: 'discarded-after-subframe-revert',
+          frameRequests: 1,
+          ok: true,
+          requests: 1,
+          transition: label
+        });
+      }
+      finally {
+        await removeTarget(isolated.driver, target.id);
+      }
+    }
     report.outcome = 'passed';
   }
   catch (error) {
@@ -495,7 +586,8 @@ module.exports = {
   registerSensitivePath,
   sanitizeReport,
   sanitizeReportText,
-  startFixture
+  startFixture,
+  subframeDocument
 };
 
 if (require.main === module) {

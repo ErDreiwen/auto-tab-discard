@@ -464,6 +464,17 @@ test('Firefox minimum mode installs the exact XPI and proves Firefox 140 backgro
   assert.match(minimumVerifier, /navigator\.locks\?\.request/);
   assert.match(minimumVerifier,
     /value\.background\?\.webLocks === true && value\.webLocks === true/);
+  assert.match(minimumVerifier,
+    /chrome\.permissions\.contains\(\{[\s\S]*permissions: \['webNavigation'\]/);
+  assert.match(minimumVerifier, /value\.frameAccess\?\.granted === false/);
+  assert.match(minimumVerifier,
+    /JSON\.stringify\(value\.frameAccess\?\.optional\) === '\["webNavigation"\]'/);
+  assert.match(minimumVerifier,
+    /value\.frameAccess\?\.required\?\.includes\('webNavigation'\) === false/);
+  assert.match(minimumVerifier,
+    /frame enumeration remains an ungranted optional permission at Firefox minimum/);
+  assert.doesNotMatch(minimumVerifier, /permissions\.request|permissions\.remove/,
+    'the Firefox minimum gate must observe optional permission state without changing it');
   assert.match(minimumVerifier, /\[102,102,102,255\]/);
   assert.doesNotMatch(minimumVerifier, /moz:scope|remote-allow-system-access/);
 });

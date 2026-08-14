@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "已清除诊断信息。"
   },
+  "options_frame_access_title": {
+    "message": "框架页面保护"
+  },
+  "options_frame_access_description": {
+    "message": "可选：允许 Auto Tab Discard 枚举框架标识符，以便在严格的工作上限内检查每个框架。浏览器可能将此权限描述为“读取您的浏览记录”。扩展程序不会存储或记录框架 URL。未授予权限时，仍会检查上限内的同源框架；无法访问或过大的框架树会保持受保护状态。"
+  },
+  "options_frame_access_enable": {
+    "message": "启用完整框架保护"
+  },
+  "options_frame_access_disable": {
+    "message": "停用可选框架访问权限"
+  },
+  "options_frame_access_enabled": {
+    "message": "已启用框架页面的完整保护。"
+  },
+  "options_frame_access_limited": {
+    "message": "可选框架访问权限已关闭。会检查上限内的同源框架；未知分支会保持受保护状态。"
+  },
+  "options_frame_access_unavailable": {
+    "message": "此浏览器无法管理可选框架访问权限。未知框架分支会保持受保护状态。"
+  },
   "options_diagnostics_empty": {
     "message": "没有可用的已清理诊断信息。"
   }

@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnostiek gewist."
   },
+  "options_frame_access_title": {
+    "message": "Bescherming voor pagina’s met frames"
+  },
+  "options_frame_access_description": {
+    "message": "Optioneel: laat Auto Tab Discard frame-ID’s opsommen zodat elk frame binnen een strikte werklimiet kan worden gecontroleerd. De browser kan deze toestemming omschrijven als ‘Je browsegeschiedenis lezen’. De extensie bewaart of logt geen frame-URL’s. Zonder deze toestemming worden begrensde frames van dezelfde oorsprong nog steeds gecontroleerd; ontoegankelijke of te grote framebomen blijven beschermd."
+  },
+  "options_frame_access_enable": {
+    "message": "Volledige framebescherming inschakelen"
+  },
+  "options_frame_access_disable": {
+    "message": "Optionele frametoegang uitschakelen"
+  },
+  "options_frame_access_enabled": {
+    "message": "Volledige bescherming voor pagina’s met frames is ingeschakeld."
+  },
+  "options_frame_access_limited": {
+    "message": "Optionele frametoegang is uitgeschakeld. Begrensde frames van dezelfde oorsprong worden gecontroleerd; onbekende takken blijven beschermd."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Deze browser kan optionele frametoegang niet beheren. Onbekende frametakken blijven beschermd."
+  },
   "options_diagnostics_empty": {
     "message": "Er is geen opgeschoonde diagnostiek beschikbaar."
   }

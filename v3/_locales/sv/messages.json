@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnostiken rensades."
   },
+  "options_frame_access_title": {
+    "message": "Skydd för sidor med ramar"
+  },
+  "options_frame_access_description": {
+    "message": "Valfritt: låt Auto Tab Discard räkna upp ramidentifierare så att varje ram kan kontrolleras inom en strikt arbetsgräns. Webbläsaren kan beskriva behörigheten som ”Läs din webbhistorik”. Tillägget lagrar eller loggar inte ramadresser. Utan behörigheten kontrolleras fortfarande begränsade ramar med samma ursprung; otillgängliga eller för stora ramträd förblir skyddade."
+  },
+  "options_frame_access_enable": {
+    "message": "Aktivera fullständigt ramskydd"
+  },
+  "options_frame_access_disable": {
+    "message": "Inaktivera valfri ramåtkomst"
+  },
+  "options_frame_access_enabled": {
+    "message": "Fullständigt skydd för sidor med ramar är aktiverat."
+  },
+  "options_frame_access_limited": {
+    "message": "Valfri ramåtkomst är avstängd. Begränsade ramar med samma ursprung kontrolleras; okända grenar förblir skyddade."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Den här webbläsaren kan inte hantera valfri ramåtkomst. Okända ramgrenar förblir skyddade."
+  },
   "options_diagnostics_empty": {
     "message": "Ingen rensad diagnostik är tillgänglig."
   }

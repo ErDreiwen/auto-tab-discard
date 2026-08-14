@@ -245,8 +245,7 @@ const runOrdinaryDiscard = (
       const attempt = markerAttempt(discard.prepareTimeout);
       ownership.withNativeMutationGuard(() => chrome.scripting.executeScript({
         target: {
-          tabId: tab.id,
-          allFrames: true
+          tabId: tab.id
         },
         func: prepareDocumentMarker,
         args: [marker, href, attempt]

@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnóstico borrado."
   },
+  "options_frame_access_title": {
+    "message": "Protección de páginas con marcos"
+  },
+  "options_frame_access_description": {
+    "message": "Opcional: permite que Auto Tab Discard enumere identificadores de marcos para comprobar todos los marcos dentro de un límite de trabajo estricto. El navegador puede describir este permiso como «Leer tu historial de navegación». La extensión no guarda ni registra las URL de los marcos. Sin él, se siguen comprobando los marcos del mismo origen dentro del límite; los árboles inaccesibles o demasiado grandes permanecen protegidos."
+  },
+  "options_frame_access_enable": {
+    "message": "Activar la protección completa de marcos"
+  },
+  "options_frame_access_disable": {
+    "message": "Desactivar el acceso opcional a marcos"
+  },
+  "options_frame_access_enabled": {
+    "message": "La protección completa de páginas con marcos está activada."
+  },
+  "options_frame_access_limited": {
+    "message": "El acceso opcional a marcos está desactivado. Se comprueban los marcos acotados del mismo origen; las ramas desconocidas permanecen protegidas."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Este navegador no puede administrar el acceso opcional a marcos. Las ramas desconocidas permanecen protegidas."
+  },
   "options_diagnostics_empty": {
     "message": "No hay diagnósticos depurados disponibles."
   }

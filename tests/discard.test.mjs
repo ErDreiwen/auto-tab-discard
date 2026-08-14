@@ -228,6 +228,8 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     favicon = true;
     chrome.scripting.executeScript = async details => {
       assert.equal(details.func.name, 'prepareDocumentMarker');
+      assert.deepEqual(details.target, {tabId: 44},
+        'title/favicon marker preparation must stay top-frame-only');
       assert.equal(details.args[0].favicon, true);
       return [{result: {
         complete: true,

@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "已清除診斷資訊。"
   },
+  "options_frame_access_title": {
+    "message": "框架頁面保護"
+  },
+  "options_frame_access_description": {
+    "message": "選用：允許 Auto Tab Discard 列舉框架識別碼，以便在嚴格的工作上限內檢查每個框架。瀏覽器可能將此權限描述為「讀取你的瀏覽記錄」。擴充功能不會儲存或記錄框架 URL。未授予權限時，仍會檢查上限內的同源框架；無法存取或過大的框架樹會保持受保護狀態。"
+  },
+  "options_frame_access_enable": {
+    "message": "啟用完整框架保護"
+  },
+  "options_frame_access_disable": {
+    "message": "停用選用框架存取權"
+  },
+  "options_frame_access_enabled": {
+    "message": "已啟用框架頁面的完整保護。"
+  },
+  "options_frame_access_limited": {
+    "message": "選用框架存取權已關閉。會檢查上限內的同源框架；未知分支會保持受保護狀態。"
+  },
+  "options_frame_access_unavailable": {
+    "message": "此瀏覽器無法管理選用框架存取權。未知框架分支會保持受保護狀態。"
+  },
   "options_diagnostics_empty": {
     "message": "沒有可用的已清理診斷資訊。"
   }

@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnostic effacé."
   },
+  "options_frame_access_title": {
+    "message": "Protection des pages avec cadres"
+  },
+  "options_frame_access_description": {
+    "message": "Facultatif : autorisez Auto Tab Discard à énumérer les identifiants des cadres afin de vérifier chaque cadre dans une limite de travail stricte. Le navigateur peut décrire cette autorisation comme « Lire votre historique de navigation ». L’extension ne stocke ni ne journalise les URL des cadres. Sans elle, les cadres de même origine sont vérifiés dans la limite ; les arborescences inaccessibles ou trop grandes restent protégées."
+  },
+  "options_frame_access_enable": {
+    "message": "Activer la protection complète des cadres"
+  },
+  "options_frame_access_disable": {
+    "message": "Désactiver l’accès facultatif aux cadres"
+  },
+  "options_frame_access_enabled": {
+    "message": "La protection complète des pages avec cadres est activée."
+  },
+  "options_frame_access_limited": {
+    "message": "L’accès facultatif aux cadres est désactivé. Les cadres de même origine sont vérifiés dans la limite ; les branches inconnues restent protégées."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Ce navigateur ne peut pas gérer l’accès facultatif aux cadres. Les branches inconnues restent protégées."
+  },
   "options_diagnostics_empty": {
     "message": "Aucun diagnostic nettoyé disponible."
   }

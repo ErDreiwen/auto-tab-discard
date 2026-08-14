@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnostica cancellata."
   },
+  "options_frame_access_title": {
+    "message": "Protezione delle pagine con frame"
+  },
+  "options_frame_access_description": {
+    "message": "Facoltativo: consenti ad Auto Tab Discard di enumerare gli identificatori dei frame per controllare ogni frame entro un limite di lavoro rigoroso. Il browser può descrivere questa autorizzazione come «Leggere la cronologia di navigazione». L’estensione non memorizza né registra gli URL dei frame. Senza questa autorizzazione vengono comunque controllati i frame della stessa origine entro il limite; gli alberi inaccessibili o troppo grandi restano protetti."
+  },
+  "options_frame_access_enable": {
+    "message": "Attiva la protezione completa dei frame"
+  },
+  "options_frame_access_disable": {
+    "message": "Disattiva l’accesso facoltativo ai frame"
+  },
+  "options_frame_access_enabled": {
+    "message": "La protezione completa delle pagine con frame è attiva."
+  },
+  "options_frame_access_limited": {
+    "message": "L’accesso facoltativo ai frame è disattivato. I frame della stessa origine entro il limite vengono controllati; i rami sconosciuti restano protetti."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Questo browser non può gestire l’accesso facoltativo ai frame. I rami sconosciuti restano protetti."
+  },
   "options_diagnostics_empty": {
     "message": "Nessuna diagnostica ripulita disponibile."
   }

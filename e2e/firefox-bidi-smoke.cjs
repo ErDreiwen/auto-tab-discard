@@ -1008,6 +1008,15 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
           color,
           error: chrome.runtime.lastError?.message || null
         })));
+        const runtimeManifest = chrome.runtime.getManifest();
+        const frameAccess = await new Promise(done => chrome.permissions.contains({
+          permissions: ['webNavigation']
+        }, granted => done({
+          error: chrome.runtime.lastError?.message || null,
+          granted: granted === true,
+          optional: runtimeManifest.optional_permissions || [],
+          required: runtimeManifest.permissions || []
+        })));
         resolve(JSON.stringify({
           background: background ? {
             href: background.location.href,
@@ -1019,6 +1028,7 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
           backgroundError: backgroundResult.error,
           badge,
           controllerHref: location.href,
+          frameAccess,
           readyState: document.readyState,
           runtimeId: chrome.runtime.id,
           runtimeMessage,
@@ -1036,6 +1046,9 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
         value.runtimeMessage?.error === null &&
         response?.__firefoxMinimumManaged === 'managed-default' &&
         response?.__firefoxMinimumSession === 'session-default' &&
+        value.frameAccess?.error === null && value.frameAccess?.granted === false &&
+        JSON.stringify(value.frameAccess?.optional) === '["webNavigation"]' &&
+        value.frameAccess?.required?.includes('webNavigation') === false &&
         value.badge?.error === null && JSON.stringify(value.badge.color) === '[102,102,102,255]' ? value : undefined;
     }, 'Firefox 140 extension controller loaded, but the background/core runtime did not finish startup', 20000, 100);
     pass('Firefox 140 background page and core runtime started without privileged BiDi scope', {
@@ -1044,6 +1057,11 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
       compatibilityFirst: true,
       runtimeMessageHandled: true,
       webLocks: {background: state.background.webLocks, controller: state.webLocks}
+    });
+    pass('frame enumeration remains an ungranted optional permission at Firefox minimum', {
+      declaredOptional: true,
+      initiallyGranted: false,
+      required: false
     });
   }
   finally {

@@ -418,11 +418,20 @@ const run = async () => {
     const optionsPath = String(manifest.options_ui?.page || '').replace(/^\/+/, '');
     ensure(optionsPath, 'The packaged Chromium manifest has no options page');
     await page.goto(`chrome-extension://${extensionId}/${optionsPath}`, {waitUntil: 'domcontentloaded'});
-    const identityProbe = await page.evaluate(() => ({
-      id: chrome.runtime.id,
-      origin: location.origin,
-      version: chrome.runtime.getManifest().version,
-      webLocks: typeof navigator.locks?.request === 'function'
+    const identityProbe = await page.evaluate(() => new Promise(resolve => {
+      const runtimeManifest = chrome.runtime.getManifest();
+      chrome.permissions.contains({permissions: ['webNavigation']}, granted => resolve({
+        frameAccess: {
+          error: Boolean(chrome.runtime.lastError),
+          granted: granted === true,
+          optional: runtimeManifest.optional_permissions || [],
+          required: runtimeManifest.permissions || []
+        },
+        id: chrome.runtime.id,
+        origin: location.origin,
+        version: runtimeManifest.version,
+        webLocks: typeof navigator.locks?.request === 'function'
+      }));
     }));
     validateRuntimeIdentity({
       expectedId: extensionId,
@@ -430,6 +439,16 @@ const run = async () => {
       probe: identityProbe
     });
     pass('extension options page exposes matching runtime identity and version');
+    ensure(identityProbe.frameAccess?.error === false &&
+      identityProbe.frameAccess.granted === false &&
+      JSON.stringify(identityProbe.frameAccess.optional) === '["webNavigation"]' &&
+      identityProbe.frameAccess.required.includes('webNavigation') === false,
+    'Chromium minimum did not preserve ungranted optional-only frame access');
+    pass('frame enumeration remains an ungranted optional permission at Chromium minimum', {
+      declaredOptional: true,
+      initiallyGranted: false,
+      required: false
+    });
 
     report.runtimeDiagnostics = {};
     report.runtimeDiagnostics.directStorage = await page.evaluate(attemptTimeout => {

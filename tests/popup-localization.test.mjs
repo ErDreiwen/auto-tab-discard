@@ -28,7 +28,11 @@ const required = [
   'popup_diagnostics_status_failed', 'popup_diagnostics_reason_default',
   'popup_diagnostics_reason_row', 'popup_diagnostics_reason_row_detailed',
   'options_diagnostics_title', 'options_diagnostics_privacy', 'options_diagnostics_download',
-  'options_diagnostics_clear', 'options_diagnostics_cleared', 'options_diagnostics_empty'
+  'options_diagnostics_clear', 'options_diagnostics_cleared', 'options_diagnostics_empty',
+  'options_frame_access_title', 'options_frame_access_description',
+  'options_frame_access_enable', 'options_frame_access_disable',
+  'options_frame_access_enabled', 'options_frame_access_limited',
+  'options_frame_access_unavailable'
 ];
 const messagePlaceholderNames = message => [...message.matchAll(/\$([A-Z_]+)\$/g)]
   .map(match => match[1].toLowerCase())

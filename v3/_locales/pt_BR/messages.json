@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnóstico limpo."
   },
+  "options_frame_access_title": {
+    "message": "Proteção de páginas com frames"
+  },
+  "options_frame_access_description": {
+    "message": "Opcional: permita que o Auto Tab Discard enumere identificadores de frames para verificar todos os frames dentro de um limite rígido de trabalho. O navegador pode descrever essa permissão como “Ler seu histórico de navegação”. A extensão não armazena nem registra URLs de frames. Sem ela, os frames limitados da mesma origem ainda são verificados; árvores inacessíveis ou grandes demais permanecem protegidas."
+  },
+  "options_frame_access_enable": {
+    "message": "Ativar proteção completa de frames"
+  },
+  "options_frame_access_disable": {
+    "message": "Desativar acesso opcional a frames"
+  },
+  "options_frame_access_enabled": {
+    "message": "A proteção completa de páginas com frames está ativada."
+  },
+  "options_frame_access_limited": {
+    "message": "O acesso opcional a frames está desativado. Os frames limitados da mesma origem são verificados; ramificações desconhecidas permanecem protegidas."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Este navegador não pode gerenciar o acesso opcional a frames. Ramificações desconhecidas permanecem protegidas."
+  },
   "options_diagnostics_empty": {
     "message": "Não há diagnósticos sanitizados disponíveis."
   }

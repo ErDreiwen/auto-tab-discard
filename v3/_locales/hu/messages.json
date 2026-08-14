@@ -777,6 +777,27 @@
   "options_diagnostics_cleared": {
     "message": "Diagnosztika törölve."
   },
+  "options_frame_access_title": {
+    "message": "Kereteket tartalmazó oldalak védelme"
+  },
+  "options_frame_access_description": {
+    "message": "Opcionális: engedélyezze az Auto Tab Discard számára a keretazonosítók felsorolását, hogy szigorú munkakorláton belül minden keretet ellenőrizhessen. A böngésző ezt az engedélyt „A böngészési előzmények olvasása” szöveggel írhatja le. A bővítmény nem tárolja és nem naplózza a keretek URL-címeit. Enélkül a korláton belüli, azonos eredetű keretek továbbra is ellenőrzésre kerülnek; az elérhetetlen vagy túl nagy keretfák védettek maradnak."
+  },
+  "options_frame_access_enable": {
+    "message": "Teljes keretvédelem engedélyezése"
+  },
+  "options_frame_access_disable": {
+    "message": "Opcionális kerethozzáférés letiltása"
+  },
+  "options_frame_access_enabled": {
+    "message": "A kereteket tartalmazó oldalak teljes védelme engedélyezve van."
+  },
+  "options_frame_access_limited": {
+    "message": "Az opcionális kerethozzáférés ki van kapcsolva. A korláton belüli, azonos eredetű kereteket ellenőrizzük; az ismeretlen ágak védettek maradnak."
+  },
+  "options_frame_access_unavailable": {
+    "message": "Ez a böngésző nem tudja kezelni az opcionális kerethozzáférést. Az ismeretlen keretágak védettek maradnak."
+  },
   "options_diagnostics_empty": {
     "message": "Nincs elérhető tisztított diagnosztika."
   }
