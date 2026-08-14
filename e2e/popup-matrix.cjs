@@ -219,6 +219,7 @@ const NATIVE_MENU_UPDATE_SETTLE_MS = 500;
 const NATIVE_POINTER_TIMEOUT_MS = 2000;
 const NATIVE_FOREGROUND_TIMEOUT_MS = 750;
 const NATIVE_HELPER_STARTUP_TIMEOUT_MS = 30000;
+const NATIVE_HELPER_ACTION_TIMEOUT_MS = 30000;
 const NATIVE_MENU_UIA_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 
@@ -1006,8 +1007,7 @@ const startNativeContextMenuSelector = (
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGKILL');
       }
-    }, NATIVE_POINTER_TIMEOUT_MS + NATIVE_FOREGROUND_TIMEOUT_MS +
-      NATIVE_MENU_TIMEOUT_MS + 2000);
+    }, NATIVE_HELPER_ACTION_TIMEOUT_MS);
     resolveReady();
   };
   child.stdout.setEncoding('utf8');

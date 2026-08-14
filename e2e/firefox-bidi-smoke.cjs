@@ -718,6 +718,7 @@ const diffExternalFirefoxCrashState = (before, after) => {
       crashReports: {changed: 0, created: 0, removed: 0},
       pendingPings: {changed: 0, created: 0, removed: 0}
     },
+    allowedCrashHelperLog: {changed: 0, created: 0},
     allowedCrashReporterSettings: {changed: 0, created: 0},
     allowedInstallTime: {changed: 0, created: 0},
     changed: 0,
@@ -745,6 +746,14 @@ const diffExternalFirefoxCrashState = (before, after) => {
           /^crashreporter_settings\.json$/i.test(relative) &&
           (kind === 'created' || kind === 'changed')) {
         summary.allowedCrashReporterSettings[kind] += 1;
+        continue;
+      }
+      // Firefox ESR 140's crash helper opens this ordinary diagnostic log with
+      // File::create on startup (toolkit/crashreporter/crash_helper_server/src/logging/env.rs).
+      if (category === 'crashReports' && !relative.includes('/') &&
+          /^crash_helper_server\.log$/i.test(relative) &&
+          (kind === 'created' || kind === 'changed')) {
+        summary.allowedCrashHelperLog[kind] += 1;
         continue;
       }
       summary[kind] += 1;

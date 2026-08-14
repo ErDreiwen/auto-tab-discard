@@ -209,6 +209,7 @@ test('popup matrix drives a real context-menu event and reconciles every restric
     /await nativeSelector\.ready;[\s\S]*event: 'native-context-menu-helper-ready',[\s\S]*await nativeSelector\.completion/);
   assert.match(source, /finally \{\s*try \{\s*await nativeSelector\?\.cancel\(\)/);
   assert.match(source, /const NATIVE_HELPER_STARTUP_TIMEOUT_MS = 30000/);
+  assert.match(source, /const NATIVE_HELPER_ACTION_TIMEOUT_MS = 30000/);
   assert.match(source, /const NATIVE_MENU_TIMEOUT_MS = 5000/);
   assert.match(source, /const NATIVE_MENU_SURFACE_PROBE_MS = 1000/);
   assert.match(source, /const NATIVE_MENU_UPDATE_SETTLE_MS = 500/);
@@ -380,7 +381,9 @@ test('popup matrix drives a real context-menu event and reconciles every restric
     /startupTimer = setTimeout\(\(\) => \{[\s\S]*finishError\('helper-startup-timeout'\)[\s\S]*\}, NATIVE_HELPER_STARTUP_TIMEOUT_MS\)/);
   assert.match(nativeHelper, /setTimeout\(\(\) => \{[\s\S]*finishError\('bounded-timeout'\)/);
   assert.match(nativeHelper,
-    /actionTimer = setTimeout\(\(\) => \{[\s\S]*finishError\('bounded-timeout'\)[\s\S]*NATIVE_MENU_TIMEOUT_MS \+ 2000\)/);
+    /actionTimer = setTimeout\(\(\) => \{[\s\S]*finishError\('bounded-timeout'\)[\s\S]*\}, NATIVE_HELPER_ACTION_TIMEOUT_MS\)/);
+  assert.match(nativeHelper,
+    /readyObserved = true;[\s\S]*clearTimeout\(startupTimer\);[\s\S]*actionTimer = setTimeout/);
   assert.match(nativeHelper, /if \(!readyObserved\) \{[\s\S]*helper-startup-failure/);
   assert.match(nativeHelper, /return \{cancel, completion, ready\}/);
   assert.match(nativeHelper, /child\.kill\('SIGKILL'\)/);
@@ -391,8 +394,8 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /ambiguous-exact-match/);
   assert.match(nativeHelper, /InvokePattern/);
   assert.match(nativeHelper, /LegacyIAccessiblePattern/);
-  assert.match(nativeHelper,
-    /\}, NATIVE_POINTER_TIMEOUT_MS \+ NATIVE_FOREGROUND_TIMEOUT_MS \+[\s\S]*NATIVE_MENU_TIMEOUT_MS \+ 2000\)/);
+  assert.doesNotMatch(nativeHelper,
+    /actionTimer = setTimeout\([\s\S]*NATIVE_POINTER_TIMEOUT_MS \+ NATIVE_FOREGROUND_TIMEOUT_MS/);
   assert.match(nativeHelper, /ATD_UIA_ERROR:/);
   assert.match(nativeHelper, /cdp-browser-process-tree/);
   assert.doesNotMatch(nativeHelper, /AppActivate|SendKeys|SendWait|System\.Windows\.Forms/);

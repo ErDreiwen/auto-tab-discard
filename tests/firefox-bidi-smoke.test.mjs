@@ -170,6 +170,7 @@ test('Firefox crash reporting is non-reporting, isolated, and checked across eve
       crashReports: {changed: 1, created: 0, removed: 0},
       pendingPings: {changed: 0, created: 1, removed: 0}
     },
+    allowedCrashHelperLog: {changed: 0, created: 0},
     allowedCrashReporterSettings: {changed: 0, created: 0},
     allowedInstallTime: {changed: 1, created: 1},
     changed: 1,
@@ -279,6 +280,7 @@ test('Firefox external crash-state diff allows only top-level crash reporter set
       crashReports: {changed: 0, created: 0, removed: 0},
       pendingPings: {changed: 0, created: 0, removed: 0}
     },
+    allowedCrashHelperLog: {changed: 0, created: 0},
     allowedCrashReporterSettings: {changed: 0, created: 1},
     allowedInstallTime: {changed: 0, created: 0},
     changed: 0,
@@ -293,6 +295,7 @@ test('Firefox external crash-state diff allows only top-level crash reporter set
       crashReports: {changed: 0, created: 0, removed: 0},
       pendingPings: {changed: 0, created: 0, removed: 0}
     },
+    allowedCrashHelperLog: {changed: 0, created: 0},
     allowedCrashReporterSettings: {changed: 1, created: 0},
     allowedInstallTime: {changed: 0, created: 0},
     changed: 0,
@@ -322,6 +325,79 @@ test('Firefox external crash-state diff rejects settings removal, lookalikes, an
       crashReports: {changed: 0, created: 2, removed: 1},
       pendingPings: {changed: 0, created: 0, removed: 0}
     },
+    allowedCrashHelperLog: {changed: 0, created: 0},
+    allowedCrashReporterSettings: {changed: 0, created: 0},
+    allowedInstallTime: {changed: 0, created: 0},
+    changed: 0,
+    created: 2,
+    removed: 1
+  });
+});
+
+test('Firefox external crash-state diff allows only top-level crash helper log creation and change', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'atd-firefox-crash-helper-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  const appData = path.join(root, 'appdata');
+  const environment = {APPDATA: appData};
+  const options = {resolveApplicationData: () => appData};
+  const [{root: crashReports}] = externalFirefoxCrashRoots(environment, 'win32', options);
+  await mkdir(crashReports, {recursive: true});
+
+  const beforeCreation = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  const helperLog = path.join(crashReports, 'CrAsH_HeLpEr_SeRvEr.LoG');
+  await writeFile(helperLog, 'ordinary startup log');
+  const afterCreation = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  assert.deepEqual(diffExternalFirefoxCrashState(beforeCreation, afterCreation), {
+    categories: {
+      crashReports: {changed: 0, created: 0, removed: 0},
+      pendingPings: {changed: 0, created: 0, removed: 0}
+    },
+    allowedCrashHelperLog: {changed: 0, created: 1},
+    allowedCrashReporterSettings: {changed: 0, created: 0},
+    allowedInstallTime: {changed: 0, created: 0},
+    changed: 0,
+    created: 0,
+    removed: 0
+  });
+
+  await writeFile(helperLog, 'ordinary startup log changed');
+  const afterChange = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  assert.deepEqual(diffExternalFirefoxCrashState(afterCreation, afterChange), {
+    categories: {
+      crashReports: {changed: 0, created: 0, removed: 0},
+      pendingPings: {changed: 0, created: 0, removed: 0}
+    },
+    allowedCrashHelperLog: {changed: 1, created: 0},
+    allowedCrashReporterSettings: {changed: 0, created: 0},
+    allowedInstallTime: {changed: 0, created: 0},
+    changed: 0,
+    created: 0,
+    removed: 0
+  });
+});
+
+test('Firefox external crash-state diff rejects helper-log removal, lookalikes, and nested names', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'atd-firefox-crash-helper-negative-'));
+  t.after(() => rm(root, {force: true, recursive: true}));
+  const appData = path.join(root, 'appdata');
+  const environment = {APPDATA: appData};
+  const options = {resolveApplicationData: () => appData};
+  const [{root: crashReports}] = externalFirefoxCrashRoots(environment, 'win32', options);
+  await mkdir(path.join(crashReports, 'nested'), {recursive: true});
+  const helperLog = path.join(crashReports, 'crash_helper_server.log');
+  await writeFile(helperLog, 'baseline');
+  const before = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+
+  await rm(helperLog);
+  await writeFile(path.join(crashReports, 'crash_helper_server.log.1'), 'lookalike');
+  await writeFile(path.join(crashReports, 'nested', 'crash_helper_server.log'), 'nested');
+  const after = snapshotExternalFirefoxCrashState(environment, 'win32', options);
+  assert.deepEqual(diffExternalFirefoxCrashState(before, after), {
+    categories: {
+      crashReports: {changed: 0, created: 2, removed: 1},
+      pendingPings: {changed: 0, created: 0, removed: 0}
+    },
+    allowedCrashHelperLog: {changed: 0, created: 0},
     allowedCrashReporterSettings: {changed: 0, created: 0},
     allowedInstallTime: {changed: 0, created: 0},
     changed: 0,
