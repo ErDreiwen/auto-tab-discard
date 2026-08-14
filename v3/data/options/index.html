@@ -200,10 +200,6 @@
         </tr>
       </thead>
       <tbody>
-        <tr class="disabled">
-          <td><input type="checkbox" id="./plugins/dummy/core.js"></td>
-          <td colspan="2"><label for="./plugins/dummy/core.js" data-i18n="options_plugin_dummy"></label></td>
-        </tr>
         <tr>
           <td><input type="checkbox" id="./plugins/blank/core.js"></td>
           <td colspan="2"><label for="./plugins/blank/core.js" data-i18n="options_plugin_blank"></label></td>
@@ -288,6 +284,16 @@
       <label data-i18n="options_feedback_desc"></label>
       <input type="button" value="Open GitHub issues" data-i18n="options_feedback_btn" data-i18n-value="value">
     </div>
+
+    <section id="diagnostics" aria-labelledby="diagnostics-title">
+      <h2 id="diagnostics-title" data-i18n="options_diagnostics_title">Diagnostics</h2>
+      <p class="wnt backup-note" data-i18n="options_diagnostics_privacy">Diagnostic history stays on this device until you download it. The sanitized log excludes URLs, page titles, hostnames, site rules, tab and window identifiers, and raw error messages.</p>
+      <p>
+        <input type="button" id="download-diagnostics" value="Download latest.log" data-i18n="options_diagnostics_download" data-i18n-value="value">
+        <input type="button" id="clear-diagnostics" value="Clear diagnostic history" data-i18n="options_diagnostics_clear" data-i18n-value="value">
+        <span id="diagnostics-info" role="status" aria-live="polite"></span>
+      </p>
+    </section>
 
     <p>
       <div class="wnt">

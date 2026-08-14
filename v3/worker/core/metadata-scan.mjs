@@ -1,7 +1,75 @@
 import {suspensionState} from './browser-state.mjs';
+import {failureCauseFrom} from './failure-causes.mjs';
 
 const METADATA_SCAN_CONCURRENCY = 4;
 const METADATA_SCAN_TIMEOUT = 10000;
+const METADATA_PHYSICAL_QUEUE_LIMIT = METADATA_SCAN_CONCURRENCY;
+
+// A logical scan may hit its deadline while chrome.scripting.executeScript is
+// still retained by the browser. Keep those physical operations leased across
+// later scans; otherwise every alarm can start another full concurrency batch.
+let metadataPhysicalActive = 0;
+const metadataPhysicalQueue = [];
+
+const metadataPhysicalPoolSnapshot = () => Object.freeze({
+  active: metadataPhysicalActive,
+  limit: METADATA_SCAN_CONCURRENCY,
+  maxQueued: METADATA_PHYSICAL_QUEUE_LIMIT,
+  queued: metadataPhysicalQueue.length
+});
+
+const createMetadataPhysicalLease = () => {
+  metadataPhysicalActive += 1;
+  let released = false;
+  return Object.freeze({
+    status: 'acquired',
+    release: () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      metadataPhysicalActive = Math.max(0, metadataPhysicalActive - 1);
+      while (metadataPhysicalActive < METADATA_SCAN_CONCURRENCY && metadataPhysicalQueue.length) {
+        const waiter = metadataPhysicalQueue.shift();
+        if (waiter.settled) {
+          continue;
+        }
+        waiter.settled = true;
+        clearTimeout(waiter.timer);
+        waiter.resolve(createMetadataPhysicalLease());
+      }
+    }
+  });
+};
+
+const acquireMetadataPhysicalLease = timeout => {
+  if (metadataPhysicalActive < METADATA_SCAN_CONCURRENCY) {
+    return Promise.resolve(createMetadataPhysicalLease());
+  }
+  if (metadataPhysicalQueue.length >= METADATA_PHYSICAL_QUEUE_LIMIT) {
+    return Promise.resolve(Object.freeze({status: 'capacity'}));
+  }
+
+  const remaining = Math.max(0, Number(timeout) || 0);
+  if (remaining === 0) {
+    return Promise.resolve(Object.freeze({status: 'deadline'}));
+  }
+  return new Promise(resolve => {
+    const waiter = {resolve, settled: false, timer: undefined};
+    waiter.timer = setTimeout(() => {
+      if (waiter.settled) {
+        return;
+      }
+      waiter.settled = true;
+      const index = metadataPhysicalQueue.indexOf(waiter);
+      if (index !== -1) {
+        metadataPhysicalQueue.splice(index, 1);
+      }
+      resolve(Object.freeze({status: 'deadline'}));
+    }, remaining);
+    metadataPhysicalQueue.push(waiter);
+  });
+};
 
 const positiveInteger = (value, fallback) => {
   const number = Number(value);
@@ -29,10 +97,11 @@ const settleBefore = (operation, timeout) => new Promise(resolve => {
 // kept in input order even though workers can finish in any order.
 const runBoundedScan = async (items, worker, options = {}) => {
   const input = [...items];
-  const concurrency = Math.min(input.length || 1, positiveInteger(
-    options.concurrency,
-    METADATA_SCAN_CONCURRENCY
-  ));
+  const concurrency = Math.min(
+    input.length || 1,
+    METADATA_SCAN_CONCURRENCY,
+    positiveInteger(options.concurrency, METADATA_SCAN_CONCURRENCY)
+  );
   const timeout = Math.max(0, Number.isFinite(Number(options.timeout)) ?
     Number(options.timeout) : METADATA_SCAN_TIMEOUT);
   const now = typeof options.now === 'function' ? options.now : Date.now;
@@ -40,6 +109,8 @@ const runBoundedScan = async (items, worker, options = {}) => {
   const deadline = startedAt + timeout;
   const outcomes = new Array(input.length);
   let cursor = 0;
+  let capacityReached = false;
+  let started = 0;
 
   const take = () => {
     if (cursor >= input.length || now() >= deadline) {
@@ -57,24 +128,47 @@ const runBoundedScan = async (items, worker, options = {}) => {
         return;
       }
 
+      const lease = await acquireMetadataPhysicalLease(deadline - now());
+      if (lease.status !== 'acquired') {
+        capacityReached ||= lease.status === 'capacity';
+        outcomes[entry.index] = {
+          ...entry,
+          reason: lease.status === 'capacity' ? 'physical-capacity' : 'deadline',
+          started: false,
+          status: lease.status
+        };
+        return;
+      }
+
+      const beforeStart = deadline - now();
+      if (beforeStart <= 0) {
+        lease.release();
+        outcomes[entry.index] = {...entry, reason: 'deadline', started: false, status: 'deadline'};
+        return;
+      }
+
       let operation;
+      started += 1;
       try {
         operation = worker(entry.item, entry.index);
       }
       catch (error) {
         operation = Promise.reject(error);
       }
+      // A logical deadline does not release physical capacity. Only the
+      // underlying browser operation settling can admit another injection.
+      Promise.resolve(operation).then(lease.release, lease.release);
 
       const remaining = deadline - now();
       if (remaining <= 0) {
         // Attach a rejection handler even though this late result is ignored.
         Promise.resolve(operation).catch(() => {});
-        outcomes[entry.index] = {...entry, status: 'deadline'};
+        outcomes[entry.index] = {...entry, reason: 'deadline', started: true, status: 'deadline'};
         return;
       }
 
       const outcome = await settleBefore(operation, remaining);
-      outcomes[entry.index] = {...entry, ...outcome};
+      outcomes[entry.index] = {...entry, ...outcome, started: true};
       if (outcome.status === 'deadline') {
         return;
       }
@@ -86,10 +180,12 @@ const runBoundedScan = async (items, worker, options = {}) => {
   // Work not started before the shared deadline is skipped without ever calling
   // the injection function. Running work that hit the deadline is skipped too.
   for (let index = cursor; index < input.length; index += 1) {
+    const status = capacityReached && now() < deadline ? 'capacity' : 'deadline';
     outcomes[index] = {
       index,
       item: input[index],
-      status: 'deadline',
+      reason: status === 'capacity' ? 'physical-capacity' : 'deadline',
+      status,
       started: false
     };
   }
@@ -116,7 +212,7 @@ const runBoundedScan = async (items, worker, options = {}) => {
       skipped.push({
         index: outcome.index,
         item: outcome.item,
-        reason: 'deadline',
+        reason: outcome.reason || 'deadline',
         started: outcome.started !== false
       });
     }
@@ -126,7 +222,7 @@ const runBoundedScan = async (items, worker, options = {}) => {
     completed,
     failed,
     skipped,
-    started: cursor,
+    started,
     total: input.length,
     timedOut: skipped.length !== 0,
     elapsed: Math.max(0, now() - startedAt)
@@ -335,6 +431,7 @@ const loadedDiscardOutcomes = results => {
     }
     else {
       failed.push({
+        failureCause: failureCauseFrom(result.error || result.value),
         tab: result.tab,
         reason: result.error ?
           `loaded discard failed: ${result.error.message || String(result.error)}` :
@@ -368,6 +465,7 @@ export {
   METADATA_SCAN_TIMEOUT,
   loadedDiscardOutcomes,
   metadataFlightKey,
+  metadataPhysicalPoolSnapshot,
   partitionFrozenTabs,
   runBoundedScan,
   runDiscardCandidates,

@@ -125,7 +125,10 @@ sends a `storage` message whose two sentinels must return through the module wor
 
 The report binds the normalized extracted-tree SHA-256, exact browser version, and exact Playwright driver version. The
 short opaque profile name keeps Chromium 102's Windows managed-storage LevelDB path below legacy `MAX_PATH`; an
-overlong caller-supplied profile root is rejected before launch. A pass additionally requires no crash dumps, a CDP PID
+overlong caller-supplied profile root is rejected before launch. Its packaged managed schema also deliberately omits the
+top-level `additionalProperties` keyword, which Chromium 102 cannot parse without hanging before DevTools; explicit
+policy catalog parity and the settings transaction validator retain fail-closed coverage for supported and unknown keys.
+A pass additionally requires no crash dumps, a CDP PID
 matching the controller-created browser handle, an explicit CDP `Browser.close` request with no forced Job termination,
 kernel Job `ACTIVE_PROCESS_ZERO`, controller exit, and only then deletion
 of the isolated profile. This is intentionally a compatibility proof; current Chrome and Edge channels continue to run the full

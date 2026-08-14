@@ -116,8 +116,44 @@
       "title": "Delay for painting the discarded favicon (in milliseconds)",
       "type": "number"
     },
+    "./plugins/blank/core.js": {
+      "title": "Enable the blank-page plug-in",
+      "type": "boolean"
+    },
+    "./plugins/focus/core.js": {
+      "title": "Enable the focus plug-in",
+      "type": "boolean"
+    },
+    "./plugins/trash/core.js": {
+      "title": "Enable the discarded-tab trash plug-in",
+      "type": "boolean"
+    },
+    "./plugins/force/core.js": {
+      "title": "Enable the forced-discard plug-in",
+      "type": "boolean"
+    },
+    "./plugins/next/core.js": {
+      "title": "Enable the release-next-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/previous/core.js": {
+      "title": "Enable the release-previous-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/new/core.js": {
+      "title": "Enable the new-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/unloaded/core.js": {
+      "title": "Enable the unloaded-tab plug-in",
+      "type": "boolean"
+    },
+    "./plugins/youtube/core.js": {
+      "title": "Enable the YouTube plug-in",
+      "type": "boolean"
+    },
     "trash.enabled": {
-      "title": "Trash old discarded tabs",
+      "title": "Legacy policy alias for the discarded-tab trash plug-in",
       "type": "boolean"
     },
     "trash.period": {
@@ -137,7 +173,7 @@
       "type": "boolean"
     },
     "release-next-tab": {
-      "title": "Release discarding of the next tab if it is discarded",
+      "title": "Legacy policy alias for the release-next-tab plug-in",
       "type": "boolean"
     }
   }

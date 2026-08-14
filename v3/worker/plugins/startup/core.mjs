@@ -59,7 +59,7 @@ const observe = () => {
   }
   if (prefs['startup-release-pinned'] && prefs['startup-pinned'] === false) {
     const scope = startupPinnedReleaseScope();
-    query(scope.query).then(tabs => releaseMatching(tabs, scope.matches))
+    query(scope.query).then(tabs => releaseMatching(tabs, scope))
       .catch(error => log('startup pinned release failed', error));
   }
 };

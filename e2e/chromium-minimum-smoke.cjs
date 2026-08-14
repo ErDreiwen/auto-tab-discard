@@ -218,6 +218,8 @@ const validateRuntimeIdentity = ({expectedId, expectedVersion, probe}) => {
   ensure(probe?.version === expectedVersion, 'extension page runtime version did not match the packaged manifest');
   ensure(probe?.origin === `chrome-extension://${expectedId}`,
     'extension page did not retain the service-worker extension origin');
+  ensure(probe?.webLocks === true,
+    'extension options realm does not expose the required Web Locks API');
   return true;
 };
 
@@ -419,7 +421,8 @@ const run = async () => {
     const identityProbe = await page.evaluate(() => ({
       id: chrome.runtime.id,
       origin: location.origin,
-      version: chrome.runtime.getManifest().version
+      version: chrome.runtime.getManifest().version,
+      webLocks: typeof navigator.locks?.request === 'function'
     }));
     validateRuntimeIdentity({
       expectedId: extensionId,
@@ -511,8 +514,9 @@ const run = async () => {
       })
     });
     validateRuntimeRoundTrip(readiness.probe);
-    pass('storage runtime message completes a module-worker round trip', {
+    pass('storage runtime message completes a module-worker Web Lock round trip', {
       attempts: readiness.attempts,
+      serviceWorkerWebLockAcquired: true,
       serviceWorkerTargetChurn: Math.max(0, observedWorkerTargets.size - 1),
       serviceWorkerTargetsObserved: observedWorkerTargets.size
     });

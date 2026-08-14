@@ -13,6 +13,15 @@ const event = () => ({
   removeListener() {}
 });
 
+const runNativeGuard = async (task, id, allowedAttemptId, preflight) => {
+  if (typeof preflight === 'function' && await preflight() !== true) {
+    const error = Error('native mutation scope is no longer authorized');
+    error.code = 'NATIVE_SCOPE_INVALID';
+    throw error;
+  }
+  return task();
+};
+
 const loadFactory = async () => {
   const storageArea = {
     get(defaults, callback) {
@@ -88,7 +97,7 @@ const fixture = (createReleaseHelper, apiStyle = 'callback') => {
     resolveId,
     runtime: () => ({lastError: null}),
     tabs: () => ({get, reload}),
-    withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
     unfreeze: async tab => {
       calls.push(`unfreeze:${tab.id}`);
       const loaded = {...tab, frozen: false, status: 'complete'};
@@ -146,7 +155,7 @@ test('shared release cancels takeover before one wake and does not erase a concu
       invalidate: async id => f.invalidated.push(id),
       resolveId: id => id,
       runtime: () => ({lastError: null}),
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           callback(f.liveTabs.get(id));
@@ -191,7 +200,7 @@ test('accepted Edge reload callback error is settled from live replacement state
       invalidate: async id => calls.push(`invalidate:${id}`),
       resolveId,
       runtime: () => runtime,
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           callback(live.get(id));
@@ -241,7 +250,7 @@ test('stable release does not invalidate a newer ownership attempt', async () =>
       invalidate: async id => invalidated.push(id),
       resolveId: id => id,
       runtime: () => ({lastError: null}),
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           callback(live.get(id));
@@ -316,7 +325,7 @@ test('accepted callback release reports a stable retained-frozen successor after
       },
       resolveId,
       runtime: () => ({lastError: null}),
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           calls.push(`get:${id}`);
@@ -403,7 +412,7 @@ test('promise release preserves a newer owner when its successor remains frozen'
       invalidate: async id => calls.push(`invalidate:${id}`),
       resolveId,
       runtime: () => ({lastError: null}),
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id) {
           calls.push(`get:${id}`);
@@ -467,7 +476,7 @@ test('callback error with an unchanged frozen row fails without retry or ownersh
       invalidate: async id => calls.push(`invalidate:${id}`),
       resolveId: id => id,
       runtime: () => runtime,
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           callback(frozen);
@@ -523,7 +532,7 @@ test('one reload settles complete with false or absent frozen capability', async
         },
         resolveId: id => id,
         runtime: () => ({lastError: null}),
-        withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
         tabs: () => ({
           get(id, callback) {
             callback({...live});
@@ -572,7 +581,7 @@ test('restart release fails closed for unresolved direct native intent then relo
         invalidate: async () => { marker = undefined; calls.push('invalidate'); },
         resolveId: id => id,
         runtime: () => ({lastError: null}),
-        withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
         tabs: () => ({
           get(id, callback) { callback({...live}); },
           reload(id, options, callback) {
@@ -624,7 +633,7 @@ test('unattributed direct native orphan blocks release before any tab read or mu
       },
       resolveId: id => id,
       runtime: () => ({lastError: null}),
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           calls.push(`get:${id}`);
@@ -675,7 +684,7 @@ test('plugin release unions an awake in-flight takeover omitted by discarded que
       invalidate: async id => calls.push(`invalidate:${id}`),
       resolveId: id => id,
       runtime: () => ({lastError: null}),
-      withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
       tabs: () => ({
         get(id, callback) {
           calls.push(`get:${id}`);
@@ -705,52 +714,489 @@ test('plugin release unions an awake in-flight takeover omitted by discarded que
 });
 
 test('release plugin scopes preserve geometry while admitting awake takeover phases', () => {
-  const focus = focusReleaseScope(8);
-  assert.equal(focus.matches({active: true, discarded: false, windowId: 8}), true);
-  assert.equal(focus.matches({active: false, discarded: true, windowId: 9}), false);
+  const focus = focusReleaseScope({incognito: false, windowId: 8});
+  assert.equal(focus.matches({active: true, discarded: false, incognito: false, windowId: 8}), true);
+  assert.equal(focus.matches({active: false, discarded: true, incognito: false, windowId: 9}), false);
+  assert.equal(focus.matches({active: false, discarded: true, incognito: true, windowId: 8}), false);
+  assert.equal(focus.matches({
+    active: false,
+    discarded: true,
+    incognito: false,
+    windowId: 8,
+    windowType: 'popup'
+  }), false);
+  assert.deepEqual(focus.expectedScope, {
+    incognito: false,
+    windowId: 8,
+    windowType: 'normal'
+  });
+  assert.equal(Object.isFrozen(focus.expectedScope), true);
   assert.equal(focusReleaseScope(undefined), undefined);
 
-  const next = nextReleaseScope({windowId: 8}, {index: 3, windowId: 8});
-  assert.equal(next.matches({active: true, discarded: false, index: 4, windowId: 8}), true);
-  assert.equal(next.matches({active: false, discarded: true, index: 5, windowId: 8}), false);
+  const next = nextReleaseScope({windowId: 8}, {incognito: false, index: 3, windowId: 8});
+  assert.equal(next.matches({
+    active: true,
+    discarded: false,
+    incognito: false,
+    index: 4,
+    windowId: 8
+  }), true);
+  assert.equal(next.matches({
+    active: false,
+    discarded: true,
+    incognito: false,
+    index: 5,
+    windowId: 8
+  }), false);
   assert.equal(nextReleaseScope({windowId: 8}, undefined), undefined);
 
-  const previous = previousReleaseScope({windowId: 8}, {index: 1, windowId: 8});
-  assert.equal(previous.matches({active: true, discarded: false, index: 0, windowId: 8}), true);
-  assert.equal(previousReleaseScope({windowId: 8}, {index: 0, windowId: 8}), undefined);
+  const previous = previousReleaseScope({windowId: 8}, {
+    incognito: false,
+    index: 1,
+    windowId: 8
+  });
+  assert.equal(previous.matches({
+    active: true,
+    discarded: false,
+    incognito: false,
+    index: 0,
+    windowId: 8
+  }), true);
+  assert.equal(previousReleaseScope({windowId: 8}, {
+    incognito: false,
+    index: 0,
+    windowId: 8
+  }), undefined);
 
   const startup = startupPinnedReleaseScope();
-  assert.equal(startup.matches({active: true, discarded: false, pinned: true, url: 'https://awake.example/'}), true);
-  assert.equal(startup.matches({active: false, discarded: true, pinned: false, url: 'https://peer.example/'}), false);
-  assert.equal(startup.matches({active: false, discarded: true, pinned: true, url: 'file:///peer.html'}), false);
+  assert.equal(startup.matches({
+    active: true,
+    discarded: false,
+    incognito: false,
+    pinned: true,
+    url: 'https://awake.example/',
+    windowId: 8
+  }), true);
+  assert.equal(startup.matches({
+    active: false,
+    discarded: true,
+    incognito: false,
+    pinned: false,
+    url: 'https://peer.example/',
+    windowId: 8
+  }), false);
+  assert.equal(startup.matches({
+    active: false,
+    discarded: true,
+    incognito: false,
+    pinned: true,
+    url: 'file:///peer.html',
+    windowId: 8
+  }), false);
+});
+
+test('plugin release rejects non-normal, uncertain, private-crossing, and moved targets before mutation', async t => {
+  const createReleaseHelper = await loadFactory();
+  const scope = focusReleaseScope({incognito: false, windowId: 8});
+  const base = {
+    active: false,
+    discarded: true,
+    frozen: false,
+    id: 80,
+    incognito: false,
+    status: 'unloaded',
+    windowId: 8
+  };
+  const cases = [{
+    name: 'popup window',
+    windowInfo: {id: 8, incognito: false, type: 'popup'}
+  }, {
+    name: 'app window',
+    windowInfo: {id: 8, incognito: false, type: 'app'}
+  }, {
+    name: 'missing window type',
+    windowInfo: {id: 8, incognito: false}
+  }, {
+    name: 'missing window',
+    windowInfo: undefined
+  }, {
+    live: {...base, windowId: 9},
+    name: 'tab moved to another window',
+    windowInfo: {id: 8, incognito: false, type: 'normal'}
+  }];
+
+  try {
+    for (const scenario of cases) {
+      await t.test(scenario.name, async () => {
+        const calls = [];
+        const live = scenario.live || base;
+        const {releaseMatching} = createReleaseHelper({
+          cancelTakeover: async id => calls.push(`cancel:${id}`),
+          getStatus: async () => ({marker: {source: 'claimed', updatedAt: 1}}),
+          invalidate: async id => calls.push(`invalidate:${id}`),
+          reserveRelease: () => ({release() {}}),
+          resolveId: id => id,
+          runtime: () => ({lastError: null}),
+          tabs: () => ({
+            get(id, callback) {
+              calls.push(`get:${id}`);
+              callback({...live});
+            },
+            reload(id, options, callback) {
+              calls.push(`reload:${id}`);
+              callback();
+            }
+          }),
+          takeoverSnapshot: () => [],
+          windows: () => ({
+            get(id, callback) {
+              calls.push(`window:${id}`);
+              callback(scenario.windowInfo);
+            }
+          }),
+          withNativeMutationGuard: runNativeGuard
+        });
+
+        await assert.rejects(
+          releaseMatching([base], scope),
+          error => error.code === 'TAB_RELEASE_SCOPE_CHANGED'
+        );
+        assert.equal(calls.some(call => call.startsWith('cancel:')), false);
+        assert.equal(calls.some(call => call.startsWith('reload:')), false);
+        assert.equal(calls.some(call => call.startsWith('invalidate:')), false);
+      });
+    }
+
+    await t.test('opposite privacy is never admitted', async () => {
+      const calls = [];
+      const opposite = {...base, incognito: true};
+      const {releaseMatching} = createReleaseHelper({
+        cancelTakeover: async id => calls.push(`cancel:${id}`),
+        invalidate: async id => calls.push(`invalidate:${id}`),
+        tabs: () => ({
+          get(id, callback) {
+            calls.push(`get:${id}`);
+            callback(opposite);
+          },
+          reload(id, options, callback) {
+            calls.push(`reload:${id}`);
+            callback();
+          }
+        }),
+        takeoverSnapshot: () => []
+      });
+      assert.deepEqual(await releaseMatching([opposite], scope), []);
+      assert.deepEqual(calls, []);
+    });
+
+    await t.test('takeover snapshot cannot replace startup query scope after a move', async () => {
+      const calls = [];
+      const startupScope = startupPinnedReleaseScope();
+      const queried = {
+        ...base,
+        pinned: true,
+        url: 'https://startup-query.example/'
+      };
+      const moved = {...queried, windowId: 9};
+      const {releaseMatching} = createReleaseHelper({
+        cancelTakeover: async id => calls.push(`cancel:${id}`),
+        getStatus: async () => ({marker: {source: 'claimed', updatedAt: 1}}),
+        invalidate: async id => calls.push(`invalidate:${id}`),
+        reserveRelease: () => ({release() {}}),
+        resolveId: id => id,
+        runtime: () => ({lastError: null}),
+        tabs: () => ({
+          get(id, callback) {
+            calls.push(`get:${id}`);
+            callback({...moved});
+          },
+          reload(id, options, callback) {
+            calls.push(`reload:${id}`);
+            callback();
+          }
+        }),
+        takeoverSnapshot: () => [{id: queried.id, tab: {...queried}}],
+        windows: () => ({
+          get(id, callback) {
+            calls.push(`window:${id}`);
+            callback({id, incognito: false, type: 'normal'});
+          }
+        }),
+        withNativeMutationGuard: runNativeGuard
+      });
+
+      await assert.rejects(
+        releaseMatching([queried], startupScope),
+        error => error.code === 'TAB_RELEASE_SCOPE_CHANGED'
+      );
+      assert.equal(calls.some(call => call.startsWith('cancel:')), false);
+      assert.equal(calls.some(call => call.startsWith('reload:')), false);
+      assert.equal(calls.some(call => call.startsWith('invalidate:')), false);
+    });
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('plugin release revalidates attachment and replacement lineage after cancellation', async t => {
+  const createReleaseHelper = await loadFactory();
+  const scope = focusReleaseScope({incognito: false, windowId: 8});
+  const original = {
+    active: false,
+    discarded: true,
+    frozen: false,
+    id: 90,
+    incognito: false,
+    status: 'unloaded',
+    windowId: 8
+  };
+  try {
+    for (const replacement of [false, true]) {
+      await t.test(replacement ? 'replacement crosses the window boundary' :
+        'attachment crosses the window boundary', async () => {
+        const calls = [];
+        const successorId = 91;
+        const lineage = new Map();
+        const live = new Map([[original.id, {...original}]]);
+        const resolveId = id => lineage.get(id) || id;
+        const {releaseMatching} = createReleaseHelper({
+          cancelTakeover: async id => {
+            calls.push(`cancel:${id}`);
+            if (replacement) {
+              lineage.set(original.id, successorId);
+              live.delete(original.id);
+              live.set(successorId, {...original, id: successorId, windowId: 9});
+            }
+            else {
+              live.set(original.id, {...original, windowId: 9});
+            }
+          },
+          getStatus: async () => ({marker: {source: 'claimed', updatedAt: 1}}),
+          invalidate: async id => calls.push(`invalidate:${id}`),
+          reserveRelease: () => ({release() {}}),
+          resolveId,
+          runtime: () => ({lastError: null}),
+          tabs: () => ({
+            get(id, callback) {
+              calls.push(`get:${id}`);
+              callback(live.get(id));
+            },
+            reload(id, options, callback) {
+              calls.push(`reload:${id}`);
+              callback();
+            }
+          }),
+          takeoverSnapshot: () => [],
+          windows: () => ({
+            get(id, callback) {
+              calls.push(`window:${id}`);
+              callback({id, incognito: false, type: 'normal'});
+            }
+          }),
+          withNativeMutationGuard: runNativeGuard
+        });
+
+        await assert.rejects(
+          releaseMatching([original], scope),
+          error => error.code === 'TAB_RELEASE_SCOPE_CHANGED'
+        );
+        assert.equal(calls.filter(call => call === `cancel:${original.id}`).length, 1);
+        assert.equal(calls.some(call => call.startsWith('reload:')), false);
+        assert.equal(calls.some(call => call.startsWith('invalidate:')), false);
+      });
+    }
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('plugin release checks scope immediately before reload and invalidation', async t => {
+  const createReleaseHelper = await loadFactory();
+  const scope = focusReleaseScope({incognito: false, windowId: 8});
+  const original = {
+    active: false,
+    discarded: true,
+    frozen: false,
+    id: 95,
+    incognito: false,
+    status: 'unloaded',
+    windowId: 8
+  };
+  try {
+    await t.test('window type changes inside the native mutation guard', async () => {
+      const calls = [];
+      let windowReads = 0;
+      const {releaseMatching} = createReleaseHelper({
+        cancelTakeover: async id => calls.push(`cancel:${id}`),
+        getStatus: async () => ({marker: {source: 'claimed', updatedAt: 1}}),
+        invalidate: async id => calls.push(`invalidate:${id}`),
+        reserveRelease: () => ({release() {}}),
+        resolveId: id => id,
+        runtime: () => ({lastError: null}),
+        tabs: () => ({
+          get(id, callback) {
+            calls.push(`get:${id}`);
+            callback({...original});
+          },
+          reload(id, options, callback) {
+            calls.push(`reload:${id}`);
+            callback();
+          }
+        }),
+        takeoverSnapshot: () => [],
+        windows: () => ({
+          get(id, callback) {
+            windowReads += 1;
+            calls.push(`window:${id}:${windowReads}`);
+            callback({
+              id,
+              incognito: false,
+              type: windowReads >= 4 ? 'popup' : 'normal'
+            });
+          }
+        }),
+        withNativeMutationGuard: runNativeGuard
+      });
+
+      await assert.rejects(
+        releaseMatching([original], scope),
+        error => error.code === 'TAB_RELEASE_SCOPE_CHANGED'
+      );
+      assert.equal(calls.filter(call => call === `cancel:${original.id}`).length, 1);
+      assert.equal(calls.some(call => call.startsWith('reload:')), false);
+      assert.equal(calls.some(call => call.startsWith('invalidate:')), false);
+    });
+
+    await t.test('native scope rejection maps to a safe release-scope failure', async () => {
+      const calls = [];
+      let tabReads = 0;
+      const {releaseMatching} = createReleaseHelper({
+        cancelTakeover: async id => calls.push(`cancel:${id}`),
+        getStatus: async () => ({marker: {source: 'claimed', updatedAt: 1}}),
+        invalidate: async id => calls.push(`invalidate:${id}`),
+        reserveRelease: () => ({release() {}}),
+        resolveId: id => id,
+        runtime: () => ({lastError: null}),
+        tabs: () => ({
+          get(id, callback) {
+            tabReads += 1;
+            calls.push(`get:${id}:${tabReads}`);
+            callback(tabReads >= 4 ? {
+              ...original,
+              discarded: false,
+              status: 'complete'
+            } : {...original});
+          },
+          reload(id, options, callback) {
+            calls.push(`reload:${id}`);
+            callback();
+          }
+        }),
+        takeoverSnapshot: () => [],
+        windows: () => ({
+          get(id, callback) {
+            calls.push(`window:${id}`);
+            callback({id, incognito: false, type: 'normal'});
+          }
+        }),
+        withNativeMutationGuard: runNativeGuard
+      });
+
+      await assert.rejects(releaseMatching([original], scope), error => {
+        assert.equal(error?.code, 'TAB_RELEASE_SCOPE_CHANGED');
+        assert.equal(error?.disposition, 'scope-changed');
+        assert.equal(error?.retryable, false);
+        return true;
+      });
+      assert.equal(tabReads, 4, 'the state change is observed only by guarded preflight');
+      assert.equal(calls.some(call => call.startsWith('reload:')), false);
+      assert.equal(calls.some(call => call.startsWith('invalidate:')), false);
+    });
+
+    await t.test('attachment after settlement cannot erase ownership', async () => {
+      const calls = [];
+      let statusReads = 0;
+      let live = {...original};
+      const marker = {source: 'claimed', updatedAt: 1};
+      const {releaseMatching, releaseTab} = createReleaseHelper({
+        cancelTakeover: async id => calls.push(`cancel:${id}`),
+        getStatus: async () => {
+          statusReads += 1;
+          if (statusReads === 3) {
+            live = {...live, windowId: 9};
+          }
+          return {marker};
+        },
+        invalidate: async id => calls.push(`invalidate:${id}`),
+        reserveRelease: () => ({release() {}}),
+        resolveId: id => id,
+        runtime: () => ({lastError: null}),
+        tabs: () => ({
+          get(id, callback) {
+            calls.push(`get:${id}`);
+            callback({...live});
+          },
+          reload(id, options, callback) {
+            calls.push(`reload:${id}`);
+            live = {...live, discarded: false, frozen: false, status: 'complete'};
+            callback();
+          }
+        }),
+        takeoverSnapshot: () => [],
+        windows: () => ({
+          get(id, callback) {
+            calls.push(`window:${id}`);
+            callback({id, incognito: false, type: 'normal'});
+          }
+        }),
+        withNativeMutationGuard: runNativeGuard
+      });
+      releaseTab.interval = 0;
+      releaseTab.polls = 10;
+      releaseTab.stableReads = 2;
+
+      await assert.rejects(
+        releaseMatching([original], scope),
+        error => error.code === 'TAB_RELEASE_SCOPE_CHANGED'
+      );
+      assert.equal(calls.filter(call => call === `cancel:${original.id}`).length, 1);
+      assert.equal(calls.filter(call => call === `reload:${original.id}`).length, 1);
+      assert.equal(calls.some(call => call.startsWith('invalidate:')), false);
+    });
+  }
+  finally {
+    delete globalThis.chrome;
+  }
 });
 
 test('every release plugin wins deterministically over every in-flight takeover phase', async t => {
   const createReleaseHelper = await loadFactory();
   const scopeCases = [{
-    expectedQuery: {active: false, windowId: 8},
+    expectedQuery: {active: false, windowId: 8, windowType: 'normal'},
     name: 'focus',
-    peer: {index: 4, pinned: true, url: 'https://peer.example/', windowId: 9},
-    scope: focusReleaseScope(8),
-    target: {index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
+    peer: {incognito: false, index: 4, pinned: true, url: 'https://peer.example/', windowId: 9},
+    scope: focusReleaseScope({incognito: false, windowId: 8}),
+    target: {incognito: false, index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
   }, {
-    expectedQuery: {index: 4, windowId: 8},
+    expectedQuery: {index: 4, windowId: 8, windowType: 'normal'},
     name: 'next',
-    peer: {index: 5, pinned: true, url: 'https://peer.example/', windowId: 8},
-    scope: nextReleaseScope({windowId: 8}, {index: 3, windowId: 8}),
-    target: {index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
+    peer: {incognito: false, index: 5, pinned: true, url: 'https://peer.example/', windowId: 8},
+    scope: nextReleaseScope({windowId: 8}, {incognito: false, index: 3, windowId: 8}),
+    target: {incognito: false, index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
   }, {
-    expectedQuery: {index: 4, windowId: 8},
+    expectedQuery: {index: 4, windowId: 8, windowType: 'normal'},
     name: 'previous',
-    peer: {index: 3, pinned: true, url: 'https://peer.example/', windowId: 8},
-    scope: previousReleaseScope({windowId: 8}, {index: 5, windowId: 8}),
-    target: {index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
+    peer: {incognito: false, index: 3, pinned: true, url: 'https://peer.example/', windowId: 8},
+    scope: previousReleaseScope({windowId: 8}, {incognito: false, index: 5, windowId: 8}),
+    target: {incognito: false, index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
   }, {
-    expectedQuery: {url: '*://*/*', active: false, pinned: true},
+    expectedQuery: {url: '*://*/*', active: false, pinned: true, windowType: 'normal'},
     name: 'startup-pinned',
-    peer: {index: 4, pinned: false, url: 'https://peer.example/', windowId: 8},
+    peer: {incognito: false, index: 4, pinned: false, url: 'https://peer.example/', windowId: 8},
     scope: startupPinnedReleaseScope(),
-    target: {index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
+    target: {incognito: false, index: 4, pinned: true, url: 'https://target.example/', windowId: 8}
   }];
   const phases = [{
     active: false,
@@ -874,7 +1320,7 @@ test('every release plugin wins deterministically over every in-flight takeover 
             },
             resolveId,
             runtime: () => ({lastError: null}),
-            withNativeMutationGuard: task => task(),
+    withNativeMutationGuard: runNativeGuard,
             tabs: () => ({
               get(id, callback) {
                 calls.push(`get:${id}`);
@@ -900,13 +1346,19 @@ test('every release plugin wins deterministically over every in-flight takeover 
               started: phase.started,
               tab: {id: peerId, ...scopeCase.peer}
             }],
-            unfreeze: async () => assert.fail('these phases never use the frozen release path')
+            unfreeze: async () => assert.fail('these phases never use the frozen release path'),
+            windows: () => ({
+              get(id, callback) {
+                calls.push(`window:${id}`);
+                callback({id, incognito: false, type: 'normal'});
+              }
+            })
           });
           releaseTab.interval = 0;
           releaseTab.polls = 10;
           releaseTab.stableReads = 2;
 
-          const released = await releaseMatching([], scopeCase.scope.matches);
+          const released = await releaseMatching([], scopeCase.scope);
           const finalId = resolveId(targetId);
           // Model the old job reaching its final rediscard callback after the
           // release returns. It is allowed to mutate only when the plugin
@@ -964,7 +1416,7 @@ test('focus, next, previous, and startup releases all use the shared helper', as
     assert.match(source, /releaseMatching/);
     assert.match(source, /release-scopes\.mjs/);
     assert.match(source, /scope\.query/);
-    assert.match(source, /scope\.matches/);
+    assert.match(source, /releaseMatching\(tabs, scope\)/);
     assert.doesNotMatch(source, /chrome\.tabs\.reload/);
   }
 });

@@ -3,6 +3,7 @@ import {markerFallback, outcome} from './marker-fallback.mjs';
 import {classifySuspendedTarget} from './suspended-protection.mjs';
 import {tabInAllowedWindowScope} from './window-scope.mjs';
 import {suspensionState} from './browser-state.mjs';
+import {FAILURE_CAUSES, failureCauseFrom} from './failure-causes.mjs';
 
 const CURRENT_WINDOW_COMMANDS = new Set([
   'discard-window',
@@ -66,6 +67,7 @@ const queryCommandScope = async (query, options, {
         {cause}
       );
       error.code = 'TAB_QUERY_FAILED';
+      error.failureCause = FAILURE_CAUSES.SCOPE_QUERY_FAILED;
       error.command = command;
       error.phase = phase;
       error.query = {...options};
@@ -136,7 +138,13 @@ const uniqueTabs = (...groups) => {
 // normal active:false tab query. Scope only the jobs we knew about in memory;
 // broadening the browser query to active tabs would risk waking unrelated work.
 const scopeTakeoverTabs = (command, snapshot, selected) => {
-  let tabs = snapshotTabs(snapshot).filter(tab => tabInAllowedWindowScope(tab, selected));
+  // Unlike browser query results, takeover records are an internal authority
+  // for cancelling and reloading a temporarily active tab. Require both scope
+  // fields explicitly so a legacy/incomplete record can never default into a
+  // regular normal-window release.
+  let tabs = snapshotTabs(snapshot).filter(tab =>
+    tabInAllowedWindowScope(tab, selected, {requireExplicit: true})
+  );
   if (command === 'release-tabs') {
     return tabs;
   }
@@ -450,6 +458,7 @@ const prepareDiscardTargets = async (command, tabs, resolveFresh, {
     candidates,
     errors,
     failed: unknownOwnership.map(entry => ({
+      failureCause: FAILURE_CAUSES.OWNERSHIP_RESOLUTION_FAILED,
       reason: entry.reason,
       retryable: true,
       tab: entry.tab
@@ -480,6 +489,10 @@ const pushOutcome = (result, key, entry) => {
     result[key].push(entry);
   }
 };
+const failedOutcome = (tab, reason, source, fallback) => ({
+  ...outcome(tab, reason),
+  failureCause: failureCauseFrom(source, fallback)
+});
 
 const protectSuspendedTargets = async (result, suspendedPolicy, shiftKey) => {
   // Keeping this hook optional preserves pure callers and lets embedders that do
@@ -548,8 +561,9 @@ const tabForOutcome = (entry, tabs) => {
   }
 };
 
-const discardAccepted = value => value !== false && value?.status !== 'failed' && value?.status !== 'skipped' &&
-  value?.ok !== false;
+// Accept only an explicit success contract. Missing, malformed, and unknown
+// outcomes fail closed instead of becoming a false command success.
+const discardAccepted = value => value === true || value?.status === 'succeeded' || value?.ok === true;
 const discardFailureReason = (value, fallback) => value?.reason || fallback;
 
 const settleLoadedDiscards = async (result, tabs, discard, label = 'loaded discard') => {
@@ -557,6 +571,7 @@ const settleLoadedDiscards = async (result, tabs, discard, label = 'loaded disca
     try {
       const accepted = await discard(tab);
       return discardAccepted(accepted) === false ? {
+        failureCause: failureCauseFrom(accepted),
         reason: discardFailureReason(accepted, `${label} returned false`),
         state: 'failed',
         tab
@@ -564,6 +579,7 @@ const settleLoadedDiscards = async (result, tabs, discard, label = 'loaded disca
     }
     catch (error) {
       return {
+        failureCause: failureCauseFrom(error),
         reason: `${label} failed: ${error?.message || String(error)}`,
         state: 'failed',
         tab
@@ -573,7 +589,7 @@ const settleLoadedDiscards = async (result, tabs, discard, label = 'loaded disca
 
   for (const entry of settled) {
     pushOutcome(result, entry.state, entry.state === 'failed' ?
-      outcome(entry.tab, entry.reason) : {tab: entry.tab});
+      {...outcome(entry.tab, entry.reason), failureCause: entry.failureCause} : {tab: entry.tab});
   }
   return settled;
 };
@@ -588,9 +604,11 @@ const mergeCheckOutcomes = (result, checked, tabs) => {
   for (const entry of checked?.failed || []) {
     const tab = tabForOutcome(entry, tabs);
     if (tab) {
-      pushOutcome(result, 'failed', outcome(
+      pushOutcome(result, 'failed', failedOutcome(
         tab,
-        entry?.reason || 'normal discard returned false'
+        entry?.reason || 'normal discard returned false',
+        entry,
+        FAILURE_CAUSES.METADATA_CHECK_FAILED
       ));
     }
   }
@@ -608,9 +626,11 @@ const runCheckedDiscards = async (result, tabs, check) => {
   try {
     const checked = await check(tabs);
     if (checked === false) {
-      tabs.forEach(tab => pushOutcome(result, 'failed', outcome(
+      tabs.forEach(tab => pushOutcome(result, 'failed', failedOutcome(
         tab,
-        'normal discard check returned false'
+        'normal discard check returned false',
+        undefined,
+        FAILURE_CAUSES.METADATA_CHECK_FAILED
       )));
     }
     else {
@@ -618,9 +638,11 @@ const runCheckedDiscards = async (result, tabs, check) => {
     }
   }
   catch (error) {
-    tabs.forEach(tab => pushOutcome(result, 'failed', outcome(
+    tabs.forEach(tab => pushOutcome(result, 'failed', failedOutcome(
       tab,
-      `normal discard check failed: ${error?.message || String(error)}`
+      `normal discard check failed: ${error?.message || String(error)}`,
+      error,
+      FAILURE_CAUSES.METADATA_CHECK_FAILED
     )));
   }
 };
@@ -701,7 +723,7 @@ const runTakeovers = async (tabs, takeover, {
   const settled = await Promise.allSettled(tabs.map(async tab => {
     try {
       const value = await takeover(tab);
-      if (value === true || value?.ok === true) {
+      if (discardAccepted(value)) {
         await onSuccess(tab, value);
       }
       return value;
@@ -730,7 +752,7 @@ const runTakeovers = async (tabs, takeover, {
     }
   }));
   for (const [index, entry] of settled.entries()) {
-    if (entry.status === 'rejected' || (entry.value !== true && entry.value?.ok !== true)) {
+    if (entry.status === 'rejected' || discardAccepted(entry.value) === false) {
       const reason = entry.status === 'rejected' ?
         entry.reason?.message || String(entry.reason) :
         entry.value?.reason || 'takeover returned false';
@@ -810,8 +832,12 @@ const recordTakeoverSuccess = (result, tab, value) => {
   pushOutcome(result, 'succeeded', {tab: current});
 };
 
-const recordTakeoverFailure = (result, tab, reason) => {
-  pushOutcome(result, 'failed', outcome(tab, reason));
+const recordTakeoverFailure = (result, tab, reason, settled) => {
+  const source = settled?.status === 'rejected' ? settled.reason : settled?.value;
+  pushOutcome(result, 'failed', {
+    ...outcome(tab, reason),
+    failureCause: failureCauseFrom(source, FAILURE_CAUSES.TAKEOVER_FAILED)
+  });
 };
 
 const commitDirectScope = async (commitScope, result, targets) => {
@@ -863,6 +889,16 @@ const runDirectDiscardCommand = async ({
   takeover,
   targets
 }) => {
+  // createWindowScope() is the authority that admitted this direct command to
+  // a normal browser window. commitScope deliberately refreshes `selected`
+  // from chrome.tabs.get(), whose Tabs.Tab shape has no windowType field, so
+  // preserve the admitted type before that refresh instead of weakening the
+  // takeover's required native scope.
+  const takeoverWindowType = selected?.windowType === 'normal' ? 'normal' : undefined;
+  const scopedTakeover = tab => takeover({
+    ...tab,
+    ...(takeoverWindowType && {windowType: takeoverWindowType})
+  });
   const result = await prepareDiscardTargets(command, targets, resolveFresh, {
     hasBlockingNativeIntent,
     retryUnknown: shiftKey === true
@@ -902,13 +938,13 @@ const runDirectDiscardCommand = async ({
           allow: tab => tab.active !== true,
           protectedReason: 'active target has no safe keeper'
         }),
-        runTakeovers(result.takeovers.filter(tab => tab.active !== true), takeover, {
+        runTakeovers(result.takeovers.filter(tab => tab.active !== true), scopedTakeover, {
           onAwake: (tab, original) => {
             result.takeovers = result.takeovers.filter(candidate => candidate.id !== original.id);
             result.candidates.push(tab);
             return settleLoadedDiscards(result, [tab], discard);
           },
-          onFailure: (tab, reason) => recordTakeoverFailure(result, tab, reason),
+          onFailure: (tab, reason, settled) => recordTakeoverFailure(result, tab, reason, settled),
           onSkipped: (tab, original) => recordSkippedTakeover(result, tab, original),
           onSuccess: (tab, value) => recordTakeoverSuccess(result, tab, value),
           refresh
@@ -927,13 +963,13 @@ const runDirectDiscardCommand = async ({
   await Promise.all([
     settleLoadedDiscards(result, [...result.candidates], discard),
     settlePhysicalTargets(result, discard),
-    runTakeovers(result.takeovers, takeover, {
+    runTakeovers(result.takeovers, scopedTakeover, {
       onAwake: (tab, original) => {
         result.takeovers = result.takeovers.filter(candidate => candidate.id !== original.id);
         result.candidates.push(tab);
         return settleLoadedDiscards(result, [tab], discard);
       },
-      onFailure: (tab, reason) => recordTakeoverFailure(result, tab, reason),
+      onFailure: (tab, reason, settled) => recordTakeoverFailure(result, tab, reason, settled),
       onSkipped: (tab, original) => recordSkippedTakeover(result, tab, original),
       onSuccess: (tab, value) => recordTakeoverSuccess(result, tab, value),
       refresh
@@ -990,6 +1026,7 @@ const releaseDiscardedTargets = async (
       }
       return {
         failed: {
+          failureCause: failureCauseFrom(error, FAILURE_CAUSES.RELEASE_FAILED),
           reason: error?.message || String(error),
           tab
         }
@@ -1022,6 +1059,10 @@ const runScopedCommand = async ({
   takeover,
 }) => {
   const options = scopeQuery(command, selected);
+  const scopedTakeover = tab => takeover({
+    ...tab,
+    ...(options.windowType && {windowType: options.windowType})
+  });
   const queried = await queryCommandScope(query, options, {command, phase: 'initial-scope'});
   const scopedJobs = RELEASE_COMMANDS.has(command) ?
     scopeTakeoverTabs(command, await readTakeoverSnapshot(takeoverSnapshot), selected) : [];
@@ -1038,13 +1079,13 @@ const runScopedCommand = async ({
     if (shiftKey) {
       await Promise.all([
         settlePhysicalTargets(result, discard),
-        runTakeovers(result.takeovers, takeover, {
+        runTakeovers(result.takeovers, scopedTakeover, {
           onAwake: (tab, original) => {
             result.takeovers = result.takeovers.filter(candidate => candidate.id !== original.id);
             result.candidates.push(tab);
             return settleLoadedDiscards(result, [tab], discard);
           },
-          onFailure: (tab, reason) => recordTakeoverFailure(result, tab, reason),
+          onFailure: (tab, reason, settled) => recordTakeoverFailure(result, tab, reason, settled),
           onSkipped: (tab, original) => recordSkippedTakeover(result, tab, original),
           onSuccess: (tab, value) => recordTakeoverSuccess(result, tab, value),
           refresh
@@ -1056,13 +1097,13 @@ const runScopedCommand = async ({
       const candidates = [...result.candidates];
       await Promise.all([
         settlePhysicalTargets(result, discard, {allow: () => false}),
-        runTakeovers(result.takeovers, takeover, {
+        runTakeovers(result.takeovers, scopedTakeover, {
           onAwake: (tab, original) => {
             result.takeovers = result.takeovers.filter(candidate => candidate.id !== original.id);
             result.candidates.push(tab);
             return runCheckedDiscards(result, [tab], check);
           },
-          onFailure: (tab, reason) => recordTakeoverFailure(result, tab, reason),
+          onFailure: (tab, reason, settled) => recordTakeoverFailure(result, tab, reason, settled),
           onSkipped: (tab, original) => recordSkippedTakeover(result, tab, original),
           onSuccess: (tab, value) => recordTakeoverSuccess(result, tab, value),
           refresh

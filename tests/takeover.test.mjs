@@ -9,6 +9,14 @@ import {
 import {tabsForGroupCommand} from '../v3/worker/core/group.mjs';
 import {resetExtensionState} from '../v3/worker/core/reset.mjs';
 
+const RESET_LOCK = Object.freeze({
+  lockManager: {
+    request(name, options, callback) {
+      return Promise.resolve(callback({mode: 'exclusive', name}));
+    }
+  }
+});
+
 test('keeps genuine takeovers explicit, bounded, and free of reload feedback loops', async () => {
   const sessionState = {
     __discardOwnership: {
@@ -21,7 +29,12 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     }
   };
   const localState = {};
-  const liveTabs = new Map([
+  class LiveTabMap extends Map {
+    set(id, tab) {
+      return super.set(id, {incognito: false, ...tab});
+    }
+  }
+  const liveTabs = new LiveTabMap([
     [1, {
       id: 1,
       windowId: 1,
@@ -77,6 +90,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
   let holdLocalStorage = false;
   let localStorageReached;
   let releaseHeldLocalStorage;
+  let windowValidationTrap;
   let markerRollbacks = 0;
   let pulseDocumentState = {
     focused: false,
@@ -266,8 +280,8 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     },
     storage: {
       managed: {
-        get(defaults, callback) {
-          callback(defaults);
+        get(query, callback) {
+          callback({});
         }
       },
       local: {
@@ -278,11 +292,11 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
             localStorageReached = undefined;
             releaseHeldLocalStorage = () => {
               releaseHeldLocalStorage = undefined;
-              callback({...defaults, ...localState});
+              callback({...Array.isArray(defaults) ? {} : defaults, ...localState});
             };
             return;
           }
-          callback({...defaults, ...localState});
+          callback({...Array.isArray(defaults) ? {} : defaults, ...localState});
         }
       },
       session: {
@@ -304,7 +318,23 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     },
     windows: {
       get(id, callback) {
-        callback({focused: true, id});
+        const tab = [...liveTabs.values()].find(candidate => candidate.windowId === id);
+        let scopeOverride = {};
+        if (windowValidationTrap?.tabId === tab?.id) {
+          windowValidationTrap.count = (windowValidationTrap.count || 0) + 1;
+          if (windowValidationTrap.count === windowValidationTrap.at ||
+              (windowValidationTrap.persistent === true &&
+                windowValidationTrap.count > windowValidationTrap.at)) {
+            scopeOverride = windowValidationTrap.override;
+          }
+        }
+        callback({
+          focused: true,
+          id,
+          incognito: tab?.incognito ?? false,
+          type: 'normal',
+          ...scopeOverride
+        });
       },
       onFocusChanged: event('windowFocus')
     },
@@ -485,6 +515,21 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       import('../v3/worker/core/ownership.mjs'),
       import('../v3/worker/core/release.mjs')
     ]);
+    // Standalone calls in this integration fixture model the production
+    // command layer, which attaches its authoritative normal-window scope
+    // before handing a target to discard.takeover(). Live tabs retain the
+    // browser's realistic incognito field through LiveTabMap above.
+    const unscopedTakeover = discard.takeover;
+    discard.takeover = (tab, options) => unscopedTakeover({
+      incognito: false,
+      windowType: 'normal',
+      ...tab
+    }, options);
+    const unscopedPerform = discard.perform;
+    discard.perform = (tab, visual) => unscopedPerform({
+      incognito: false,
+      ...tab
+    }, visual);
     const hasTakeover = id => discard.takeoverSnapshot().some(job => job.id === id);
     discard.nativeTimeout = 200;
     discard.getTimeout = 100;
@@ -636,8 +681,10 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     finishNative();
     assert.deepEqual(discard.takeoverSnapshot().find(job => job.id === 61)?.tab, {
       id: 61,
+      incognito: false,
       index: edgeOriginal.index,
-      windowId: edgeOriginal.windowId
+      windowId: edgeOriginal.windowId,
+      windowType: 'normal'
     });
     assert.ok(discard.waitForTakeover(edgeOriginal.id));
     assert.equal(await edgeTakeover, true);
@@ -710,6 +757,83 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       titleMarker: '\u{1F4A4}'
     });
     assert.equal(calls.slice(frozenCallStart).some(call => call.startsWith('activate:')), false);
+
+    // Direct-frozen takeovers must check the authoritative Window again inside
+    // the guarded native boundary. A privacy mismatch appearing only on that
+    // final read cannot reach tabs.discard().
+    const directScopeDrift = {
+      id: 223,
+      windowId: 223,
+      index: 0,
+      active: false,
+      discarded: false,
+      frozen: true,
+      status: 'complete',
+      url: 'https://direct-scope-drift.example/'
+    };
+    liveTabs.set(directScopeDrift.id, directScopeDrift);
+    const directScopeCallStart = calls.length;
+    windowValidationTrap = {
+      at: 4,
+      count: 0,
+      override: {incognito: true},
+      persistent: true,
+      tabId: directScopeDrift.id
+    };
+    const directScopeError = await discard.takeover(
+      clone(directScopeDrift),
+      {manual: true}
+    ).then(() => undefined, error => error);
+    assert.equal(windowValidationTrap.count, 4,
+      'direct-frozen scope drift must be injected at the final native preflight');
+    assert.match(directScopeError?.message || '',
+      /changed before direct native discard|native discard window scope changed/);
+    assert.equal(calls.slice(directScopeCallStart).includes(`discard:${directScopeDrift.id}`), false);
+    windowValidationTrap = undefined;
+
+    // Reload takeovers have a separate native boundary. A normal-tab snapshot
+    // whose authoritative Window becomes non-normal immediately before reload
+    // must fail without starting navigation or progressing to native discard.
+    const reloadScopeDrift = {
+      id: 224,
+      windowId: 224,
+      index: 0,
+      active: false,
+      discarded: true,
+      frozen: false,
+      status: 'unloaded',
+      url: 'https://reload-scope-drift.example/'
+    };
+    const reloadScopeKeeper = {
+      ...reloadScopeDrift,
+      id: 225,
+      index: 1,
+      active: true,
+      discarded: false,
+      status: 'complete',
+      url: 'https://reload-scope-keeper.example/'
+    };
+    liveTabs.set(reloadScopeDrift.id, reloadScopeDrift);
+    liveTabs.set(reloadScopeKeeper.id, reloadScopeKeeper);
+    await ownership.claim(reloadScopeDrift);
+    const reloadScopeCallStart = calls.length;
+    windowValidationTrap = {
+      at: 2,
+      count: 0,
+      override: {type: 'popup'},
+      persistent: true,
+      tabId: reloadScopeDrift.id
+    };
+    await assert.rejects(
+      discard.takeover(clone(reloadScopeDrift), {manual: true}),
+      /reload window scope changed/
+    );
+    assert.equal(windowValidationTrap.count, 2,
+      'reload scope drift must be injected at the guarded reload preflight');
+    assert.equal(calls.slice(reloadScopeCallStart).some(call =>
+      call === `reload:${reloadScopeDrift.id}:false` || call === `discard:${reloadScopeDrift.id}`
+    ), false);
+    windowValidationTrap = undefined;
 
     // The in-memory reservations are synchronous. A direct takeover that wins
     // first excludes an ordinary renderer-marking discard even while its
@@ -1209,6 +1333,112 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
       call => call === 'release:131:false'
     ).length, 1);
 
+    // A real direct/group executor refreshes its selected tab through
+    // chrome.tabs.get() immediately before activation. That raw Tabs.Tab has
+    // no windowType field, but the command's previously admitted normal-window
+    // authority must still reach an external child's strict takeover. Exercise
+    // the actual discard.perform() and discard.takeover() boundaries together,
+    // matching the browser matrix's loaded + externally-discarded group.
+    const committedGroupTabs = [
+      {
+        id: 300,
+        windowId: 309,
+        index: 0,
+        groupId: 300,
+        active: true,
+        discarded: false,
+        frozen: false,
+        highlighted: true,
+        status: 'complete',
+        url: 'https://committed-group-selected.example/'
+      },
+      {
+        id: 301,
+        windowId: 309,
+        index: 1,
+        groupId: 300,
+        active: false,
+        discarded: false,
+        frozen: false,
+        highlighted: true,
+        status: 'complete',
+        url: 'https://committed-group-loaded.example/'
+      },
+      {
+        id: 302,
+        windowId: 309,
+        index: 2,
+        groupId: 300,
+        active: false,
+        discarded: true,
+        frozen: false,
+        highlighted: false,
+        status: 'unloaded',
+        url: 'https://committed-group-external.example/'
+      },
+      {
+        id: 303,
+        windowId: 309,
+        index: 3,
+        groupId: -1,
+        active: false,
+        discarded: false,
+        frozen: false,
+        highlighted: false,
+        status: 'complete',
+        url: 'https://committed-group-keeper.example/'
+      }
+    ];
+    committedGroupTabs.forEach(tab => liveTabs.set(tab.id, tab));
+    await ownership.claim(clone(liveTabs.get(302)));
+    const initialGroupTabs = committedGroupTabs.map(tab => clone(liveTabs.get(tab.id)));
+    const initialGroupTargets = tabsForGroupCommand(initialGroupTabs, initialGroupTabs[0]);
+    const committedGroupCallStart = calls.length;
+    let committedTakeoverInput;
+    nativeImmediate = true;
+    const committedGroupResult = await runDirectDiscardCommand({
+      activate: tab => new Promise(resolve => chrome.tabs.update(tab.id, {active: true}, resolve)),
+      allTabs: initialGroupTabs,
+      command: 'discard-tree',
+      commitScope: async () => {
+        const rawTabs = committedGroupTabs.map(tab => clone(liveTabs.get(tab.id)));
+        const rawSelected = rawTabs.find(tab => tab.id === 300);
+        assert.equal('windowType' in rawSelected, false,
+          'chrome.tabs.get() returns no synthetic windowType field');
+        return {
+          allTabs: rawTabs,
+          selected: rawSelected,
+          targets: tabsForGroupCommand(rawTabs, rawSelected),
+          valid: true
+        };
+      },
+      discard: tab => unscopedPerform(tab),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('the committed group has a safe keeper'),
+      resolveFresh: ownership.resolveFresh,
+      selected: {...initialGroupTabs[0], windowType: 'normal'},
+      shiftKey: false,
+      takeover: tab => {
+        committedTakeoverInput = clone(tab);
+        return unscopedTakeover(tab, {manual: true});
+      },
+      targets: initialGroupTargets
+    });
+    nativeImmediate = false;
+    assert.deepEqual(
+      committedGroupResult.succeeded.map(entry => entry.tab.id).sort((a, b) => a - b),
+      [300, 301, 302]
+    );
+    assert.deepEqual(committedGroupResult.failed, []);
+    assert.equal(committedTakeoverInput.windowType, 'normal');
+    assert.equal(calls.slice(committedGroupCallStart).filter(
+      call => call === 'reload:302:false'
+    ).length, 1);
+    assert.equal(calls.slice(committedGroupCallStart).filter(
+      call => call === 'discard:302'
+    ).length, 1);
+    assert.equal((await ownership.status(302)).marker.source, 'self');
+
     const groupTabs = [
       {
         id: 40,
@@ -1354,6 +1584,8 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     const queueHead = {
       id: 7,
       windowId: 1,
+      windowType: 'normal',
+      incognito: false,
       index: 8,
       active: false,
       discarded: true,
@@ -1362,6 +1594,8 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     const queuedRelease = {
       id: 8,
       windowId: 1,
+      windowType: 'normal',
+      incognito: false,
       index: 9,
       active: false,
       discarded: true,
@@ -1379,29 +1613,47 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     assert.ok(Object.isFrozen(queuedJob));
     assert.ok(Object.isFrozen(queuedJob.tab));
     assert.equal(queuedJob.started, false);
-    assert.deepEqual(queuedJob.tab, {id: 8, index: 9, windowId: 1});
+    assert.deepEqual(queuedJob.tab, {
+      id: 8,
+      incognito: false,
+      index: 9,
+      windowId: 1,
+      windowType: 'normal'
+    });
     assert.equal('promise' in queuedJob, false);
     assert.equal('token' in queuedJob, false);
     assert.notStrictEqual(discard.takeoverSnapshot(), jobs);
     assert.notStrictEqual(discard.takeoverSnapshot().find(job => job.id === 8).tab, queuedJob.tab);
+    // Moving a queued target into another same-privacy normal window must
+    // cancel the original command rather than rekeying its authorization.
+    Object.assign(liveTabs.get(queuedRelease.id), {index: 1, windowId: 2});
     listeners.attached.forEach(listener => listener(queuedRelease.id, {
       newPosition: 1,
-      newWindowId: queuedRelease.windowId
+      newWindowId: 2
     }));
-    assert.equal(discard.takeoverSnapshot().find(job => job.id === queuedRelease.id).tab.index, 1);
-    listeners.moved.forEach(listener => listener(queuedRelease.id, {
-      fromIndex: 1,
-      toIndex: 0,
-      windowId: queuedRelease.windowId
-    }));
-    const movedJobs = discard.takeoverSnapshot();
-    assert.equal(movedJobs.find(job => job.id === queuedRelease.id).tab.index, 0);
-    assert.deepEqual(scopeTakeoverTabs('release-lefts', movedJobs, {
+    const invalidatedJobs = discard.takeoverSnapshot();
+    assert.deepEqual(invalidatedJobs.find(job => job.id === queuedRelease.id)?.tab, {
+      id: queuedRelease.id,
+      index: 1,
+      windowId: 2
+    });
+    assert.deepEqual(scopeTakeoverTabs('release-window', invalidatedJobs, {
+      incognito: false,
       index: 5,
-      windowId: queuedRelease.windowId
-    }).map(tab => tab.id), [queuedRelease.id]);
+      windowId: 2,
+      windowType: 'normal'
+    }).map(tab => tab.id), [],
+    'a moved job is never adopted into the destination release scope');
+    assert.equal(await cancelledQueuedTakeover, false);
+    assert.equal(hasTakeover(queuedRelease.id), false);
+    assert.equal(calls.some(call => call === `discard:${queuedRelease.id}`), false,
+      'the cancelled queued command must not cross its original window boundary');
     let queuedReleaseSettled = false;
-    const queuedReleaseCommand = releasePhaseTarget(queuedRelease).then(result => {
+    const movedQueuedRelease = clone(liveTabs.get(queuedRelease.id));
+    const queuedReleaseCommand = releasePhaseTarget(
+      movedQueuedRelease,
+      [movedQueuedRelease]
+    ).then(result => {
       queuedReleaseSettled = true;
       return result;
     });
@@ -1412,7 +1664,6 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     assert.equal(liveTabs.get(8).discarded, false);
     finishNative();
     assert.equal(await headTakeover, true);
-    assert.equal(await cancelledQueuedTakeover, false);
     await queuedReleaseCommand;
     await assertReleaseInvariant(queuedRelease);
 
@@ -2130,7 +2381,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
         preferencesCleared = true;
         callback();
       }
-    }, discard.cancelTakeovers);
+    }, discard.cancelTakeovers, undefined, discard.beginReset, RESET_LOCK);
     await Promise.resolve();
     finishNative?.();
     const resetResult = await resetOperation;

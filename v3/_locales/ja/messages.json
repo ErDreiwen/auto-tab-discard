@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "キャンセル"
   },
   "popup_retry": {
     "message": "再試行"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$TOTAL$ 個中 $COMPLETED$ 個のタブを完了",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ 件成功、$SKIPPED$ 件スキップ、$FAILED$ 件失敗。",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "安全にキャンセル中…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "キャンセルしました。"
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "完了しました。"
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "完了しましたが、一部のタブは処理されませんでした。"
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "操作を完了できませんでした。"
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "ブラウザーが前回の操作を中断しました。"
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "このウィンドウでは別のタブ操作が実行中です。"
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "タブ操作に失敗しました。"
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "利用できるアクティブなタブがありません。"
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "操作の実行前に選択したタブが変わりました。"
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ 個のタブを拡張機能管理のネイティブ破棄に切り替えましたが、レンダラーが既にフリーズしていたため、Edge はタイトルまたは favicon に表示を追加できませんでした。",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ 個のタブは解放用の再読み込み後もフリーズしたままです。Edge ではアクティブ化せずに復帰できないため、2 回目の再読み込みは行いませんでした。もう一度お試しください。",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "診断を表示"
+  },
+  "popup_diagnostics_hide": {
+    "message": "診断を非表示"
+  },
+  "popup_diagnostics_region": {
+    "message": "操作の診断"
+  },
+  "popup_diagnostics_incident": {
+    "message": "インシデント"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "結果のグループ"
+  },
+  "popup_diagnostics_log": {
+    "message": "サニタイズ済み診断ログ"
+  },
+  "popup_diagnostics_copy": {
+    "message": "ログをコピー"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log をダウンロード"
+  },
+  "popup_diagnostics_clear": {
+    "message": "診断を消去"
+  },
+  "popup_diagnostics_copied": {
+    "message": "診断ログをコピーしました。"
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "診断ログをコピーできませんでした。"
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "診断ログのダウンロードを開始しました。"
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "診断ログをダウンロードできませんでした。"
+  },
+  "popup_diagnostics_cleared": {
+    "message": "診断を消去しました。"
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "診断を消去できませんでした。"
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "利用できるサニタイズ済み診断はありません。"
+  },
+  "popup_diagnostics_status_success": {
+    "message": "成功"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "スキップ"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "失敗"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "分類済みの結果"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "診断"
+  },
+  "options_diagnostics_privacy": {
+    "message": "サニタイズ済みログには、URL、タイトル、タブとウィンドウの ID、サイトルール、プライベートウィンドウの操作は含まれません。"
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log をダウンロード"
+  },
+  "options_diagnostics_clear": {
+    "message": "診断を消去"
+  },
+  "options_diagnostics_cleared": {
+    "message": "診断を消去しました。"
+  },
+  "options_diagnostics_empty": {
+    "message": "利用できるサニタイズ済み診断はありません。"
   }
 }

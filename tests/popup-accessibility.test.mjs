@@ -15,6 +15,19 @@ test('every popup action uses a native keyboard-operable control', async () => {
     new RegExp(`<button[^>]*type="button"[^>]*data-cmd="${command}"|<button[^>]*data-cmd="${command}"[^>]*type="button"`)
       .test(html)), true);
   assert.match(html, /role="status" aria-live="polite" aria-atomic="true"/);
+  for (const id of [
+    'activity-diagnostics-toggle', 'activity-diagnostics-copy',
+    'activity-diagnostics-download', 'activity-diagnostics-clear'
+  ]) {
+    assert.match(html, new RegExp(`<button[^>]*type="button"[^>]*id="${id}"|` +
+      `<button[^>]*id="${id}"[^>]*type="button"`));
+  }
+  assert.match(html,
+    /id="activity-diagnostics-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="activity-diagnostics-panel"/);
+  assert.match(html,
+    /id="activity-diagnostics-panel" role="region" aria-labelledby="activity-diagnostics-heading" hidden/);
+  assert.match(html,
+    /id="activity-diagnostics-heading"[^>]*data-i18n="popup_diagnostics_region"/);
 });
 
 test('release disabled state and visible focus are semantic', async () => {
@@ -23,5 +36,12 @@ test('release disabled state and visible focus are semantic', async () => {
   assert.match(script, /control\.disabled = disabled/);
   assert.match(script, /setAttribute\('aria-disabled', String\(disabled\)\)/);
   assert.match(script, /setAttribute\('aria-label', message\)/);
+  assert.match(script,
+    /\[\.\.\.diagnosticsPanel\.querySelectorAll\('button, input, select'\)\]\s*\.includes\(document\.activeElement\)/,
+    'focus containment must convert the real-DOM NodeList before using Array.includes');
+  assert.doesNotMatch(script, /value\.(?:incidentId|reasonGroups|outcomeGroups)/,
+    'diagnostic rendering must accept only the locked worker incident schema');
   assert.match(css, /\[data-cmd\]:focus-visible/);
+  assert.match(css, /#activity-diagnostics-log[\s\S]*user-select:\s*text/);
+  assert.match(css, /@media \(max-width:\s*377px\)/);
 });

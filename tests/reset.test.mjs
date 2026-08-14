@@ -1,5 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {
+  SETTINGS_IMPORT_LOCK_NAME,
+  SettingsImportRecoveryError,
+  withSettingsImportLock
+} from '../v3/worker/core/settings-import-transaction.mjs';
+
+const immediateLockManager = {
+  request(name, options, callback) {
+    assert.equal(name, SETTINGS_IMPORT_LOCK_NAME);
+    assert.equal(options.mode, 'exclusive');
+    return Promise.resolve(callback({mode: 'exclusive', name}));
+  }
+};
+const RESET_LOCK = Object.freeze({lockManager: immediateLockManager});
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(resolvePromise => {
+    resolve = resolvePromise;
+  });
+  return {promise, resolve};
+};
+
+const exclusiveLockManager = () => {
+  let active = 0;
+  let maxActive = 0;
+  let tail = Promise.resolve();
+  return {
+    get maxActive() {
+      return maxActive;
+    },
+    request(name, options, callback) {
+      assert.equal(name, SETTINGS_IMPORT_LOCK_NAME);
+      assert.equal(options.mode, 'exclusive');
+      const previous = tail;
+      const gate = deferred();
+      tail = gate.promise;
+      return previous.then(async () => {
+        if (options.signal.aborted) {
+          gate.resolve();
+          throw options.signal.reason;
+        }
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          return await callback({mode: 'exclusive', name});
+        }
+        finally {
+          active -= 1;
+          gate.resolve();
+        }
+      });
+    }
+  };
+};
 
 test('reset clears old authority then freshly claims only still-discarded live tabs', async () => {
   const sessionState = {};
@@ -113,7 +168,14 @@ test('reset clears old authority then freshly claims only still-discarded live t
     while (!releaseSessionWrite) {
       await new Promise(resolve => setTimeout(resolve));
     }
-    const resetPending = resetExtensionState(ownership);
+    const resetPending = resetExtensionState(
+      ownership,
+      chrome.storage.local,
+      undefined,
+      undefined,
+      undefined,
+      RESET_LOCK
+    );
     releaseSessionWrite();
     await lateClaim;
     const result = await resetPending;
@@ -209,6 +271,8 @@ test('visual reset repair is selective, serial, lineage-aware, and truthful', as
 test('does not clear ownership when preference reset fails', async () => {
   let ownershipReset = false;
   let takeoversCancelled = false;
+  let barrierAborted = false;
+  let barrierDrained = false;
   globalThis.chrome = {
     runtime: {lastError: null},
     storage: {
@@ -230,9 +294,15 @@ test('does not clear ownership when preference reset fails', async () => {
       }
     }, chrome.storage.local, async () => {
       takeoversCancelled = true;
-    }), /local clear failed/);
+    }, undefined, () => ({
+      abort() { barrierAborted = true; },
+      complete() {},
+      async drain() { barrierDrained = true; }
+    }), RESET_LOCK), /local clear failed/);
     assert.equal(ownershipReset, false);
     assert.equal(takeoversCancelled, false);
+    assert.equal(barrierDrained, false);
+    assert.equal(barrierAborted, true);
   }
   finally {
     delete globalThis.chrome;
@@ -245,7 +315,233 @@ test('worker reset wiring cancels jobs and repairs visuals before the ownership 
     'utf8'
   ));
   assert.match(source,
-    /resetExtensionState\(\s*ownership,\s*chrome\.storage\.local,\s*discard\.cancelTakeovers,\s*releaseTab\s*\)/);
+    /resetExtensionState\(\s*ownership,\s*chrome\.storage\.local,\s*discard\.cancelTakeovers,\s*releaseTab,\s*discard\.beginReset\s*\)/);
+});
+
+test('reset installs admission before preference clear and holds it through reconciliation', async t => {
+  globalThis.chrome = {runtime: {lastError: null}};
+  t.after(() => delete globalThis.chrome);
+  const order = [];
+  let blocked = false;
+  const barrier = {
+    abort() { order.push('abort'); blocked = false; },
+    complete() { order.push('complete'); blocked = false; },
+    async drain() {
+      assert.equal(blocked, true);
+      order.push('drain');
+    }
+  };
+  const ownership = {
+    async reset() {
+      assert.equal(blocked, true);
+      order.push('ownership');
+      return {reconciled: true};
+    },
+    async snapshot() {
+      assert.equal(blocked, true);
+      order.push('visual-snapshot');
+      return {};
+    }
+  };
+  const area = {
+    clear(callback) {
+      assert.equal(blocked, true);
+      order.push('clear');
+      callback();
+    }
+  };
+  const {resetExtensionState} = await import('../v3/worker/core/reset.mjs');
+  const result = await resetExtensionState(
+    ownership,
+    area,
+    async () => assert.fail('barrier drain replaces the legacy cancellation callback'),
+    undefined,
+    () => {
+      order.push('begin');
+      blocked = true;
+      return barrier;
+    },
+    RESET_LOCK
+  );
+  assert.deepEqual(order, [
+    'begin', 'clear', 'drain', 'visual-snapshot', 'ownership', 'complete'
+  ]);
+  assert.equal(blocked, false);
+  assert.equal(result.reconciled, true);
+});
+
+test('settings import and reset serialize in both cross-context acquisition orders', async t => {
+  globalThis.chrome = {runtime: {lastError: null}};
+  t.after(() => delete globalThis.chrome);
+
+  await t.test('an import already holding the lock finishes before reset clears preferences', async () => {
+    const locks = exclusiveLockManager();
+    const state = {period: 60};
+    const order = [];
+    const importEntered = deferred();
+    const finishImport = deferred();
+    const importer = withSettingsImportLock(locks, async () => {
+      order.push('import-enter');
+      importEntered.resolve();
+      await finishImport.promise;
+      state.period = 1200;
+      order.push('import-write');
+    });
+    await importEntered.promise;
+
+    const {resetExtensionState} = await import('../v3/worker/core/reset.mjs');
+    const reset = resetExtensionState({
+      async reset() {
+        order.push('ownership');
+        return {reconciled: true};
+      },
+      async snapshot() {
+        order.push('visual-snapshot');
+        return {};
+      }
+    }, {
+      clear(callback) {
+        order.push('clear');
+        for (const key of Object.keys(state)) delete state[key];
+        callback();
+      }
+    }, async () => assert.fail('barrier drain owns cancellation'), undefined, () => {
+      order.push('begin');
+      return {
+        abort() { order.push('abort'); },
+        complete() { order.push('complete'); },
+        async drain() { order.push('drain'); }
+      };
+    }, {lockManager: locks});
+
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(order, ['import-enter'],
+      'reset must perform no barrier or storage mutation while import owns the lock');
+    finishImport.resolve();
+    await Promise.all([importer, reset]);
+
+    assert.deepEqual(state, {}, 'the serialized reset clears the import final image');
+    assert.deepEqual(order, [
+      'import-enter', 'import-write', 'begin', 'clear', 'drain',
+      'visual-snapshot', 'ownership', 'complete'
+    ]);
+    assert.equal(locks.maxActive, 1);
+  });
+
+  await t.test('an import waits through reset ownership reconciliation and barrier completion', async () => {
+    const locks = exclusiveLockManager();
+    const state = {period: 60};
+    const order = [];
+    const ownershipEntered = deferred();
+    const finishOwnership = deferred();
+    const {resetExtensionState} = await import('../v3/worker/core/reset.mjs');
+    const reset = resetExtensionState({
+      async reset() {
+        order.push('ownership-enter');
+        ownershipEntered.resolve();
+        await finishOwnership.promise;
+        order.push('ownership-exit');
+        return {reconciled: true};
+      },
+      async snapshot() {
+        order.push('visual-snapshot');
+        return {};
+      }
+    }, {
+      clear(callback) {
+        order.push('clear');
+        for (const key of Object.keys(state)) delete state[key];
+        callback();
+      }
+    }, async () => assert.fail('barrier drain owns cancellation'), undefined, () => {
+      order.push('begin');
+      return {
+        abort() { order.push('abort'); },
+        complete() { order.push('complete'); },
+        async drain() { order.push('drain'); }
+      };
+    }, {lockManager: locks});
+    await ownershipEntered.promise;
+
+    let importActive = false;
+    const importer = withSettingsImportLock(locks, async () => {
+      importActive = true;
+      order.push('import-enter');
+      state.period = 2400;
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(importActive, false,
+      'the contender cannot enter while ownership reconciliation is unfinished');
+    assert.equal(order.includes('complete'), false,
+      'the reset barrier remains active for the complete lock lifetime');
+
+    finishOwnership.resolve();
+    await Promise.all([reset, importer]);
+    assert.equal(order.indexOf('complete') < order.indexOf('import-enter'), true);
+    assert.deepEqual(state, {period: 2400},
+      'an import acquired after reset is a valid later serial operation');
+    assert.equal(locks.maxActive, 1);
+  });
+});
+
+test('lock unavailability and timeout abort reset before every mutation', async t => {
+  globalThis.chrome = {runtime: {lastError: null}};
+  t.after(() => delete globalThis.chrome);
+  const {resetExtensionState} = await import('../v3/worker/core/reset.mjs');
+
+  const fixture = () => {
+    const calls = [];
+    return {
+      calls,
+      invoke: lockOptions => resetExtensionState({
+        async reset() { calls.push('ownership'); },
+        async snapshot() { calls.push('visual-snapshot'); return {}; }
+      }, {
+        clear(callback) { calls.push('clear'); callback(); }
+      }, async () => calls.push('cancel'), async () => calls.push('release'), () => {
+        calls.push('begin');
+        return {
+          abort() { calls.push('abort'); },
+          complete() { calls.push('complete'); },
+          async drain() { calls.push('drain'); }
+        };
+      }, lockOptions)
+    };
+  };
+
+  await t.test('unavailable lock', async () => {
+    const f = fixture();
+    await assert.rejects(
+      f.invoke({lockManager: {}}),
+      error => error instanceof SettingsImportRecoveryError && error.code === 'lock-unavailable'
+    );
+    assert.deepEqual(f.calls, []);
+  });
+
+  await t.test('timed-out and late lock callback', async () => {
+    const f = fixture();
+    let lateCallback;
+    const locks = {
+      request(name, options, callback) {
+        assert.equal(name, SETTINGS_IMPORT_LOCK_NAME);
+        lateCallback = callback;
+        return new Promise((resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), {once: true});
+        });
+      }
+    };
+    await assert.rejects(
+      f.invoke({lockManager: locks, lockTimeoutMs: 5}),
+      error => error instanceof SettingsImportRecoveryError &&
+        error.code === 'lock-timeout' && error.retryable === true
+    );
+    assert.deepEqual(f.calls, []);
+    await assert.rejects(
+      lateCallback({mode: 'exclusive', name: SETTINGS_IMPORT_LOCK_NAME}),
+      error => error instanceof SettingsImportRecoveryError && error.code === 'lock-timeout'
+    );
+    assert.deepEqual(f.calls, [], 'an aborted lock callback can never start reset later');
+  });
 });
 
 test('issue 24: reset clears self, claimed, pending, and replacement authority before reload', async () => {
@@ -379,7 +675,9 @@ test('issue 24: reset clears self, claimed, pending, and replacement authority b
         const awake = {...current, discarded: false, frozen: false, status: 'complete'};
         liveTabs.set(currentId, awake);
         return awake;
-      }
+      },
+      undefined,
+      RESET_LOCK
     );
 
     assert.deepEqual(order, ['cancel', 'release:1', 'release:40']);

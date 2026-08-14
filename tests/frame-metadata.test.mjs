@@ -87,12 +87,14 @@ test('subframe probes are disabled unless form or media protection needs aggrega
   assert.deepEqual(calls[0].files, ['/data/inject/meta.js']);
 });
 
-test('1,000-frame stress probe stays bounded and retains a protected late frame', async () => {
+test('1,000-frame fixture bounds retained output but records the open physical allFrames gap', async () => {
+  const secretUrl = 'https://private-frame.invalid/account?token=frame-secret';
   const probes = [{frameId: 0, result: null}];
   for (let frameId = 1; frameId <= 1000; frameId += 1) {
     probes.push({
       documentId: `document-${frameId}`,
       frameId,
+      url: `${secretUrl}-${frameId}`,
       result: {
         a: false,
         f: frameId === 1000,
@@ -112,8 +114,11 @@ test('1,000-frame stress probe stays bounded and retains a protected late frame'
     `pure 1,000-frame aggregation took ${elapsed.toFixed(3)}ms`);
   assert.ok(Buffer.byteLength(JSON.stringify(summary)) < FRAME_STRESS_RETAINED_BYTES_LIMIT,
     'the retained summary must not scale with the input frame count');
+  assert.doesNotMatch(JSON.stringify(summary), /private-frame|frame-secret/,
+    'browser-returned frame URLs must not enter retained summaries');
 
   const calls = [];
+  let physicalProbeStarts = 0;
   const collector = createFrameMetadataCollector({
     scripting: {
       async executeScript(details) {
@@ -122,6 +127,9 @@ test('1,000-frame stress probe stays bounded and retains a protected late frame'
           return [{frameId: 0, result: {ready: true, time: 1}}];
         }
         if (details.func) {
+          assert.equal(details.target.allFrames, true,
+            'current browser-bound probe still delegates every frame to scripting');
+          physicalProbeStarts += probes.length;
           return probes;
         }
         return details.target.frameIds.map(frameId => ({
@@ -136,6 +144,10 @@ test('1,000-frame stress probe stays bounded and retains a protected late frame'
   assert.equal(result.length, FRAME_OUTPUT_LIMIT);
   assert.equal(result[1].forms, true);
   assert.ok(calls.length <= FRAME_MESSAGE_LIMIT);
+  assert.equal(physicalProbeStarts, 1001,
+    'post-result truncation must never be reported as a pre-injection physical cap');
+  assert.doesNotMatch(JSON.stringify(result), /private-frame|frame-secret/,
+    'worker-facing metadata must not report raw frame URLs');
   const watcherCalls = calls.filter(call => call.files?.includes('/data/inject/watch.js'));
   assert.equal(watcherCalls.length, Math.ceil(FRAME_WATCH_LIMIT / FRAME_WATCH_BATCH_SIZE));
   assert.ok(watcherCalls.some(call => call.target.frameIds.includes(1000)));

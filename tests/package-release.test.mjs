@@ -66,6 +66,7 @@ test('two release builds produce deterministic target-specific artifacts that di
   assert.ok(entries.includes('LICENSE'));
   assert.ok(entries.includes('README.md'));
   assert.ok(entries.includes('FORK_NOTES.md'));
+  assert.ok(entries.includes('docs/DIAGNOSTICS.md'));
   assert.ok(entries.includes('docs/RELEASE_PACKAGING.md'));
   assert.ok(!entries.some(name => name.startsWith('data/icons/tmp/')));
   assert.ok(!entries.includes('data/icons/convert.txt'));
@@ -105,6 +106,7 @@ test('two release builds produce deterministic target-specific artifacts that di
     'FORK_NOTES.md',
     'LICENSE',
     'README.md',
+    'docs/DIAGNOSTICS.md',
     'docs/MIGRATIONS.md',
     'docs/PERMISSION_CHANGES.md',
     'docs/RELEASE_PACKAGING.md',

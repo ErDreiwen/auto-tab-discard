@@ -21,14 +21,22 @@ test('hydrates preferences when a Manifest V3 worker starts for any event', asyn
     },
     storage: {
       managed: {
-        get(defaults, callback) {
+        get(query, callback) {
           managedReads += 1;
-          setTimeout(() => callback(defaults));
+          setTimeout(() => callback({}));
         }
       },
       local: {
-        get(defaults, callback) {
-          setTimeout(() => callback({...defaults, click: 'click.discard-tab'}));
+        get(query, callback) {
+          const stored = {click: 'click.discard-tab'};
+          if (Array.isArray(query)) {
+            setTimeout(() => callback(Object.fromEntries(
+              query.filter(key => Object.hasOwn(stored, key)).map(key => [key, stored[key]])
+            )));
+          }
+          else {
+            setTimeout(() => callback({...query, ...stored}));
+          }
         }
       },
       session: {

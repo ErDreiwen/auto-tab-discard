@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Cancelar"
   },
   "popup_retry": {
     "message": "Reintentar"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ de $TOTAL$ pestañas completadas",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ correctas, $SKIPPED$ omitidas y $FAILED$ fallidas.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Cancelando de forma segura…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Cancelado."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Finalizado."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Finalizado con algunas pestañas sin completar."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "No se pudo completar la acción."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "El navegador interrumpió la acción anterior."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "Ya hay otra acción de pestañas en curso en esta ventana."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "La acción de pestañas falló."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "No hay ninguna pestaña activa disponible."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "La pestaña seleccionada cambió antes de ejecutar la acción."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ pestaña(s) se descartaron de forma nativa bajo control de la extensión, pero Edge no pudo añadir el indicador al título o favicon porque el renderizador ya estaba congelado.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ pestaña(s) siguieron congeladas tras recargar para liberarlas. Edge no permitió reactivarlas sin seleccionarlas, por lo que no se intentó otra recarga. Vuelva a intentarlo.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostrar diagnóstico"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Ocultar diagnóstico"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnóstico de la acción"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incidente"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Resultados agrupados"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registro de diagnóstico depurado"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copiar registro"
+  },
+  "popup_diagnostics_download": {
+    "message": "Descargar latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Borrar diagnóstico"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registro de diagnóstico copiado."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "No se pudo copiar el registro de diagnóstico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Se inició la descarga del registro de diagnóstico."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "No se pudo descargar el registro de diagnóstico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnóstico borrado."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "No se pudo borrar el diagnóstico."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "No hay ningún diagnóstico depurado disponible."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "correctas"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "omitidas"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "fallidas"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Resultado clasificado"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnóstico"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Los registros depurados excluyen URL, títulos, identificadores de pestañas y ventanas, reglas de sitios y actividad de ventanas privadas."
+  },
+  "options_diagnostics_download": {
+    "message": "Descargar latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Borrar diagnóstico"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnóstico borrado."
+  },
+  "options_diagnostics_empty": {
+    "message": "No hay diagnósticos depurados disponibles."
   }
 }

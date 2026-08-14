@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Отмена"
   },
   "popup_retry": {
     "message": "Повторить"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "Завершено $COMPLETED$ из $TOTAL$ вкладок",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ успешно, $SKIPPED$ пропущено, $FAILED$ с ошибкой.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Безопасная отмена…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Отменено."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Готово."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Готово, но некоторые вкладки не обработаны."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Не удалось выполнить действие."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Браузер прервал предыдущее действие."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "В этом окне уже выполняется другое действие с вкладками."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "Не удалось выполнить действие с вкладками."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Нет доступной активной вкладки."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "Выбранная вкладка изменилась до запуска действия."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ вкладок были нативно выгружены расширением, но Edge не смог добавить индикатор в заголовок или значок, поскольку процесс отображения уже был заморожен.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ вкладок остались замороженными после перезагрузки для освобождения. Edge не смог пробудить их без активации, поэтому повторная перезагрузка не выполнялась. Повторите попытку.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Показать диагностику"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Скрыть диагностику"
+  },
+  "popup_diagnostics_region": {
+    "message": "Диагностика действия"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Инцидент"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Сгруппированные результаты"
+  },
+  "popup_diagnostics_log": {
+    "message": "Очищенный диагностический журнал"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Копировать журнал"
+  },
+  "popup_diagnostics_download": {
+    "message": "Скачать latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Очистить диагностику"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Диагностический журнал скопирован."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Не удалось скопировать диагностический журнал."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Скачивание диагностического журнала началось."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Не удалось скачать диагностический журнал."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Диагностика очищена."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Не удалось очистить диагностику."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Очищенная диагностика недоступна."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "успешно"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "пропущено"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "с ошибкой"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Классифицированный результат"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Диагностика"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Очищенные журналы не содержат URL, заголовков, идентификаторов вкладок и окон, правил сайтов и активности приватных окон."
+  },
+  "options_diagnostics_download": {
+    "message": "Скачать latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Очистить диагностику"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Диагностика очищена."
+  },
+  "options_diagnostics_empty": {
+    "message": "Очищенная диагностика недоступна."
   }
 }

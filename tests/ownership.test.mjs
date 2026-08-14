@@ -7,6 +7,7 @@ test('tags self discards, claims external discards, and rejects stale attempts',
   let liveTabs = [];
   let failWrites = 0;
   let failNextQuery = false;
+  let failNextCompatibilityQuery = false;
   let holdNextWrite = false;
   let releaseWrite;
   let holdNextGet = false;
@@ -63,6 +64,11 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     },
     tabs: {
       query(options, callback) {
+        if (failNextCompatibilityQuery) {
+          failNextCompatibilityQuery = false;
+          callback(undefined, Error('Firefox compatibility query failure'));
+          return;
+        }
         if (failNextQuery) {
           failNextQuery = false;
           chrome.runtime.lastError = {message: 'temporary query failure'};
@@ -873,6 +879,19 @@ test('tags self discards, claims external discards, and rejects stale attempts',
     state = await ownership.snapshot();
     assert.equal(state[20].source, 'claimed');
     assert.equal(state[awake.id], undefined);
+
+    failNextCompatibilityQuery = true;
+    const compatibilityWarn = console.warn;
+    console.warn = () => {};
+    try {
+      assert.equal(await ownership.start(1, 0), false,
+        'a Firefox proxy callback error must not reconcile an empty tab set');
+    }
+    finally {
+      console.warn = compatibilityWarn;
+    }
+    state = await ownership.snapshot();
+    assert.equal(state[20].source, 'claimed');
 
     listeners.removed(20);
     state = await ownership.snapshot();

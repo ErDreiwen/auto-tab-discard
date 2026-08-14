@@ -25,7 +25,11 @@ manifest version, and a real `storage` message/response round trip through the w
 tree digest and requires zero crashes, exact process exit, and profile removal. This older runner is confined to a
 disposable GitHub Actions VM and a fresh extension profile. The smoke uses a short opaque profile name and rejects a
 profile root whose managed-storage LevelDB path would reach legacy Windows `MAX_PATH`, which Chromium 102 otherwise
-surfaces as a hanging `storage.managed` callback. If acquisition stops working, the canary stays red until the
+surfaces as a hanging `storage.managed` callback. Chromium 102's managed-schema parser also hangs before exposing
+DevTools when the schema uses the unsupported top-level `additionalProperties` closure keyword. The checked schema therefore
+enumerates every supported policy without that keyword; catalog-parity tests still require an explicit entry for every
+plug-in, and the settings transaction validator rejects unknown local and plug-in keys. If acquisition stops working,
+the canary stays red until the
 declared minimum is deliberately raised or another reproducible Chrome-102 source is adopted.
 
 The manifest also declares Firefox 140.0. The minimum job uses the fully pinned `browser-actions/setup-firefox` action,

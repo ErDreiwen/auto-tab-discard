@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Cancelar"
   },
   "popup_retry": {
     "message": "Tentar novamente"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ de $TOTAL$ guias concluídas",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ concluídas, $SKIPPED$ ignoradas, $FAILED$ falharam.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Cancelando com segurança…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Cancelado."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Concluído."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Concluído com algumas guias pendentes."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Não foi possível concluir a ação."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "O navegador interrompeu a ação anterior."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "Outra ação de guias já está em execução nesta janela."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "A ação de guias falhou."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Não há uma guia ativa disponível."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "A guia selecionada mudou antes da execução da ação."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ guia(s) foram descartadas nativamente pela extensão, mas o Edge não conseguiu marcar o título ou favicon porque o renderizador já estava congelado.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ guia(s) permaneceram congeladas após o recarregamento de liberação. O Edge não permitiu reativá-las sem selecioná-las, então não houve outra recarga. Tente novamente.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostrar diagnóstico"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Ocultar diagnóstico"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnóstico da ação"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incidente"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Resultados agrupados"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registro de diagnóstico sanitizado"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copiar registro"
+  },
+  "popup_diagnostics_download": {
+    "message": "Baixar latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Limpar diagnóstico"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registro de diagnóstico copiado."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Não foi possível copiar o registro de diagnóstico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "O download do registro de diagnóstico começou."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Não foi possível baixar o registro de diagnóstico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnóstico limpo."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Não foi possível limpar o diagnóstico."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Não há diagnóstico sanitizado disponível."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "concluídas"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "ignoradas"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "falharam"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Resultado classificado"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnóstico"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Os registros sanitizados excluem URLs, títulos, IDs de guias e janelas, regras de sites e atividade de janelas anônimas."
+  },
+  "options_diagnostics_download": {
+    "message": "Baixar latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Limpar diagnóstico"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnóstico limpo."
+  },
+  "options_diagnostics_empty": {
+    "message": "Não há diagnósticos sanitizados disponíveis."
   }
 }

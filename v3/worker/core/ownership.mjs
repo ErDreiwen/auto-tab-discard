@@ -64,6 +64,8 @@ const serializeNativeMutation = task => {
 };
 let reconciledOnce = false;
 let bound = false;
+let lineageReconcileTimer;
+const LINEAGE_RECONCILE_DELAY = 250;
 // Reset advances this fence before it waits for queued storage work. Any
 // ownership operation that began against an older epoch can finish its native
 // browser work, but it can no longer recreate a marker after the reset barrier.
@@ -536,15 +538,17 @@ const mutate = (
   return operation;
 };
 
-const queryTabs = options => new Promise((resolve, reject) => chrome.tabs.query(options, tabs => {
-  const error = chrome.runtime.lastError;
-  if (error) {
-    reject(Error(error.message || error));
+const queryTabs = options => new Promise((resolve, reject) => chrome.tabs.query(
+  options, (tabs, compatibilityError) => {
+    const error = chrome.runtime.lastError || compatibilityError;
+    if (error) {
+      reject(Error(error.message || error));
+    }
+    else {
+      resolve(tabs || []);
+    }
   }
-  else {
-    resolve(tabs || []);
-  }
-}));
+));
 const getTab = id => new Promise(resolve => chrome.tabs.get(resolveId(id), tab => {
   const error = chrome.runtime.lastError;
   resolve(error ? undefined : tab);
@@ -1917,6 +1921,21 @@ const reconcile = (operationEpoch = epoch) => serializeNativeMutation(() =>
   reconcileUnlocked(operationEpoch)
 );
 
+// A long-lived MV3 worker can observe many Edge replacement chains without a
+// restart. Debounce an authoritative live-tab reconciliation after runtime
+// replacement activity so compressed predecessor edges are retired after work
+// settles rather than accumulating until the next startup/reset.
+const scheduleLineageReconcile = () => {
+  if (lineageReconcileTimer !== undefined || resetting || !initialized) {
+    return;
+  }
+  lineageReconcileTimer = setTimeout(() => {
+    lineageReconcileTimer = undefined;
+    reconcile().catch(report);
+  }, LINEAGE_RECONCILE_DELAY);
+  lineageReconcileTimer?.unref?.();
+};
+
 const ensurePersistenceCertain = (operationEpoch = epoch) => {
   if (!persistenceUncertain && !nativeRemovalPersistenceUncertain) {
     return Promise.resolve(true);
@@ -1970,7 +1989,7 @@ const start = async (retries = 2, delay = 250, operationEpoch = epoch) => {
 // same global ordering fence as orphan creation. The callback must perform its
 // check and browser effect synchronously (returning the resulting Promise is
 // fine); no orphan can appear between those two steps.
-const withNativeMutationGuard = (task, targetId, allowedAttemptId) => {
+const withNativeMutationGuard = (task, targetId, allowedAttemptId, preflight) => {
   const requestedEpoch = epoch;
   const requestedDuringReset = resetting;
   const requestedRemovalGeneration = nativeRemovalGeneration;
@@ -2015,6 +2034,23 @@ const withNativeMutationGuard = (task, targetId, allowedAttemptId) => {
       (targetMarker?.state === 'direct-native-pending' && !authorizedDirectNative) ||
       isDirectNativeOrphan(targetMarker)) {
     const error = Error('direct native discard lineage is unresolved');
+    error.code = 'DIRECT_NATIVE_ORPHAN_BLOCKED';
+    throw error;
+  }
+  // Browser scope reads are asynchronous, but the resulting mutation must be
+  // issued in this same native serializer turn. Await the optional preflight
+  // here, then perform only synchronous in-memory fence checks before task()
+  // invokes the browser API. Callers use this for authoritative tab/window
+  // validation without reopening a move/reset race after validation.
+  if (typeof preflight === 'function' && await preflight() !== true) {
+    const error = Error('native mutation scope is no longer authorized');
+    error.code = 'NATIVE_SCOPE_INVALID';
+    throw error;
+  }
+  if (resetting || requestedEpoch !== epoch ||
+      requestedRemovalGeneration !== nativeRemovalGeneration ||
+      (typeof allowedAttemptId === 'string' && attempts.get(resolvedTargetId) !== allowedAttemptId)) {
+    const error = Error('direct native discard lineage changed during preflight');
     error.code = 'DIRECT_NATIVE_ORPHAN_BLOCKED';
     throw error;
   }
@@ -2258,7 +2294,7 @@ const bind = () => {
   });
   chrome.tabs.onReplaced?.addListener((addedId, removedId) => {
     if (initialized) {
-      replace(addedId, removedId).catch(report);
+      replace(addedId, removedId).then(scheduleLineageReconcile, report);
     }
   });
 };

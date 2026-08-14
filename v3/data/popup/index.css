@@ -32,10 +32,17 @@ body {
   display: none !important;
 }
 
+/* Never force a horizontal scrollbar when the browser gives the popup less
+   than its preferred width (including space consumed by a vertical bar). */
+@media (max-width: 377px) {
+  body {
+    min-width: unset;
+  }
+}
+
 /* FF overflow menu */
 @media (width: 348px) or (width: 377px) {
   body {
-    min-width: unset;
     overflow: hidden;
   }
   header {
@@ -106,7 +113,9 @@ li {
   margin-block-start: 8px;
 }
 #activity-cancel,
-#activity-retry {
+#activity-retry,
+#activity-diagnostics-toggle,
+#activity-diagnostics-actions button {
   background-color: var(--button);
   border: solid 1px var(--dark);
   border-radius: 3px;
@@ -114,8 +123,86 @@ li {
   padding: 5px 12px;
 }
 #activity-cancel:hover,
-#activity-retry:hover {
+#activity-retry:hover,
+#activity-diagnostics-toggle:hover,
+#activity-diagnostics-actions button:hover {
   background-color: var(--dark);
+}
+#activity-diagnostics-panel {
+  border-block-start: solid 1px var(--dark);
+  margin-block-start: 10px;
+  min-inline-size: 0;
+  padding-block-start: 10px;
+}
+#activity-diagnostics-meta {
+  display: grid;
+  gap: 3px;
+  grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
+}
+#activity-diagnostics-meta bdi,
+#activity-diagnostics-meta code {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+#activity-diagnostics-panel h2 {
+  font-size: 100%;
+  margin-block: 10px 5px;
+}
+#activity-diagnostics-reasons {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  min-inline-size: 0;
+}
+#activity-diagnostics-reasons li {
+  border-inline-start: 3px solid var(--dark);
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  padding-inline-start: 7px;
+}
+#activity-diagnostics-reasons code {
+  user-select: text;
+}
+#activity-diagnostics-log {
+  background-color: var(--dark);
+  box-sizing: border-box;
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  margin: 0;
+  max-block-size: 180px;
+  max-inline-size: 100%;
+  overflow: auto;
+  padding: 8px;
+  user-select: text;
+  white-space: pre-wrap;
+}
+#activity-diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: end;
+  margin-block-start: 8px;
+}
+#activity-diagnostics-feedback:not(:empty) {
+  block-size: auto;
+  clip: auto;
+  clip-path: none;
+  inline-size: auto;
+  margin-block-start: 6px;
+  overflow: visible;
+  position: static;
+  white-space: normal;
+}
+@media (max-width: 377px) {
+  #activity-diagnostics-meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #activity-diagnostics-actions button {
+    flex: 1 1 100%;
+    text-align: center;
+  }
 }
 button {
   appearance: none;
@@ -219,18 +306,32 @@ li button[data-cmd^="release"] svg {
 }
 .mlt {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(4, min-content);
+  grid-template-columns: minmax(0, 1fr) minmax(7.5rem, 45%);
+  grid-template-rows: auto auto;
   white-space: normal;
   align-items: center;
   grid-gap: 5px;
   margin: 10px;
 }
+.mlt > span {
+  grid-row: 1 / span 2;
+}
 .mlt > label {
-  display: contents;
+  align-items: center;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-inline-size: 0;
 }
 .mlt input[type=checkbox] {
   margin-block: 0;
-  margin-inline: 5px 0;
+  margin-inline: 0;
+}
+.mlt > label > span {
+  hyphens: auto;
+  min-inline-size: 0;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .mlt > span,
 .ald > label {

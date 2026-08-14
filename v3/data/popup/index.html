@@ -9,13 +9,32 @@
   <body>
     <header><h1 id="popup-heading" data-i18n="popup_title"></h1></header>
     <section id="activity" hidden role="region" aria-labelledby="activity-status" aria-busy="false">
-      <div id="activity-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></div>
+      <div id="activity-status" tabindex="-1"></div>
+      <div id="activity-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
       <progress id="activity-progress" value="0" max="1" aria-labelledby="activity-status" aria-describedby="activity-summary"></progress>
       <div id="activity-summary"></div>
       <div id="activity-actions">
         <button type="button" id="activity-cancel" data-i18n="popup_cancel"></button>
         <button type="button" id="activity-retry" data-i18n="popup_retry" hidden></button>
+        <button type="button" id="activity-diagnostics-toggle" data-i18n="popup_diagnostics_show" aria-expanded="false" aria-controls="activity-diagnostics-panel" hidden></button>
       </div>
+      <span id="activity-diagnostics-heading" class="visually-hidden" data-i18n="popup_diagnostics_region"></span>
+      <section id="activity-diagnostics-panel" role="region" aria-labelledby="activity-diagnostics-heading" hidden>
+        <div id="activity-diagnostics-meta">
+          <span id="activity-diagnostics-incident-label" data-i18n="popup_diagnostics_incident"></span>
+          <bdi dir="ltr"><code id="activity-diagnostics-incident"></code></bdi>
+        </div>
+        <h2 id="activity-diagnostics-reasons-heading" data-i18n="popup_diagnostics_reasons"></h2>
+        <ul id="activity-diagnostics-reasons" aria-labelledby="activity-diagnostics-reasons-heading"></ul>
+        <h2 id="activity-diagnostics-log-heading" data-i18n="popup_diagnostics_log"></h2>
+        <pre id="activity-diagnostics-log" tabindex="0" aria-labelledby="activity-diagnostics-log-heading"></pre>
+        <div id="activity-diagnostics-actions">
+          <button type="button" id="activity-diagnostics-copy" data-i18n="popup_diagnostics_copy"></button>
+          <button type="button" id="activity-diagnostics-download" data-i18n="popup_diagnostics_download"></button>
+          <button type="button" id="activity-diagnostics-clear" data-i18n="popup_diagnostics_clear"></button>
+        </div>
+        <div id="activity-diagnostics-feedback" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+      </section>
     </section>
     <span id="shift-hint" class="visually-hidden" data-i18n="popup_shift_hint"></span>
     <span id="release-label" class="visually-hidden" data-i18n="popup_release"></span>

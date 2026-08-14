@@ -1,10 +1,15 @@
 import {overwrite, release} from '../loader.mjs';
-import {helperRegistry} from '../../core/helper-registry.mjs';
+import {
+  configureHelperRegistryNativeGuard,
+  helperRegistry
+} from '../../core/helper-registry.mjs';
 import {helperMetadata} from '../../core/helper-metadata.mjs';
 import {createBlankPreparer} from '../../core/blank-helper.mjs';
 import {inprogress} from '../../core/discard.mjs';
 import {ownership} from '../../core/ownership.mjs';
 import {log, query} from '../../core/utils.mjs';
+
+configureHelperRegistryNativeGuard((task, id) => ownership.withNativeMutationGuard(task, id));
 
 const createTab = options => new Promise((resolve, reject) => {
   try {

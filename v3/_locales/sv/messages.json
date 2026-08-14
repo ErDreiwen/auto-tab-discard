@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Avbryt"
   },
   "popup_retry": {
     "message": "Försök igen"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ av $TOTAL$ flikar slutförda",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ lyckades, $SKIPPED$ hoppades över, $FAILED$ misslyckades.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Avbryter säkert…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Avbrutet."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Klart."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Klart med några flikar ej slutförda."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Åtgärden kunde inte slutföras."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Webbläsaren avbröt föregående åtgärd."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "En annan flikåtgärd körs redan i det här fönstret."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "Flikåtgärden misslyckades."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Ingen aktiv flik är tillgänglig."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "Den valda fliken ändrades innan åtgärden kunde köras."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ flik(ar) laddades ur direkt av tillägget, men Edge kunde inte märka titel eller favicon eftersom renderaren redan var fryst.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ flik(ar) förblev frysta efter frigöringsomladdningen. Edge kunde inte väcka dem utan aktivering, så ingen andra omladdning gjordes. Försök igen.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Visa diagnostik"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Dölj diagnostik"
+  },
+  "popup_diagnostics_region": {
+    "message": "Åtgärdsdiagnostik"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incident"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Grupperade resultat"
+  },
+  "popup_diagnostics_log": {
+    "message": "Rensad diagnostiklogg"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Kopiera logg"
+  },
+  "popup_diagnostics_download": {
+    "message": "Hämta latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Rensa diagnostik"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnostikloggen kopierades."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Diagnostikloggen kunde inte kopieras."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Hämtningen av diagnostikloggen startade."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Diagnostikloggen kunde inte hämtas."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostiken rensades."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Diagnostiken kunde inte rensas."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Ingen rensad diagnostik är tillgänglig."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "lyckades"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "hoppades över"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "misslyckades"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Klassificerat resultat"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostik"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Rensade loggar utesluter webbadresser, titlar, flik- och fönster-ID:n, webbplatsregler och aktivitet i privata fönster."
+  },
+  "options_diagnostics_download": {
+    "message": "Hämta latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Rensa diagnostik"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostiken rensades."
+  },
+  "options_diagnostics_empty": {
+    "message": "Ingen rensad diagnostik är tillgänglig."
   }
 }

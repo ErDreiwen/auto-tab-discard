@@ -4,7 +4,7 @@ import {previousReleaseScope} from '../release-scopes.mjs';
 
 const observe = activeInfo => getTab(activeInfo.tabId).then(tab => {
   const scope = previousReleaseScope(activeInfo, tab);
-  return scope && query(scope.query).then(tabs => releaseMatching(tabs, scope.matches));
+  return scope && query(scope.query).then(tabs => releaseMatching(tabs, scope));
 }).catch(error => log('previous release failed', error));
 
 function enable() {

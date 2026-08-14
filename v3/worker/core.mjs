@@ -9,7 +9,7 @@ import {discard} from './core/discard.mjs';
 import {ownership} from './core/ownership.mjs';
 import {createLifecycleNavigation} from './core/lifecycle.mjs';
 import {installExternalDiscardApi} from './core/external-api.mjs';
-import './modes/number.mjs';
+import {number} from './modes/number.mjs';
 import './menu.mjs';
 
 // External extension control is opt-in, ID-allowlisted, schema-bound, and uses
@@ -27,7 +27,8 @@ chrome.runtime.onMessage.addListener((request, sender, resposne) => {
       ownership,
       chrome.storage.local,
       discard.cancelTakeovers,
-      releaseTab
+      releaseTab,
+      discard.beginReset
     ), resposne);
   }
   else if (method === 'storage') {
@@ -53,7 +54,9 @@ storage.on('click', () => popup());
 starters.push(async () => {
   await ownership.start();
   await discard.recoverInterruptedPulse();
-  await discard.recoverOrdinaryDiscards();
+  await discard.recoverOrdinaryDiscards({
+    revalidate: tabs => number.revalidateOrdinaryIntents(tabs)
+  });
   return discard.recoverTakeovers();
 });
 

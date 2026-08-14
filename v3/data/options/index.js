@@ -6,9 +6,28 @@ import {
   validateSettingsRecord
 } from './core/settings-backup.mjs';
 import {serializeSupportBundle} from './core/support-bundle.mjs';
+import {restoreModeControl} from './core/mode-control.mjs';
+import {boundedRuntimeMessage} from '../common/runtime-call.mjs';
 import {FORK_REPOSITORY} from '../../worker/core/lifecycle.mjs';
 import {normalizeTitleMarker} from '../../worker/core/marker-title.mjs';
+import {
+  expandPluginPolicyKeys,
+  PLUGIN_KEYS,
+  PLUGIN_PREFERENCES
+} from '../../worker/core/plugin-catalog.mjs';
+import {
+  LOCAL_PREFERENCE_MIGRATION_KEYS,
+  normalizeToolbarClick,
+  overlayPreferenceLayers,
+  planLocalPreferenceMigration
+} from '../../worker/core/preference-migrations.mjs';
 import {validateRuleList} from '../../worker/core/rules.mjs';
+import {
+  recoverSettingsImport,
+  SETTINGS_IMPORT_FENCE_KEY,
+  SETTINGS_IMPORT_TRANSACTION_KEY,
+  withSettingsImportLock
+} from '../../worker/core/settings-import-transaction.mjs';
 
 'use strict';
 
@@ -16,7 +35,12 @@ const isFirefox = /Firefox/.test(navigator.userAgent);
 
 // localization
 [...document.querySelectorAll('[data-i18n]')].forEach(e => {
-  e[e.dataset.i18nValue || 'textContent'] = chrome.i18n.getMessage(e.dataset.i18n);
+  const localized = chrome.i18n.getMessage(e.dataset.i18n);
+  // New controls retain their explicit English text until a locale receives
+  // the corresponding string instead of becoming invisible in that window.
+  if (localized) {
+    e[e.dataset.i18nValue || 'textContent'] = localized;
+  }
 });
 
 // memory
@@ -35,11 +59,15 @@ if (!navigator.getBattery) {
 }
 
 const info = document.getElementById('info');
+const diagnosticsInfo = document.getElementById('diagnostics-info');
 let settingsMutating = false;
 
 const message = (key, fallback) => chrome.i18n.getMessage(key) || fallback;
 const reportError = (key, fallback, error) => {
   info.textContent = `${message(key, fallback)}: ${error?.message || String(error)}`;
+};
+const reportDiagnosticsError = (key, fallback, error) => {
+  diagnosticsInfo.textContent = `${message(key, fallback)}: ${error?.message || String(error)}`;
 };
 
 const call = (target, method, ...args) => new Promise((resolve, reject) => {
@@ -65,6 +93,14 @@ const call = (target, method, ...args) => new Promise((resolve, reject) => {
   }
 });
 
+const diagnosticsRequest = async method => {
+  const response = await boundedRuntimeMessage(chrome.runtime, {method});
+  if (response?.ok !== true) {
+    throw Error(response?.error || 'Diagnostic request failed');
+  }
+  return response.value;
+};
+
 const localStorageSnapshot = () => Object.fromEntries(
   Object.keys(localStorage).map(key => [key, localStorage.getItem(key)])
 );
@@ -76,37 +112,83 @@ const replaceLocalStorage = values => {
 };
 
 const importAdapter = {
-  clearStorage: () => call(chrome.storage.local, 'clear'),
+  lockManager: navigator.locks,
+  requireLock: true,
   readLocalStorage: async () => localStorageSnapshot(),
   readStorage: () => call(chrome.storage.local, 'get', null),
+  readTransaction: () => call(chrome.storage.local, 'get', [
+    SETTINGS_IMPORT_FENCE_KEY,
+    SETTINGS_IMPORT_TRANSACTION_KEY
+  ]),
+  removeStorage: keys => call(chrome.storage.local, 'remove', keys),
   replaceLocalStorage: async values => replaceLocalStorage(values),
   writeStorage: values => call(chrome.storage.local, 'set', values)
 };
 
 const applyImportedSettings = async settings => {
-  const storageSnapshot = await importAdapter.readStorage();
-  const localSnapshot = await importAdapter.readLocalStorage();
   settingsMutating = true;
   try {
-    await commitSettingsImport(settings, {
-      ...importAdapter,
-      readLocalStorage: async () => localSnapshot,
-      readStorage: async () => storageSnapshot
-    }, {validateRules});
+    await commitSettingsImport(settings, importAdapter, {validateRules});
   }
   finally {
     settingsMutating = false;
   }
 };
 
-const storage = async prefs => {
-  let defaults = prefs;
-  try {
-    defaults = await call(chrome.storage.managed, 'get', prefs) || prefs;
+const withImportLock = task => withSettingsImportLock(importAdapter.lockManager, task);
+
+let importRecovery;
+const recoverInterruptedImport = ({lockHeld = false} = {}) => {
+  if (!importRecovery) {
+    const operation = recoverSettingsImport(importAdapter, {lockHeld}).finally(() => {
+      if (importRecovery === operation) {
+        importRecovery = undefined;
+      }
+    });
+    importRecovery = operation;
   }
-  catch (error) {}
-  return call(chrome.storage.local, 'get', defaults);
+  return importRecovery;
 };
+
+let localPreferenceMigration;
+const migrateLocalPreferences = () => {
+  if (!localPreferenceMigration) {
+    localPreferenceMigration = call(
+      chrome.storage.local,
+      'get',
+      LOCAL_PREFERENCE_MIGRATION_KEYS
+    ).then(async stored => {
+      const plan = planLocalPreferenceMigration(stored);
+      if (Object.keys(plan.set).length) {
+        await call(chrome.storage.local, 'set', plan.set);
+      }
+      if (plan.remove.length) {
+        await call(chrome.storage.local, 'remove', plan.remove);
+      }
+      return plan;
+    }).catch(error => {
+      localPreferenceMigration = undefined;
+      throw error;
+    });
+  }
+  return localPreferenceMigration;
+};
+
+const storage = prefs => withImportLock(async () => {
+  await recoverInterruptedImport({lockHeld: true});
+  await migrateLocalPreferences();
+  const keys = Object.keys(prefs);
+  const managedKeys = expandPluginPolicyKeys(keys);
+  const [local, managed] = await Promise.all([
+    call(chrome.storage.local, 'get', prefs),
+    call(chrome.storage.managed, 'get', managedKeys).catch(() => ({}))
+  ]);
+  const effective = overlayPreferenceLayers(prefs, local, Object.fromEntries(
+    managedKeys.filter(key => Object.prototype.hasOwnProperty.call(managed || {}, key))
+      .map(key => [key, managed[key]])
+  ));
+  return Object.fromEntries(keys.map(key => [key, effective[key]]));
+});
 const restore = () => storage({
   'period': 10 * 60, // in seconds
   'number': 6, // number of tabs before triggering discard
@@ -147,16 +229,7 @@ const restore = () => storage({
   'startup-release-pinned': false,
   'force.hostnames': [],
   /* plugins */
-  './plugins/dummy/core.js': false,
-  './plugins/blank/core.js': true,
-  './plugins/focus/core.js': false,
-  './plugins/trash/core.js': false,
-  './plugins/force/core.js': false,
-  './plugins/next/core.js': false,
-  './plugins/previous/core.js': false,
-  './plugins/new/core.js': false,
-  './plugins/unloaded/core.js': false,
-  './plugins/youtube/core.js': false
+  ...PLUGIN_PREFERENCES
 }).then(prefs => {
   if (navigator.getBattery === undefined) {
     document.getElementById('battery_enabled').closest('tr').disabled = true;
@@ -202,20 +275,12 @@ const restore = () => storage({
   document.getElementById('startup-unpinned').checked = prefs['startup-unpinned'];
   document.getElementById('startup-pinned').checked = prefs['startup-pinned'];
   document.getElementById('startup-release-pinned').checked = prefs['startup-release-pinned'];
-  if (prefs.mode === 'url-based') {
-    document.getElementById('url-based').checked = true;
+  restoreModeControl(document.getElementById('url-based'), prefs.mode);
+  const click = normalizeToolbarClick(prefs.click);
+  (document.getElementById(click) || document.getElementById('click.popup')).checked = true;
+  for (const key of PLUGIN_KEYS) {
+    document.getElementById(key).checked = prefs[key] === true;
   }
-  document.getElementById(prefs.click).checked = true;
-  document.getElementById('./plugins/dummy/core.js').checked = prefs['./plugins/dummy/core.js'];
-  document.getElementById('./plugins/blank/core.js').checked = prefs['./plugins/blank/core.js'];
-  document.getElementById('./plugins/focus/core.js').checked = prefs['./plugins/focus/core.js'];
-  document.getElementById('./plugins/trash/core.js').checked = prefs['./plugins/trash/core.js'];
-  document.getElementById('./plugins/force/core.js').checked = prefs['./plugins/force/core.js'];
-  document.getElementById('./plugins/next/core.js').checked = prefs['./plugins/next/core.js'];
-  document.getElementById('./plugins/previous/core.js').checked = prefs['./plugins/previous/core.js'];
-  document.getElementById('./plugins/new/core.js').checked = prefs['./plugins/new/core.js'];
-  document.getElementById('./plugins/unloaded/core.js').checked = prefs['./plugins/unloaded/core.js'];
-  document.getElementById('./plugins/youtube/core.js').checked = prefs['./plugins/youtube/core.js'];
 });
 
 const ruleFormat = key => key === 'trash.whitelist-url' ? 'trash' :
@@ -243,7 +308,7 @@ const collectSettings = () => {
     'trash.period': Math.max(Number(document.getElementById('trash.period').value), 1),
     'trash.unloaded': document.getElementById('trash.unloaded').checked,
     'mode': document.getElementById('url-based').checked ? 'url-based' : 'time-based',
-    'click': document.querySelector('[name=left-click]:checked').id,
+    'click': normalizeToolbarClick(document.querySelector('[name=left-click]:checked')?.id),
     'audio': document.getElementById('audio').checked,
     'paused': document.getElementById('paused').checked,
     'pinned': document.getElementById('pinned').checked,
@@ -273,17 +338,8 @@ const collectSettings = () => {
     'startup-pinned': document.getElementById('startup-pinned').checked,
     'startup-release-pinned': document.getElementById('startup-release-pinned').checked,
     /* plugins*/
-    './plugins/dummy/core.js': document.getElementById('./plugins/dummy/core.js').checked,
-    './plugins/blank/core.js': document.getElementById('./plugins/blank/core.js').checked,
-    './plugins/focus/core.js': document.getElementById('./plugins/focus/core.js').checked,
-    './plugins/trash/core.js': document.getElementById('./plugins/trash/core.js').checked,
+    ...Object.fromEntries(PLUGIN_KEYS.map(key => [key, document.getElementById(key).checked])),
     'trash.whitelist-url': parseRules('trash.whitelist-url'),
-    './plugins/force/core.js': document.getElementById('./plugins/force/core.js').checked,
-    './plugins/next/core.js': document.getElementById('./plugins/next/core.js').checked,
-    './plugins/previous/core.js': document.getElementById('./plugins/previous/core.js').checked,
-    './plugins/new/core.js': document.getElementById('./plugins/new/core.js').checked,
-    './plugins/unloaded/core.js': document.getElementById('./plugins/unloaded/core.js').checked,
-    './plugins/youtube/core.js': document.getElementById('./plugins/youtube/core.js').checked
   };
   return validateSettingsRecord(settings, {validateRules});
 };
@@ -291,10 +347,13 @@ const collectSettings = () => {
 document.getElementById('save').addEventListener('click', async () => {
   try {
     const settings = collectSettings();
-    await call(chrome.storage.local, 'set', settings);
+    await withImportLock(async () => {
+      await recoverInterruptedImport({lockHeld: true});
+      await call(chrome.storage.local, 'set', settings);
+    });
     document.getElementById('prepends').value = settings.prepends;
     info.textContent = chrome.i18n.getMessage('options_save_msg');
-    restore();
+    await restore();
     window.setTimeout(() => info.textContent = '', 750);
   }
   catch (error) {
@@ -309,9 +368,12 @@ document.getElementById('support').addEventListener('click', () => chrome.tabs.c
 document.addEventListener('DOMContentLoaded', restore);
 
 // restart if needed
-const onChanged = prefs => {
+const onChanged = (prefs, areaName) => {
   if (settingsMutating) {
     return;
+  }
+  if (areaName === 'managed') {
+    void restore();
   }
   const tab = prefs['tab.context'];
   const page = prefs['page.context'];
@@ -362,21 +424,64 @@ document.querySelector('#rate input').onclick = () => {
   });
 };
 
-const downloadJSON = (text, download) => {
-  const objectURL = URL.createObjectURL(new Blob([text], {type: 'application/json'}));
+const downloadText = (text, download, type) => {
+  const objectURL = URL.createObjectURL(new Blob([text], {type}));
   Object.assign(document.createElement('a'), {
     download,
     href: objectURL,
-    type: 'application/json'
+    type
   }).dispatchEvent(new MouseEvent('click'));
   setTimeout(() => URL.revokeObjectURL(objectURL));
 };
+const downloadJSON = (text, download) => downloadText(text, download, 'application/json');
+
+document.getElementById('download-diagnostics').addEventListener('click', async () => {
+  diagnosticsInfo.textContent = '';
+  try {
+    const result = await diagnosticsRequest('diagnostics-export');
+    if (!result?.incident || typeof result.text !== 'string' || result.text.length === 0) {
+      diagnosticsInfo.textContent = message(
+        'options_diagnostics_empty',
+        'No diagnostic history is available yet.'
+      );
+      return;
+    }
+    downloadText(
+      result.text,
+      'auto-tab-discard-latest.log',
+      'text/plain;charset=utf-8'
+    );
+  }
+  catch (error) {
+    reportDiagnosticsError('options_export_failed', 'Export failed', error);
+  }
+});
+
+document.getElementById('clear-diagnostics').addEventListener('click', async () => {
+  diagnosticsInfo.textContent = '';
+  try {
+    const result = await diagnosticsRequest('diagnostics-clear');
+    if (result?.cleared !== true) {
+      throw Error('Diagnostic history was not cleared');
+    }
+    diagnosticsInfo.textContent = message(
+      'options_diagnostics_cleared',
+      'Diagnostic history cleared.'
+    );
+  }
+  catch (error) {
+    reportDiagnosticsError('options_save_failed', 'Clear failed', error);
+  }
+});
 
 // Raw settings export. The filename and document label deliberately call out
 // that site rules can be present; use the separate support bundle for sharing.
 document.getElementById('export').addEventListener('click', async () => {
   try {
-    const prefs = await call(chrome.storage.local, 'get', null);
+    const prefs = await withImportLock(async () => {
+      await recoverInterruptedImport({lockHeld: true});
+      return call(chrome.storage.local, 'get', null);
+    });
     downloadJSON(
       serializeRawSettingsBackup(prefs, {validateRules}),
       'auto-tab-discard-RAW-settings.json'
@@ -389,8 +494,15 @@ document.getElementById('export').addEventListener('click', async () => {
 
 document.getElementById('export-support').addEventListener('click', async () => {
   try {
-    const prefs = await call(chrome.storage.local, 'get', null);
+    const [prefs, journal] = await Promise.all([
+      withImportLock(async () => {
+        await recoverInterruptedImport({lockHeld: true});
+        return call(chrome.storage.local, 'get', null);
+      }),
+      diagnosticsRequest('diagnostics-snapshot').catch(() => undefined)
+    ]);
     downloadJSON(serializeSupportBundle(prefs, {
+      journal,
       manifest: chrome.runtime.getManifest(),
       userAgent: navigator.userAgent
     }), 'auto-tab-discard-SANITIZED-support.json');

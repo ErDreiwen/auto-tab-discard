@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "取消"
   },
   "popup_retry": {
     "message": "重試"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "已完成 $COMPLETED$/$TOTAL$ 個分頁",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ 個成功、$SKIPPED$ 個已略過、$FAILED$ 個失敗。",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "正在安全取消…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "已取消。"
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "已完成。"
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "已完成，但部分分頁未處理。"
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "無法完成此操作。"
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "瀏覽器中斷了上一次操作。"
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "此視窗中已有其他分頁操作正在執行。"
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "分頁操作失敗。"
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "沒有可用的作用中分頁。"
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "操作執行前，選取的分頁已變更。"
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ 個分頁已轉換為由擴充功能管理的原生捨棄狀態，但由於轉譯器已凍結，Edge 無法加入標題或網站圖示標記。",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ 個分頁在釋放重新載入後仍處於凍結狀態。Edge 無法在不啟用分頁的情況下喚醒它們，因此未嘗試第二次重新載入。請重試。",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "顯示診斷資訊"
+  },
+  "popup_diagnostics_hide": {
+    "message": "隱藏診斷資訊"
+  },
+  "popup_diagnostics_region": {
+    "message": "操作診斷"
+  },
+  "popup_diagnostics_incident": {
+    "message": "事件"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "分組結果"
+  },
+  "popup_diagnostics_log": {
+    "message": "已清理的診斷記錄"
+  },
+  "popup_diagnostics_copy": {
+    "message": "複製記錄"
+  },
+  "popup_diagnostics_download": {
+    "message": "下載 latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "清除診斷資訊"
+  },
+  "popup_diagnostics_copied": {
+    "message": "已複製診斷記錄。"
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "無法複製診斷記錄。"
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "診斷記錄下載已開始。"
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "無法下載診斷記錄。"
+  },
+  "popup_diagnostics_cleared": {
+    "message": "已清除診斷資訊。"
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "無法清除診斷資訊。"
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "沒有可用的已清理診斷資訊。"
+  },
+  "popup_diagnostics_status_success": {
+    "message": "成功"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "已略過"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "失敗"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "已分類的結果"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "診斷"
+  },
+  "options_diagnostics_privacy": {
+    "message": "已清理的記錄不包含 URL、標題、分頁和視窗 ID、網站規則及私人視窗活動。"
+  },
+  "options_diagnostics_download": {
+    "message": "下載 latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "清除診斷資訊"
+  },
+  "options_diagnostics_cleared": {
+    "message": "已清除診斷資訊。"
+  },
+  "options_diagnostics_empty": {
+    "message": "沒有可用的已清理診斷資訊。"
   }
 }

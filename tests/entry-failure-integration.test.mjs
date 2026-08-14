@@ -93,9 +93,45 @@ test('production listeners use the shared runner and its reporter uses a browser
   assert.match(menuSource,
     /chrome\.contextMenus\.onClicked\.addListener\([\s\S]*?void runEntry\(info\.menuItemId,/);
   assert.match(menuSource,
-    /chrome\.action\.onClicked\.addListener\(async tab => \{[\s\S]*?await runEntry\('toolbar',/);
+    /chrome\.action\.onClicked\.addListener\(async tab => \{[\s\S]*?return await runEntry\('toolbar',[\s\S]*?return onClicked\(\{menuItemId\}, tab\)/);
   assert.match(menuSource,
-    /chrome\.commands\.onCommand\.addListener\(async command => \{[\s\S]*?await runEntry\(command,/);
+    /chrome\.commands\.onCommand\.addListener\(async command => \{[\s\S]*?return await runEntry\(command,[\s\S]*?return handleNavigation\(command\)[\s\S]*?return onClicked\(\{/);
   assert.match(utilsSource, /const notify = e => chrome\.notifications\.create\(/);
   assert.match(utilsSource, /message: e\.message \|\| e/);
+});
+
+test('toolbar and shortcut tasks return structured partial failures to the shared reporter', async () => {
+  const notifications = [];
+  const report = entry => notifications.push(entry);
+  const partial = tabId => ({
+    failed: [{reason: 'native discard did not settle', tab: {id: tabId}}],
+    succeeded: []
+  });
+  const onClicked = async (info, tab) => partial(tab.id);
+  const handleNavigation = async () => partial(53);
+  const runEntry = (command, task) => runEntryCommand(command, task, report);
+
+  const toolbar = await runEntry('toolbar', async () => {
+    return onClicked({menuItemId: 'discard-tab'}, {id: 51});
+  });
+  const shortcut = await runEntry('discard-tabs', async () => {
+    return onClicked({menuItemId: 'discard-tabs'}, {id: 52});
+  });
+  const navigation = await runEntry('close', async () => {
+    return handleNavigation('close');
+  });
+
+  for (const settlement of [toolbar, shortcut, navigation]) {
+    assert.equal(settlement.ok, true);
+    assert.equal(settlement.partial, true);
+    assert.equal(settlement.reasons.length, 1);
+  }
+  assert.deepEqual(notifications.map(({command}) => command), [
+    'toolbar',
+    'discard-tabs',
+    'close'
+  ]);
+  assert.match(notifications[0].message, /tab 51: native discard did not settle/);
+  assert.match(notifications[1].message, /tab 52: native discard did not settle/);
+  assert.match(notifications[2].message, /tab 53: native discard did not settle/);
 });

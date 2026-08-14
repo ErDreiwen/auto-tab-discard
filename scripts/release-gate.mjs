@@ -2,7 +2,7 @@
 
 import {execFile} from 'node:child_process';
 import {constants as fsConstants} from 'node:fs';
-import {copyFile, mkdir, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import {fileURLToPath} from 'node:url';
@@ -12,12 +12,66 @@ import {assertSameInventory, extractArchive, inspectArchive, inspectDirectory} f
 import {loadAndLintManifestPolicy} from './manifest-policy.mjs';
 import {packageRelease} from './package-release.mjs';
 import {verifyReleaseAttestation} from './release-attestation.mjs';
-import {assertReleaseContext} from './release-context.mjs';
+import {
+  assertReleaseContext,
+  assertReleaseOutput,
+  assertUnaliasedReleaseWorkspace
+} from './release-context.mjs';
 import {materializeUpgradeBaseline} from './upgrade-baseline.mjs';
 
 const exec = promisify(execFile);
 const binaryCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const releaseSourceRoot = path.join(repositoryRoot, 'v3');
+const releaseWorkspaceParent = path.join(repositoryRoot, 'build');
+
+const pathContains = (root, candidate) => {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`));
+};
+
+export const createExclusiveReleaseWorkspace = async ({
+  repositoryRoot: workspaceRepositoryRoot = repositoryRoot,
+  sourceRoot = path.join(workspaceRepositoryRoot, 'v3'),
+  workspaceParent = path.join(workspaceRepositoryRoot, 'build'),
+  beforeCreate
+} = {}) => {
+  workspaceRepositoryRoot = path.resolve(workspaceRepositoryRoot);
+  sourceRoot = path.resolve(sourceRoot);
+  workspaceParent = path.resolve(workspaceParent);
+  await mkdir(workspaceParent, {recursive: true});
+
+  // Validate the parent and a future child before creation, then validate the
+  // actual exclusive directory again. If a junction is swapped in at the test
+  // boundary (or by a local attacker), the second check fails without ever
+  // recursively deleting either the old pathname or its redirected target.
+  await assertReleaseOutput({
+    repositoryRoot: workspaceRepositoryRoot,
+    sourceRoot,
+    outputDirectory: path.join(workspaceParent, 'release-gate-work-probe')
+  });
+  await assertUnaliasedReleaseWorkspace({
+    repositoryRoot: workspaceRepositoryRoot,
+    workspaceDirectory: workspaceParent
+  });
+  await beforeCreate?.({workspaceParent});
+  await assertUnaliasedReleaseWorkspace({
+    repositoryRoot: workspaceRepositoryRoot,
+    workspaceDirectory: workspaceParent
+  });
+  const workspaceDirectory = await mkdtemp(path.join(workspaceParent, 'release-gate-work-'));
+  const resolvedWorkspace = await assertReleaseOutput({
+    repositoryRoot: workspaceRepositoryRoot,
+    sourceRoot,
+    outputDirectory: workspaceDirectory
+  });
+  await assertUnaliasedReleaseWorkspace({
+    repositoryRoot: workspaceRepositoryRoot,
+    workspaceDirectory
+  });
+  return resolvedWorkspace;
+};
 
 const parseArguments = arguments_ => {
   const options = {};
@@ -286,13 +340,23 @@ export const releaseGate = async ({
   trustedRoot,
   outputDirectory = path.join(repositoryRoot, 'build', 'results')
 } = {}) => {
-  outputDirectory = path.resolve(outputDirectory);
+  const artifactOutputDirectory = await assertReleaseOutput({
+    repositoryRoot,
+    sourceRoot: releaseSourceRoot,
+    outputDirectory
+  });
   const releaseContext = await assertReleaseContext({repositoryRoot});
-  await mkdir(outputDirectory, {recursive: true});
+  outputDirectory = await createExclusiveReleaseWorkspace({
+    repositoryRoot,
+    sourceRoot: releaseSourceRoot,
+    workspaceParent: releaseWorkspaceParent
+  });
+  if (pathContains(outputDirectory, artifactOutputDirectory) ||
+      pathContains(artifactOutputDirectory, outputDirectory)) {
+    throw new Error('Release artifact output must not overlap the isolated release-gate workspace');
+  }
   const reportPath = path.join(outputDirectory, 'release-gate-report.json');
-  await rm(reportPath, {force: true});
   const evidenceRoot = path.join(outputDirectory, 'evidence');
-  await rm(evidenceRoot, {recursive: true, force: true});
   await mkdir(evidenceRoot, {recursive: true});
 
   const blockers = [];
@@ -328,7 +392,6 @@ export const releaseGate = async ({
     releaseMode: false
   });
   const extractedBase = path.join(outputDirectory, 'extracted');
-  await rm(extractedBase, {recursive: true, force: true});
   const extractPackagedArtifact = async target => {
     const described = preliminary.metadata.artifacts?.[target];
     if (!described) {
@@ -554,12 +617,13 @@ export const releaseGate = async ({
     const frozenDirectory = path.join(evidenceRoot, 'edge-frozen');
     await rm(frozenDirectory, {recursive: true, force: true});
     await mkdir(frozenDirectory, {recursive: true});
-    const generated = path.join(repositoryRoot, 'e2e', 'results', 'edge-frozen-smoke.json');
+    const generated = path.join(frozenDirectory, 'edge-frozen-smoke.json');
     await rm(generated, {force: true});
     const frozen = await run(process.execPath, [
       path.join(repositoryRoot, 'e2e', 'edge-frozen-smoke.cjs'),
       '--allow-edge', '--executable', edgeExecutable, '--extension', extractedRoot,
-      '--profile-root', path.join(outputDirectory, 'profiles', 'edge-frozen')
+      '--profile-root', path.join(outputDirectory, 'profiles', 'edge-frozen'),
+      '--results-root', frozenDirectory
     ]);
     await writeCommandEvidence(path.join(frozenDirectory, 'command.txt'), frozen);
     const copied = path.join(frozenDirectory, 'report.json');
@@ -652,7 +716,7 @@ export const releaseGate = async ({
   if (candidateBlockers.length === 0) {
     const final = await packageRelease({
       baseName: policy.policy.archiveBaseName,
-      outputDirectory,
+      outputDirectory: artifactOutputDirectory,
       releaseMode: true,
       testEvidence: report.evidence
     });
@@ -664,7 +728,7 @@ export const releaseGate = async ({
       if (!described) {
         throw new Error(`Final provenance packaging omitted the ${target} artifact`);
       }
-      const finalArchive = await inspectArchive(path.join(outputDirectory, described.file));
+      const finalArchive = await inspectArchive(path.join(artifactOutputDirectory, described.file));
       if (finalArchive.archiveSha256 !== tested.archiveSha256 ||
           finalArchive.archiveBytes !== tested.archiveBytes ||
           finalArchive.treeSha256 !== tested.treeSha256 ||
@@ -684,7 +748,7 @@ export const releaseGate = async ({
       try {
         const attestationDirectory = path.dirname(path.resolve(attestationBundle));
         const verification = await verifyReleaseAttestation({
-          artifactDirectory: outputDirectory,
+          artifactDirectory: artifactOutputDirectory,
           browserGatePath: hostedBrowserGate,
           bundlePath: attestationBundle,
           commitSha: releaseContext.commitSha,
@@ -718,7 +782,7 @@ export const releaseGate = async ({
     report.status = 'blocked';
   }
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  return {report, reportPath};
+  return {artifactOutputDirectory, report, reportPath, workspaceDirectory: outputDirectory};
 };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

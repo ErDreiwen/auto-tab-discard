@@ -1,22 +1,27 @@
 import {normalizeTitleMarker} from '../../../worker/core/marker-title.mjs';
+import {PLUGIN_KEYS} from '../../../worker/core/plugin-catalog.mjs';
+import {
+  LEGACY_DUMMY_PLUGIN_KEY,
+  migrateToolbarClick,
+  TOOLBAR_CLICK_VALUES
+} from '../../../worker/core/preference-migrations.mjs';
+import {
+  assertOwned,
+  createSettingsImportTransaction,
+  finalizeOwned,
+  recoverSettingsImport,
+  SETTINGS_IMPORT_FENCE_KEY,
+  SETTINGS_IMPORT_PHASES,
+  SETTINGS_IMPORT_TRANSACTION_KEY,
+  transitionOwned,
+  userStorageSnapshot,
+  withSettingsImportLock
+} from '../../../worker/core/settings-import-transaction.mjs';
 
 const MAX_BACKUP_BYTES = 1024 * 1024;
 const SETTINGS_BACKUP_FORMAT = 'auto-tab-discard-settings';
 const SETTINGS_BACKUP_VERSION = 1;
 const RAW_BACKUP_LABEL = 'RAW SETTINGS BACKUP - may contain site rules';
-
-const PLUGIN_KEYS = Object.freeze([
-  './plugins/dummy/core.js',
-  './plugins/blank/core.js',
-  './plugins/focus/core.js',
-  './plugins/trash/core.js',
-  './plugins/force/core.js',
-  './plugins/next/core.js',
-  './plugins/previous/core.js',
-  './plugins/new/core.js',
-  './plugins/unloaded/core.js',
-  './plugins/youtube/core.js'
-]);
 
 const BOOLEAN_KEYS = Object.freeze([
   'audio',
@@ -75,18 +80,11 @@ const RULE_FORMATS = Object.freeze({
   'whitelist': 'standard',
   'whitelist-url': 'standard'
 });
+const EXTERNAL_TRUSTED_IDS_KEY = 'external.trusted-ids';
+const EXTERNAL_TRUST_LIMIT = 32;
+const EXTERNAL_ID_LIMIT = 255;
 
-const CLICK_VALUES = Object.freeze([
-  'click.popup',
-  'click.discard-tab',
-  'click.discard-tabs',
-  'click.release-tabs',
-  'click.discard-window',
-  'click.release-window',
-  'click.discard-other-windows',
-  'click.release-other-windows',
-  'click.toggle-allowed'
-]);
+const CLICK_VALUES = TOOLBAR_CLICK_VALUES;
 
 const TRANSIENT_KEYS = new Set([
   '__discardOwnership',
@@ -103,11 +101,6 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const FORMAT_KEYS = new Set(['format', 'version', 'label', 'exportedAt', 'settings']);
 const LEGACY_KEYS = new Set(['chrome.storage.local', 'localStorage']);
 const LEGACY_LOCAL_KEYS = new Set(['click', 'explore-count']);
-const LEGACY_CLICK_VALUES = Object.freeze({
-  'click.discard': 'click.discard-tab',
-  discard: 'click.discard-tab'
-});
-
 class SettingsBackupError extends Error {
   constructor(code, path, message) {
     super(`${path}: ${message}`);
@@ -229,6 +222,28 @@ const validateStringList = (value, key, validateRules) => {
   return output;
 };
 
+const validateExternalTrustedIds = value => {
+  const path = `$.settings.${EXTERNAL_TRUSTED_IDS_KEY}`;
+  if (!Array.isArray(value)) {
+    fail('invalid-type', path, 'must be an array');
+  }
+  if (value.length > EXTERNAL_TRUST_LIMIT) {
+    fail('range', path, `must contain no more than ${EXTERNAL_TRUST_LIMIT} extension IDs`);
+  }
+  const seen = new Set();
+  return value.map((entry, index) => {
+    if (typeof entry !== 'string' || entry.length === 0 || entry.length > EXTERNAL_ID_LIMIT ||
+        /[\x00-\x20\x7f]/.test(entry)) {
+      fail('invalid-type', `${path}[${index}]`, 'must be a bounded extension ID without whitespace');
+    }
+    if (seen.has(entry)) {
+      fail('duplicate', `${path}[${index}]`, 'must be unique');
+    }
+    seen.add(entry);
+    return entry;
+  });
+};
+
 const validateSettingsRecord = (record, {validateRules} = {}) => {
   if (!isObjectRecord(record)) {
     fail('invalid-type', '$.settings', 'must be an object');
@@ -240,6 +255,14 @@ const validateSettingsRecord = (record, {validateRules} = {}) => {
       continue;
     }
     const value = record[key];
+    if (key === LEGACY_DUMMY_PLUGIN_KEY) {
+      if (typeof value !== 'boolean') {
+        fail('invalid-type', `$.settings.${key}`, 'deprecated plugin value must be a boolean');
+      }
+      // V3 never shipped an implementation for this advertised V2 plugin.
+      // Accept old backups, but deliberately drop the inert preference.
+      continue;
+    }
     if (BOOLEAN_KEYS.includes(key)) {
       if (typeof value !== 'boolean') {
         fail('invalid-type', `$.settings.${key}`, 'must be a boolean');
@@ -259,6 +282,9 @@ const validateSettingsRecord = (record, {validateRules} = {}) => {
     else if (RULE_LIST_KEYS.includes(key)) {
       output[key] = validateStringList(value, key, validateRules);
     }
+    else if (key === EXTERNAL_TRUSTED_IDS_KEY) {
+      output[key] = validateExternalTrustedIds(value);
+    }
     else if (key === 'mode') {
       if (!['time-based', 'url-based'].includes(value)) {
         fail('enum', '$.settings.mode', 'must be time-based or url-based');
@@ -266,7 +292,7 @@ const validateSettingsRecord = (record, {validateRules} = {}) => {
       output[key] = value;
     }
     else if (key === 'click') {
-      const candidate = LEGACY_CLICK_VALUES[value] || value;
+      const candidate = migrateToolbarClick(value);
       if (!CLICK_VALUES.includes(candidate)) {
         fail('enum', '$.settings.click', 'unknown toolbar action');
       }
@@ -312,8 +338,7 @@ const normalizeLegacyLocalStorage = (record, settings) => {
     }
   }
   if (!hasOwn(settings, 'click') && typeof record.click === 'string') {
-    let candidate = record.click.startsWith('click.') ? record.click : `click.${record.click}`;
-    candidate = LEGACY_CLICK_VALUES[candidate] || candidate;
+    const candidate = migrateToolbarClick(record.click);
     if (!CLICK_VALUES.includes(candidate)) {
       fail('enum', '$.localStorage.click', 'unknown historical toolbar action');
     }
@@ -412,38 +437,159 @@ class SettingsImportTransactionError extends Error {
   }
 }
 
-const commitSettingsImport = async (settings, adapter, {validateRules} = {}) => {
+const stableGraphText = value => {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableGraphText).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key =>
+      `${JSON.stringify(key)}:${stableGraphText(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const verifyCommittedImport = async (normalized, adapter, marker) => {
+  if (marker) {
+    await assertOwned(adapter, marker);
+  }
+  const storage = userStorageSnapshot(await adapter.readStorage());
+  const local = await adapter.readLocalStorage();
+  if (stableGraphText(storage) !== stableGraphText(normalized) ||
+      stableGraphText(local) !== stableGraphText({})) {
+    throw Error('committed settings import failed final state verification');
+  }
+  if (marker) {
+    await assertOwned(adapter, marker);
+  }
+};
+
+const commitSettingsImportUnlocked = async (settings, adapter, {
+  checkpoint = async () => {},
+  now = Date.now,
+  transactionId,
+  validateRules
+} = {}) => {
   // Validate again at the transaction boundary so no independent caller can
   // mutate storage with an unrecognized or mistyped record.
   const normalized = validateSettingsRecord(settings, {validateRules});
+  // An Options restart is the only context that can restore both extension
+  // storage and historical DOM localStorage. Finish that recovery before a new
+  // transaction takes its snapshots.
+  await recoverSettingsImport(adapter, {lockHeld: true});
   const storageSnapshot = await adapter.readStorage();
   const localStorageSnapshot = await adapter.readLocalStorage();
   assertSafeObjectGraph(storageSnapshot, '$.snapshot.storage');
   assertSafeObjectGraph(localStorageSnapshot, '$.snapshot.localStorage');
 
+  const beforeStorage = userStorageSnapshot(storageSnapshot);
+  let marker = createSettingsImportTransaction({
+    afterStorage: normalized,
+    beforeLocalStorage: localStorageSnapshot,
+    beforeStorage,
+    id: transactionId,
+    now
+  });
+  const setMarker = async phase => {
+    marker = await transitionOwned(adapter, marker, phase, now);
+  };
+  const owned = async mutation => {
+    await assertOwned(adapter, marker);
+    await mutation();
+    await assertOwned(adapter, marker);
+  };
+  const removeObsoleteUserStorage = async () => {
+    await assertOwned(adapter, marker);
+    const current = userStorageSnapshot(await adapter.readStorage());
+    await assertOwned(adapter, marker);
+    const remove = Object.keys(current).filter(key => !hasOwn(normalized, key));
+    if (remove.length) {
+      await owned(() => adapter.removeStorage(remove));
+    }
+  };
+  const reached = phase => checkpoint(phase, {marker});
+
   try {
-    await adapter.clearStorage();
-    await adapter.writeStorage(normalized);
-    await adapter.replaceLocalStorage({});
+    // Every destructive step has a durable intent record written first. The
+    // marker is removed only after both stores have reached a recoverable final
+    // state, so closing Options at any checkpoint cannot strand empty prefs.
+    await adapter.writeStorage({
+      [SETTINGS_IMPORT_FENCE_KEY]: marker.fence,
+      [SETTINGS_IMPORT_TRANSACTION_KEY]: marker
+    });
+    await assertOwned(adapter, marker);
+    await reached('prepared');
+
+    await setMarker(SETTINGS_IMPORT_PHASES.STORAGE_WRITE_PENDING);
+    await reached('storage-write-pending');
+    await owned(() => adapter.writeStorage(normalized));
+    await reached('storage-written');
+
+    await setMarker(SETTINGS_IMPORT_PHASES.STORAGE_REMOVE_PENDING);
+    await reached('storage-remove-pending');
+    await removeObsoleteUserStorage();
+    await reached('storage-removed');
+
+    await setMarker(SETTINGS_IMPORT_PHASES.LOCAL_REPLACE_PENDING);
+    await reached('local-replace-pending');
+    await owned(() => adapter.replaceLocalStorage({}));
+    await reached('local-replaced');
+
+    await setMarker(SETTINGS_IMPORT_PHASES.COMMITTED);
+    await reached('committed');
+    // COMMITTED is an irreversible durable decision. Re-enforce and verify the
+    // complete after-image before reporting success, then remove the sensitive
+    // snapshot marker while the origin-wide lock still excludes every reader.
+    await owned(() => adapter.writeStorage(normalized));
+    await removeObsoleteUserStorage();
+    await owned(() => adapter.replaceLocalStorage({}));
+    await verifyCommittedImport(normalized, adapter, marker);
+    await finalizeOwned(adapter, marker);
+    await reached('finalized');
   }
   catch (cause) {
     const rollbackErrors = [];
+    let recovery;
     try {
-      await adapter.clearStorage();
-      await adapter.writeStorage(storageSnapshot);
+      recovery = await recoverSettingsImport(adapter, {
+        expectedTransactionId: marker.id,
+        lockHeld: true
+      });
     }
     catch (error) {
       rollbackErrors.push(error);
     }
-    try {
-      await adapter.replaceLocalStorage(localStorageSnapshot);
-    }
-    catch (error) {
-      rollbackErrors.push(error);
+    // If recovery deterministically completed an already-committed import,
+    // treat the exact verified after-image as success rather than asking the
+    // user to retry an operation whose target state is now authoritative.
+    if (rollbackErrors.length === 0 &&
+        (recovery?.status === 'completed' ||
+          (marker.phase === SETTINGS_IMPORT_PHASES.COMMITTED && recovery?.status === 'none'))) {
+      try {
+        await verifyCommittedImport(normalized, adapter);
+        return {importedKeys: Object.keys(normalized).length, recovered: true};
+      }
+      catch (error) {
+        rollbackErrors.push(error);
+      }
     }
     throw new SettingsImportTransactionError(cause, rollbackErrors);
   }
   return {importedKeys: Object.keys(normalized).length};
+};
+
+const commitSettingsImport = async (settings, adapter, options = {}) => {
+  // Reject malformed input before even consulting an adapter/lock capability.
+  // This preserves the no-side-effects validation boundary for independent
+  // callers and hostile backup documents.
+  validateSettingsRecord(settings, {validateRules: options.validateRules});
+  const lockManager = options.lockManager || adapter?.lockManager ||
+    globalThis.navigator?.locks;
+  if (options.lockHeld === true) {
+    return commitSettingsImportUnlocked(settings, adapter, options);
+  }
+  return withSettingsImportLock(lockManager,
+    () => commitSettingsImportUnlocked(settings, adapter, {...options, lockHeld: true}),
+    {timeoutMs: options.lockTimeoutMs});
 };
 
 export {

@@ -273,21 +273,40 @@ const cdpEvaluateJson = async (cdp, expression) => {
 const callbackExpression = body => `new Promise(resolve => {${body}})`;
 const runtimeErrorExpression = `chrome.runtime.lastError?.message || null`;
 
+// The production Firefox popup intentionally exposes only the tab queries it
+// actually needs through its private-window runtime bridge. Exercise those
+// exact shapes here instead of widening the bridge for test-only `{}` access.
 const queryTabsExpression = callbackExpression(`
-  chrome.tabs.query({}, tabs => resolve(JSON.stringify({
-    error: ${runtimeErrorExpression},
-    tabs: (tabs || []).map(tab => ({
-      active: tab.active,
-      discarded: tab.discarded,
-      highlighted: tab.highlighted,
-      id: tab.id,
-      index: tab.index,
-      status: tab.status,
-      title: tab.title,
-      url: tab.url,
-      windowId: tab.windowId
-    }))
-  })));
+  const query = options => new Promise(done => chrome.tabs.query(
+    options,
+    (tabs, compatibilityError) => done({
+      error: ${runtimeErrorExpression} || compatibilityError?.message || null,
+      tabs
+    })
+  ));
+  Promise.all([
+    query({active: false, windowType: 'normal'}),
+    query({active: true, currentWindow: true})
+  ]).then(results => {
+    const ids = new Set();
+    const tabs = results.flatMap(result => Array.isArray(result.tabs) ? result.tabs : [])
+      .filter(tab => Number.isInteger(tab?.id) && !ids.has(tab.id) && ids.add(tab.id));
+    resolve(JSON.stringify({
+      error: results.find(result => result.error)?.error ||
+        (results.some(result => !Array.isArray(result.tabs)) ? 'malformed tab query response' : null),
+      tabs: tabs.map(tab => ({
+        active: tab.active,
+        discarded: tab.discarded,
+        highlighted: tab.highlighted,
+        id: tab.id,
+        index: tab.index,
+        status: tab.status,
+        title: tab.title,
+        url: tab.url,
+        windowId: tab.windowId
+      }))
+    }));
+  });
 `);
 
 const queryTabs = async (bidi, context) => {
@@ -320,12 +339,26 @@ const createTab = async (bidi, context, url) => {
 
 const activateTab = async (bidi, context, id) => {
   const response = await evaluateJSON(bidi, context, callbackExpression(`
-    chrome.tabs.update(${Number(id)}, {active: true}, tab => resolve(JSON.stringify({
-      error: ${runtimeErrorExpression},
-      id: tab?.id
-    })));
+    chrome.tabs.get(${Number(id)}, tab => {
+      const getError = ${runtimeErrorExpression};
+      if (getError || !tab) {
+        resolve(JSON.stringify({error: getError || 'tab is unavailable'}));
+        return;
+      }
+      chrome.tabs.highlight({tabs: tab.index, windowId: tab.windowId}, () => {
+        const highlightError = ${runtimeErrorExpression};
+        if (highlightError) {
+          resolve(JSON.stringify({error: highlightError}));
+          return;
+        }
+        chrome.tabs.get(${Number(id)}, current => resolve(JSON.stringify({
+          error: ${runtimeErrorExpression},
+          id: current?.active === true ? current.id : null
+        })));
+      });
+    });
   `));
-  ensure(!response.error && response.id === id, `tabs.update failed: ${response.error || 'wrong tab'}`);
+  ensure(!response.error && response.id === id, `tabs.highlight failed: ${response.error || 'wrong tab'}`);
 };
 
 const removeTabs = async (bidi, context, ids) => {
@@ -953,14 +986,16 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
             href: background.location.href,
             readyState: background.document.readyState,
             runtimeId: background.chrome.runtime.id,
-            scripts: [...background.document.scripts].map(script => new URL(script.src).pathname)
+            scripts: [...background.document.scripts].map(script => new URL(script.src).pathname),
+            webLocks: typeof background.navigator.locks?.request === 'function'
           } : null,
           backgroundError: backgroundResult.error,
           badge,
           controllerHref: location.href,
           readyState: document.readyState,
           runtimeId: chrome.runtime.id,
-          runtimeMessage
+          runtimeMessage,
+          webLocks: typeof navigator.locks?.request === 'function'
         }));
       })`);
       const response = value.runtimeMessage?.response;
@@ -968,6 +1003,7 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
         value.controllerHref === controllerUrl && value.backgroundError === null &&
         value.background?.href === backgroundUrl && value.background?.readyState === 'complete' &&
         value.background?.runtimeId === extensionId &&
+        value.background?.webLocks === true && value.webLocks === true &&
         JSON.stringify(value.background?.scripts) ===
           '["/firefox/compatibility.mjs","/worker/core.mjs"]' &&
         value.runtimeMessage?.error === null &&
@@ -979,7 +1015,8 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
       badgeColor: state.badge.color,
       backgroundPage: '/firefox/background.html',
       compatibilityFirst: true,
-      runtimeMessageHandled: true
+      runtimeMessageHandled: true,
+      webLocks: {background: state.background.webLocks, controller: state.webLocks}
     });
   }
   finally {

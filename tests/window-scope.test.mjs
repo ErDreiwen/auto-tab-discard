@@ -57,3 +57,19 @@ test('incognito and regular privacy contexts never cross', () => {
   assert.equal(tabInAllowedWindowScope(regular, incognito), false);
   assert.deepEqual(scopeQuery('discard-tabs', regular), {active: false, windowType: 'normal'});
 });
+
+test('authoritative takeover scopes require explicit normal-window privacy fields', () => {
+  const selected = {id: 1, incognito: false, windowId: 7, windowType: 'normal'};
+  assert.equal(tabInAllowedWindowScope({
+    id: 2, incognito: false, windowId: 7, windowType: 'normal'
+  }, selected, {requireExplicit: true}), true);
+  assert.equal(tabInAllowedWindowScope({
+    id: 3, windowId: 7, windowType: 'normal'
+  }, selected, {requireExplicit: true}), false);
+  assert.equal(tabInAllowedWindowScope({
+    id: 4, incognito: false, windowId: 7
+  }, selected, {requireExplicit: true}), false);
+  assert.equal(tabInAllowedWindowScope({
+    id: 5, incognito: false, windowId: 7, windowType: 'popup'
+  }, selected, {requireExplicit: true}), false);
+});

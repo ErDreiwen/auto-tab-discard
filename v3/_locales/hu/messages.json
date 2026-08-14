@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Mégse"
   },
   "popup_retry": {
     "message": "Újra"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$TOTAL$ lapból $COMPLETED$ kész",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ sikeres, $SKIPPED$ kihagyva, $FAILED$ sikertelen.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Biztonságos megszakítás…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Megszakítva."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Kész."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Kész, néhány lap nem fejeződött be."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "A műveletet nem sikerült befejezni."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "A böngésző megszakította az előző műveletet."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "Ebben az ablakban már fut egy másik lapművelet."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "A lapművelet sikertelen."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Nincs elérhető aktív lap."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "A kijelölt lap megváltozott a művelet végrehajtása előtt."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ lapot a bővítmény natív módon eldobott, de az Edge nem tudta jelezni ezt a címben vagy a faviconon, mert a megjelenítő már be volt fagyva.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ lap befagyva maradt a feloldó újratöltés után. Az Edge nem biztosított aktiválás nélküli ébresztést, ezért nem történt második újratöltés. Próbálja újra.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Diagnosztika megjelenítése"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Diagnosztika elrejtése"
+  },
+  "popup_diagnostics_region": {
+    "message": "Művelet diagnosztikája"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Esemény"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Csoportosított eredmények"
+  },
+  "popup_diagnostics_log": {
+    "message": "Tisztított diagnosztikai napló"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Napló másolása"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log letöltése"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Diagnosztika törlése"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnosztikai napló másolva."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "A diagnosztikai napló nem másolható."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "A diagnosztikai napló letöltése elindult."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "A diagnosztikai napló nem tölthető le."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnosztika törölve."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "A diagnosztika nem törölhető."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Nincs elérhető tisztított diagnosztika."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "sikeres"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "kihagyva"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "sikertelen"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Besorolt eredmény"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnosztika"
+  },
+  "options_diagnostics_privacy": {
+    "message": "A tisztított naplók nem tartalmaznak URL-eket, címeket, lap- és ablakazonosítókat, webhelyszabályokat vagy privát ablakok tevékenységét."
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log letöltése"
+  },
+  "options_diagnostics_clear": {
+    "message": "Diagnosztika törlése"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnosztika törölve."
+  },
+  "options_diagnostics_empty": {
+    "message": "Nincs elérhető tisztított diagnosztika."
   }
 }

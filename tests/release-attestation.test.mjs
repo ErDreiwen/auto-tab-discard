@@ -786,9 +786,10 @@ test('successful browser reports use a fixed privacy-safe name before metadata b
     'release gate must bind only the finalized canonical report');
   const gateInitialization = source.slice(source.indexOf('export const releaseGate'),
     source.indexOf('const blockers = []'));
-  assert.ok(gateInitialization.indexOf("await rm(reportPath, {force: true})") <
-    gateInitialization.indexOf("await rm(evidenceRoot, {recursive: true, force: true})"),
-  'release gate must remove stale metadata before replacing fixed-name evidence');
+  assert.match(gateInitialization, /await createExclusiveReleaseWorkspace\(/,
+    'release gate must allocate a fresh exclusive workspace before binding evidence');
+  assert.doesNotMatch(gateInitialization, /rm\((?:reportPath|evidenceRoot)/,
+    'fresh evidence paths must not inherit deletion authority over stale entries');
 });
 
 test('every failed browser finalization removes all JSON and keeps command evidence only', async t => {

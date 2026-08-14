@@ -7,10 +7,30 @@ const codeMessages = Object.freeze({
   POPUP_TARGET_CHANGED: 'popup_error_target_changed'
 });
 
+const diagnosticReasonMessages = Object.freeze(Object.fromEntries([
+  'POPUP_BUSY', 'POPUP_CANCELLED', 'POPUP_COMMAND_FAILED', 'POPUP_INTERRUPTED',
+  'POPUP_NO_ACTIVE_TAB', 'POPUP_TARGET_CHANGED', 'TAB_ALREADY_OWNED',
+  'TAB_ALREADY_OWNED_VISUAL_UNAVAILABLE', 'TAB_CANCELLED', 'TAB_DISCARDED',
+  'TAB_DISCARDED_VISUAL_UNAVAILABLE', 'TAB_FAILED', 'TAB_MISSING',
+  'TAB_NO_SAFE_KEEPER', 'TAB_OWNERSHIP_UNKNOWN', 'TAB_PROTECTED', 'TAB_RELEASED',
+  'TAB_RELEASE_REMAINS_FROZEN', 'TAB_SKIPPED', 'TAB_SUSPENSION_UNKNOWN',
+  'TAB_UNSUPPORTED'
+].map(code => [code, true])));
+
+const diagnosticStatusMessages = Object.freeze({
+  failed: 'popup_diagnostics_status_failed',
+  skipped: 'popup_diagnostics_status_skipped',
+  success: 'popup_diagnostics_status_success',
+  succeeded: 'popup_diagnostics_status_success'
+});
+
 const message = (getMessage, key, substitutions) => {
   const value = getMessage(key, substitutions);
   return value || getMessage('popup_error_command_failed');
 };
+
+const optionalMessage = (getMessage, key, substitutions) =>
+  getMessage(key, substitutions) || '';
 
 const progressText = (snapshot, getMessage) => message(getMessage, 'popup_progress', [
   String(snapshot?.completed || 0),
@@ -52,7 +72,7 @@ const releaseRemainsFrozenText = (snapshot, getMessage) => {
   ) : '';
 };
 
-const statusText = (snapshot, getMessage) => {
+const statusHeadlineText = (snapshot, getMessage) => {
   if (!snapshot) {
     return '';
   }
@@ -67,10 +87,48 @@ const statusText = (snapshot, getMessage) => {
     snapshot.state === 'cancelled' ? 'popup_status_cancelled' :
       snapshot.state === 'interrupted' ? 'popup_status_interrupted' :
         codeMessages[snapshot.errorCode] || 'popup_status_failed';
-  return [message(getMessage, statusKey), summaryText(snapshot, getMessage),
+  return message(getMessage, statusKey);
+};
+
+const statusText = (snapshot, getMessage) => {
+  if (!snapshot) {
+    return '';
+  }
+  return [statusHeadlineText(snapshot, getMessage),
+    snapshot.state === 'running' || snapshot.state === 'cancelling' ? '' :
+      summaryText(snapshot, getMessage),
     visualUnavailableText(snapshot, getMessage),
     noSafeKeeperText(snapshot, getMessage),
     releaseRemainsFrozenText(snapshot, getMessage)].filter(Boolean).join(' ');
+};
+
+const diagnosticReasonText = (code, getMessage) => diagnosticReasonMessages[code] ?
+  optionalMessage(getMessage, 'popup_diagnostics_reason_default') : '';
+
+const diagnosticStatusText = (status, getMessage) => optionalMessage(
+  getMessage,
+  diagnosticStatusMessages[status] || 'popup_diagnostics_status_failed'
+);
+
+const diagnosticRowText = (group, getMessage) => {
+  const count = String(group?.count || 0);
+  const status = diagnosticStatusText(group?.status, getMessage);
+  const reason = diagnosticReasonText(group?.code, getMessage);
+  if (group?.stage && group?.reasonCode) {
+    return message(getMessage, 'popup_diagnostics_reason_row_detailed', [
+      count,
+      status,
+      group.stage,
+      group.reasonCode,
+      group.code
+    ]);
+  }
+  return message(getMessage, 'popup_diagnostics_reason_row', [
+    count,
+    status,
+    reason,
+    group?.code || 'POPUP_COMMAND_FAILED'
+  ]);
 };
 
 const responseErrorText = (response, getMessage) => message(
@@ -95,12 +153,17 @@ const announcementKey = snapshot => snapshot ? [
 export {
   announcementKey,
   codeMessages,
+  diagnosticReasonMessages,
+  diagnosticReasonText,
+  diagnosticRowText,
+  diagnosticStatusText,
   noSafeKeeperCount,
   noSafeKeeperText,
   progressText,
   releaseRemainsFrozenCount,
   releaseRemainsFrozenText,
   responseErrorText,
+  statusHeadlineText,
   statusText,
   summaryText,
   visualUnavailableCount,

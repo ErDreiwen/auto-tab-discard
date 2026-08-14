@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "取消"
   },
   "popup_retry": {
     "message": "重试"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "已完成 $COMPLETED$/$TOTAL$ 个标签页",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ 个成功，$SKIPPED$ 个已跳过，$FAILED$ 个失败。",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "正在安全取消…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "已取消。"
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "已完成。"
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "已完成，但部分标签页未处理。"
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "无法完成此操作。"
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "浏览器中断了上一次操作。"
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "此窗口中已有其他标签页操作正在运行。"
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "标签页操作失败。"
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "没有可用的活动标签页。"
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "操作运行前，所选标签页已更改。"
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ 个标签页已转换为由扩展管理的原生丢弃状态，但由于渲染器已冻结，Edge 无法添加标题或网站图标标记。",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ 个标签页在释放重新加载后仍处于冻结状态。Edge 无法在不激活标签页的情况下唤醒它们，因此未尝试第二次重新加载。请重试。",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "显示诊断信息"
+  },
+  "popup_diagnostics_hide": {
+    "message": "隐藏诊断信息"
+  },
+  "popup_diagnostics_region": {
+    "message": "操作诊断"
+  },
+  "popup_diagnostics_incident": {
+    "message": "事件"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "分组结果"
+  },
+  "popup_diagnostics_log": {
+    "message": "已清理的诊断日志"
+  },
+  "popup_diagnostics_copy": {
+    "message": "复制日志"
+  },
+  "popup_diagnostics_download": {
+    "message": "下载 latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "清除诊断信息"
+  },
+  "popup_diagnostics_copied": {
+    "message": "已复制诊断日志。"
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "无法复制诊断日志。"
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "诊断日志下载已开始。"
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "无法下载诊断日志。"
+  },
+  "popup_diagnostics_cleared": {
+    "message": "已清除诊断信息。"
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "无法清除诊断信息。"
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "没有可用的已清理诊断信息。"
+  },
+  "popup_diagnostics_status_success": {
+    "message": "成功"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "已跳过"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "失败"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "已分类的结果"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "诊断"
+  },
+  "options_diagnostics_privacy": {
+    "message": "已清理的日志不包含 URL、标题、标签页和窗口 ID、网站规则以及隐私窗口活动。"
+  },
+  "options_diagnostics_download": {
+    "message": "下载 latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "清除诊断信息"
+  },
+  "options_diagnostics_cleared": {
+    "message": "已清除诊断信息。"
+  },
+  "options_diagnostics_empty": {
+    "message": "没有可用的已清理诊断信息。"
   }
 }

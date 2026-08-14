@@ -29,8 +29,10 @@ const CODE_CATEGORIES = new Map([
   ['POLICY_BLOCKED', CATEGORIES.POLICY]
 ]);
 
-// Sanitized messages observed across Chromium, Edge, and Firefox releases.
-// Keep these anchored and ID-agnostic: an unfamiliar error must fail closed.
+// Bounded English compatibility fallbacks. Keep these anchored and
+// ID-agnostic: an unfamiliar or localized error must fail closed. The
+// versioned retained evidence and explicitly synthetic contract vectors live
+// in tests/fixtures/browser-error-corpus.v1.json.
 const MESSAGE_CORPUS = Object.freeze([
   [CATEGORIES.TRANSIENT, /^frame with id \d+ (?:was removed|is not ready)\.?$/i],
   [CATEGORIES.TRANSIENT, /^no frame with id:? \d+(?: in tab(?: with id)? \d+)?\.?$/i],

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {fileURLToPath} from 'node:url';
 
 import {
   CATEGORIES,
@@ -7,45 +9,88 @@ import {
   scriptingFailureDecision
 } from '../v3/worker/core/browser-error.mjs';
 
-test('prefers structured browser codes over localized messages', () => {
-  assert.equal(classifyBrowserError({
-    code: 'FRAME_REMOVED',
-    message: 'localized text'
-  }).category, CATEGORIES.TRANSIENT);
-  assert.equal(classifyBrowserError({
-    name: 'MissingHostPermissionError',
-    message: 'localized text'
-  }).category, CATEGORIES.PERMISSION);
-  assert.equal(classifyBrowserError({
-    cause: {code: 'BLOCKED_BY_POLICY'},
-    message: 'localized text'
-  }).category, CATEGORIES.POLICY);
+const corpusUrl = new URL('./fixtures/browser-error-corpus.v1.json', import.meta.url);
+const corpusText = fs.readFileSync(fileURLToPath(corpusUrl), 'utf8');
+const corpus = JSON.parse(corpusText);
+
+const materialize = template => template
+  .replaceAll('{frameId}', '7')
+  .replaceAll('{tabId}', '11')
+  .replaceAll('{protectedUrl}', ['edge', '://', 'settings'].join(''));
+
+const codedError = ({codeLocation, code, message}) => {
+  if (codeLocation === 'cause.code') {
+    return {cause: {code}, message};
+  }
+  return {[codeLocation]: code, message};
+};
+
+test('retained corpus is versioned, sanitized, and honest about provenance gaps', () => {
+  assert.equal(corpus.schemaVersion, 1);
+  assert.equal(corpus.observations.length, 2);
+  assert.deepEqual(
+    corpus.observations.map(({browser}) => `${browser.product}-${browser.version}`),
+    ['chrome-151.0.7922.34', 'chrome-152.0.7977.42']
+  );
+  assert.ok(corpus.observations.every(({browser}) => browser.locale === 'not-recorded'));
+  assert.ok(corpus.observations.every(({source}) =>
+    source.kind === 'passing-sanitized-browser-report' &&
+    source.sampleCount > 0 &&
+    /^[a-f0-9]{64}$/.test(source.reportSha256)
+  ));
+  assert.ok(corpus.classifierContractCases.every(({provenance}) =>
+    provenance === 'synthetic-classifier-contract'
+  ));
+  assert.deepEqual(
+    corpus.coverageNotes.map(({browser, retainedErrorSamples}) => [browser, retainedErrorSamples]),
+    [['chrome', 0], ['edge', 0], ['firefox', 0]]
+  );
+
+  // The retained fixture contains templates and digests, never raw browser
+  // identifiers, navigable URLs, filesystem paths, error objects, or stacks.
+  assert.doesNotMatch(corpusText, /\b(?:frame|tab|window|group)\s+(?:with\s+)?(?:id\s*:?[ ]*)?\d+/i);
+  assert.doesNotMatch(corpusText, /\b(?:https?|file|chrome|edge|about|moz-extension):\/\//i);
+  assert.doesNotMatch(corpusText, /(?:[a-z]:\\|\\\\|\/users\/|\/home\/)/i);
+  assert.doesNotMatch(corpusText, /"(?:error|rawError|stack|path)"\s*:/i);
 });
 
-test('classifies the sanitized cross-browser message corpus', () => {
-  const corpus = [
-    ['Frame with ID 0 was removed.', CATEGORIES.TRANSIENT],
-    ['Frame with ID 12 is not ready.', CATEGORIES.TRANSIENT],
-    ['No frame with id 0 in tab with id 123', CATEGORIES.TRANSIENT],
-    ['Missing host permission for the tab.', CATEGORIES.PERMISSION],
-    ['Cannot access contents of url "edge://settings".', CATEGORIES.PERMISSION],
-    ['No tab with id: 42.', CATEGORIES.CLOSED],
-    ['Blocked by enterprise policy.', CATEGORIES.POLICY]
-  ];
-  for (const [message, category] of corpus) {
-    assert.equal(classifyBrowserError(Error(message)).category, category, message);
+test('prefers retained structured browser codes over localized or unknown messages', () => {
+  for (const entry of corpus.structuredCodeCases) {
+    const classification = classifyBrowserError(codedError(entry));
+    assert.equal(classification.category, entry.expectedCategory, entry.id);
+    assert.equal(classification.source, 'code', entry.id);
+  }
+});
+
+test('classifies retained observations and labeled classifier contracts', () => {
+  for (const entry of [...corpus.observations, ...corpus.classifierContractCases]) {
+    const classification = classifyBrowserError(Error(materialize(entry.messageTemplate)));
+    assert.equal(classification.category, entry.expectedCategory, entry.id);
+    assert.equal(classification.source, 'message', entry.id);
+  }
+});
+
+test('unfamiliar and localized message-only errors fail closed', () => {
+  const live = {active: false, discarded: false, frozen: false, status: 'loading'};
+  for (const entry of corpus.failClosedCases) {
+    const error = Error(materialize(entry.messageTemplate));
+    const classification = classifyBrowserError(error);
+    assert.equal(classification.category, CATEGORIES.UNKNOWN, entry.id);
+    assert.equal(classification.source, 'unknown', entry.id);
+    assert.equal(scriptingFailureDecision(error, live).action, 'fail', entry.id);
   }
 });
 
 test('post-error state permits only a known transient frame retry', () => {
   const live = {active: false, discarded: false, frozen: false, status: 'loading'};
-  assert.equal(scriptingFailureDecision(Error('Frame with ID 0 was removed.'), live).action, 'retry');
+  const observed = materialize(corpus.observations[0].messageTemplate);
+  assert.equal(scriptingFailureDecision(Error(observed), live).action, 'retry');
 
   for (const message of [
-    'Cannot access contents of url "https://example.invalid".',
+    'Missing host permission for the tab.',
     'Blocked by administrator policy.',
-    'Frame with ID 0 is showing error page.',
-    'completely unfamiliar localized error'
+    materialize(corpus.failClosedCases[0].messageTemplate),
+    materialize(corpus.failClosedCases.at(-1).messageTemplate)
   ]) {
     assert.equal(scriptingFailureDecision(Error(message), live).action, 'fail', message);
   }

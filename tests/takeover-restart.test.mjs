@@ -39,6 +39,7 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
   const liveTab = {
     id: 1,
     windowId: 1,
+    incognito: false,
     index: 1,
     active: false,
     discarded: false,
@@ -48,6 +49,7 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
   const claimedTab = {
     id: 2,
     windowId: 1,
+    incognito: false,
     index: 2,
     active: false,
     discarded: true,
@@ -57,6 +59,7 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
   const lateNativeTab = {
     id: 3,
     windowId: 1,
+    incognito: false,
     index: 3,
     active: false,
     discarded: true,
@@ -66,6 +69,7 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
   const queuedTab = {
     id: 4,
     windowId: 1,
+    incognito: false,
     index: 4,
     active: false,
     discarded: true,
@@ -75,6 +79,7 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
   const preWakeTab = {
     id: 5,
     windowId: 1,
+    incognito: false,
     index: 5,
     active: false,
     discarded: true,
@@ -104,13 +109,13 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
     },
     storage: {
       managed: {
-        get(defaults, callback) {
-          callback(defaults);
+        get(query, callback) {
+          callback({});
         }
       },
       local: {
         get(defaults, callback) {
-          callback(defaults);
+          callback(Array.isArray(defaults) ? {} : defaults);
         }
       },
       session: {
@@ -128,6 +133,11 @@ test('resumes an awake takeover without sweeping ordinary claimed tabs at MV3 re
       },
       onChanged: {
         addListener() {}
+      }
+    },
+    windows: {
+      get(id, callback) {
+        callback({id, incognito: false, type: 'normal'});
       }
     },
     tabs: {

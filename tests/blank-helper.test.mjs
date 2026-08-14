@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
 import {
+  configureHelperRegistryNativeGuard,
   createHelperRegistry,
+  helperRegistry,
   STORAGE_KEY,
   TRANSACTIONS_KEY
 } from '../v3/worker/core/helper-registry.mjs';
@@ -192,7 +194,102 @@ test('startup recovery rolls back session-backed focus and partial helper state'
   }
 });
 
+test('browser recovery retains callback-error restoration for a guarded retry', async () => {
+  const state = {
+    [STORAGE_KEY]: {
+      100: {
+        createdAt: 1,
+        expiresAt: 31_000,
+        openerTabId: 1,
+        state: 'pending',
+        transactionId: 'interrupted',
+        windowId: 1
+      },
+      [TRANSACTIONS_KEY]: {
+        interrupted: {
+          createdAt: 1,
+          expiresAt: 31_000,
+          helperIds: [100],
+          originals: [{tabId: 1, windowId: 1}],
+          state: 'pending'
+        }
+      }
+    }
+  };
+  const tabs = new Map([
+    [1, tab(1, 1)],
+    [100, tab(100, 1, {active: true})]
+  ]);
+  const guarded = [];
+  const activated = [];
+  const removed = [];
+  let updateFailures = 1;
+  let insideGuard = false;
+  const chromeApi = {
+    runtime: {lastError: null},
+    storage: {session: area(state)},
+    tabs: {
+      get(id, callback) {
+        callback(tabs.get(id) && {...tabs.get(id)});
+      },
+      remove(id, callback) {
+        removed.push(id);
+        tabs.delete(id);
+        callback();
+      },
+      update(id, changes, callback) {
+        assert.equal(insideGuard, true, 'restoration must execute inside the ownership guard');
+        if (updateFailures) {
+          updateFailures -= 1;
+          callback(undefined, Error('injected compatibility callback error'));
+          return;
+        }
+        const target = tabs.get(id);
+        Object.assign(target, changes);
+        activated.push(id);
+        callback({...target});
+      }
+    }
+  };
+  globalThis.chrome = chromeApi;
+  configureHelperRegistryNativeGuard(async (task, id) => {
+    guarded.push(id);
+    insideGuard = true;
+    try {
+      return await task();
+    }
+    finally {
+      insideGuard = false;
+    }
+  });
+  try {
+    await assert.rejects(helperRegistry.cleanup(), /blank-helper transaction cleanup failed/);
+    assert.deepEqual(removed, [100]);
+    assert.equal(stateHasPending(state), true,
+      'failed focus restoration must remain recoverable on the next worker start');
+
+    assert.deepEqual(await helperRegistry.cleanup(), []);
+    assert.deepEqual(guarded, [1, 1]);
+    assert.deepEqual(activated, [1]);
+    assert.equal(tabs.get(1).active, true);
+    assert.equal(state[STORAGE_KEY], undefined);
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
 const stateHasPending = state => Object.keys(state[STORAGE_KEY]?.[TRANSACTIONS_KEY] || {}).length > 0;
+
+test('standalone helper registry remains exported for frozen-browser recovery', () => {
+  assert.equal(typeof helperRegistry.cleanup, 'function');
+});
+
+test('blank plugin synchronously injects ownership into helper recovery', async () => {
+  const source = await readFile(new URL('../v3/worker/plugins/blank/core.mjs', import.meta.url), 'utf8');
+  assert.match(source,
+    /configureHelperRegistryNativeGuard\(\(task, id\) => ownership\.withNativeMutationGuard\(task, id\)\)/);
+});
 
 test('direct preparation revalidates immediately before create and excludes existing helper pages', async () => {
   globalThis.chrome = {runtime: {lastError: null}};

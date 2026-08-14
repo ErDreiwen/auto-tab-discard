@@ -313,12 +313,12 @@ const createHelperRegistry = ({
 
 const callTab = (method, ...args) => new Promise((resolve, reject) => {
   let settled = false;
-  const done = value => {
+  const done = (value, callbackError) => {
     if (settled) {
       return;
     }
     settled = true;
-    const error = chrome.runtime.lastError;
+    const error = chrome.runtime.lastError || callbackError;
     error ? reject(Error(error.message || error)) : resolve(value);
   };
   try {
@@ -332,10 +332,24 @@ const callTab = (method, ...args) => new Promise((resolve, reject) => {
   }
 });
 
+let nativeMutationGuard;
+const configureHelperRegistryNativeGuard = guard => {
+  if (typeof guard !== 'function') {
+    throw TypeError('blank-helper native mutation guard is required');
+  }
+  nativeMutationGuard = guard;
+};
+
+// The frozen-browser harness imports this registry in an extension page to
+// reap committed helpers after closing their window. Transactional recovery is
+// available only after blank/core synchronously injects the ownership guard in
+// the service-worker realm, so an unguarded focus mutation fails closed.
 const helperRegistry = createHelperRegistry({
-  activateTab: async id => {
-    const {ownership} = await import('./ownership.mjs');
-    return ownership.withNativeMutationGuard(() =>
+  activateTab: id => {
+    if (typeof nativeMutationGuard !== 'function') {
+      throw Error('blank-helper native mutation guard is unavailable');
+    }
+    return nativeMutationGuard(() =>
       callTab('update', id, {active: true}),
     id);
   },
@@ -344,6 +358,7 @@ const helperRegistry = createHelperRegistry({
 });
 
 export {
+  configureHelperRegistryNativeGuard,
   createHelperRegistry,
   helperRegistry,
   MAX_HELPERS,

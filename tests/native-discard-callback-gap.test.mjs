@@ -53,8 +53,10 @@ test('an accepted Chromium discard waits through its inactive callback gap', asy
     discarded: false,
     frozen: false,
     id,
+    incognito: false,
     status: 'complete',
-    url: 'https://callback-gap.example/'
+    url: 'https://callback-gap.example/',
+    windowId: 1
   };
   let live = {...tab};
   let readsAfterCallback = 0;
@@ -71,6 +73,12 @@ test('an accepted Chromium discard waits through its inactive callback gap', asy
       },
       onChanged: event(),
       session: area(sessionState)
+    },
+    windows: {
+      get(windowId, callback) {
+        assert.equal(windowId, tab.windowId);
+        callback({id: windowId, incognito: false, type: 'normal'});
+      }
     },
     tabs: {
       discard(tabId, callback) {

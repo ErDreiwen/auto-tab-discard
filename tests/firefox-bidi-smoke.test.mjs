@@ -429,6 +429,10 @@ test('Firefox minimum mode installs the exact XPI and proves Firefox 140 backgro
   assert.match(source, /cdp\.send\('Runtime\.evaluate'/);
   assert.match(minimumVerifier, /cdpEvaluateJson\(cdp/);
   assert.match(minimumVerifier, /runtimeMessageHandled: true/);
+  assert.match(minimumVerifier, /background\.navigator\.locks\?\.request/);
+  assert.match(minimumVerifier, /navigator\.locks\?\.request/);
+  assert.match(minimumVerifier,
+    /value\.background\?\.webLocks === true && value\.webLocks === true/);
   assert.match(minimumVerifier, /\[102,102,102,255\]/);
   assert.doesNotMatch(minimumVerifier, /moz:scope|remote-allow-system-access/);
 });

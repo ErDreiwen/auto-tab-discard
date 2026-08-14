@@ -1,3 +1,5 @@
+import {withSettingsImportLock} from './settings-import-transaction.mjs';
+
 const clearStorage = area => new Promise((resolve, reject) => area.clear(() => {
   const error = chrome.runtime.lastError;
   if (error) {
@@ -38,22 +40,46 @@ const repairVisualMarkers = async (ownership, release) => {
   return {candidates, failed, repaired};
 };
 
-// Keep the preference clear and ownership barrier in one worker task. Running
-// takeover cancellation and ownership.reset() last cancel any work indirectly
-// triggered while storage.onChanged observers process the preference clear.
-// Waiting here also gives an in-flight wake its bounded reload settlement before
-// reset removes the nonce it uses to identify cancellation cleanup safely.
+// Keep preference clearing, discard draining, visual repair, and the ownership
+// barrier in one worker task. The synchronous admission fence covers preference
+// observers; the drain gives in-flight native work its bounded settlement before
+// ownership reset removes the nonce used for cancellation cleanup.
 const resetExtensionState = async (
   ownership,
   area = chrome.storage.local,
   cancelTakeovers = async () => 0,
-  release = undefined
+  release = undefined,
+  beginDiscardReset = undefined,
+  lockOptions = {}
 ) => {
-  await clearStorage(area);
-  await cancelTakeovers();
-  const visualRepairs = await repairVisualMarkers(ownership, release);
-  const result = await ownership.reset({reconcile: true});
-  return {...result, visualRepairs};
+  const options = lockOptions && typeof lockOptions === 'object' ? lockOptions : {};
+  const lockManager = Object.hasOwn(options, 'lockManager') ?
+    options.lockManager : globalThis.navigator?.locks;
+  return withSettingsImportLock(lockManager, async () => {
+    // beginDiscardReset installs its admission fence synchronously after the
+    // cross-context preference lock is acquired. The lock remains owned until
+    // clear, native drain, visual repair, and ownership reconciliation all
+    // finish, so an Options import cannot resurrect preferences mid-reset.
+    let barrier;
+    try {
+      barrier = typeof beginDiscardReset === 'function' ? beginDiscardReset() : undefined;
+      await clearStorage(area);
+      if (barrier) {
+        await barrier.drain();
+      }
+      else {
+        await cancelTakeovers();
+      }
+      const visualRepairs = await repairVisualMarkers(ownership, release);
+      const result = await ownership.reset({reconcile: true});
+      barrier?.complete();
+      return {...result, visualRepairs};
+    }
+    catch (error) {
+      barrier?.abort();
+      throw error;
+    }
+  }, {timeoutMs: options.lockTimeoutMs});
 };
 
 export {clearStorage, repairVisualMarkers, resetExtensionState, visualResetCandidates};

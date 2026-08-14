@@ -5,6 +5,7 @@ import {
   createSingleFlightQueue,
   loadedDiscardOutcomes,
   metadataFlightKey,
+  metadataPhysicalPoolSnapshot,
   partitionFrozenTabs,
   runBoundedScan,
   runDiscardCandidates,
@@ -52,10 +53,13 @@ test('metadata scanning caps concurrency and restores input order', async () => 
 
 test('one total deadline stops launching work and records every skipped item', async () => {
   const called = [];
+  const hanging = [];
   const startedAt = Date.now();
   const result = await runBoundedScan([10, 11, 12, 13, 14], item => {
     called.push(item);
-    return new Promise(() => {});
+    const gate = deferred();
+    hanging.push(gate);
+    return gate.promise;
   }, {
     concurrency: 2,
     timeout: 20
@@ -69,6 +73,78 @@ test('one total deadline stops launching work and records every skipped item', a
   assert.deepEqual(result.skipped.map(entry => entry.started), [true, true, false, false, false]);
   assert.equal(result.timedOut, true);
   assert.ok(Date.now() - startedAt < 250, 'the scan must return near its deadline');
+  hanging.forEach(gate => gate.resolve());
+  await nextTurn();
+  assert.equal(metadataPhysicalPoolSnapshot().active, 0);
+});
+
+test('physical metadata leases stay global across timed-out scans and retain a bounded queue', async () => {
+  const gates = [];
+  const started = [];
+  const worker = item => {
+    const gate = deferred();
+    gates.push(gate);
+    started.push(item);
+    return gate.promise;
+  };
+
+  const first = await runBoundedScan([1, 2, 3, 4], worker, {
+    concurrency: 4,
+    timeout: 20
+  });
+  assert.equal(first.started, 4);
+  assert.deepEqual(first.skipped.map(entry => entry.started), [true, true, true, true]);
+  assert.deepEqual(metadataPhysicalPoolSnapshot(), {
+    active: 4,
+    limit: 4,
+    maxQueued: 4,
+    queued: 0
+  });
+
+  const secondPending = runBoundedScan([5, 6, 7, 8], worker, {
+    concurrency: 4,
+    timeout: 250
+  });
+  await nextTurn();
+  assert.deepEqual(started, [1, 2, 3, 4]);
+  assert.equal(metadataPhysicalPoolSnapshot().queued, 4);
+
+  const saturated = await runBoundedScan([9, 10, 11, 12], worker, {
+    concurrency: 4,
+    timeout: 250
+  });
+  assert.equal(saturated.started, 0);
+  assert.deepEqual(saturated.skipped.map(entry => entry.reason), [
+    'physical-capacity',
+    'physical-capacity',
+    'physical-capacity',
+    'physical-capacity'
+  ]);
+  assert.equal(metadataPhysicalPoolSnapshot().queued, 4,
+    'later scans must not grow the physical waiter queue');
+
+  gates[0].resolve();
+  await nextTurn();
+  assert.deepEqual(started, [1, 2, 3, 4, 5],
+    'one physical settlement must admit exactly one queued operation');
+  assert.deepEqual(metadataPhysicalPoolSnapshot(), {
+    active: 4,
+    limit: 4,
+    maxQueued: 4,
+    queued: 3
+  });
+
+  const second = await secondPending;
+  assert.equal(second.started, 1);
+  assert.equal(second.completed.length, 0);
+  assert.equal(second.failed.length, 0);
+  assert.deepEqual(second.skipped.map(entry => entry.started), [true, false, false, false]);
+  assert.equal(metadataPhysicalPoolSnapshot().queued, 0,
+    'logical deadlines must remove queued waiters');
+
+  gates.forEach(gate => gate.resolve());
+  await nextTurn();
+  assert.equal(metadataPhysicalPoolSnapshot().active, 0);
 });
 
 test('worker failures are isolated and later items still run', async () => {

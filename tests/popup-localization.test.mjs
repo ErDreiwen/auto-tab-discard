@@ -4,7 +4,9 @@ import {readFile, readdir} from 'node:fs/promises';
 
 import {
   announcementKey,
+  diagnosticRowText,
   responseErrorText,
+  statusHeadlineText,
   statusText
 } from '../v3/data/popup/messages.mjs';
 
@@ -15,8 +17,22 @@ const required = [
   'popup_status_failed', 'popup_status_interrupted', 'popup_status_partial', 'popup_error_busy',
   'popup_error_command_failed', 'popup_error_no_active_tab', 'popup_error_target_changed',
   'popup_visual_unavailable_warning', 'popup_no_safe_keeper_warning',
-  'popup_release_remains_frozen_warning'
+  'popup_release_remains_frozen_warning', 'popup_diagnostics_show',
+  'popup_diagnostics_hide', 'popup_diagnostics_region', 'popup_diagnostics_incident',
+  'popup_diagnostics_reasons', 'popup_diagnostics_log', 'popup_diagnostics_copy',
+  'popup_diagnostics_download', 'popup_diagnostics_clear', 'popup_diagnostics_copied',
+  'popup_diagnostics_copy_failed', 'popup_diagnostics_downloaded',
+  'popup_diagnostics_download_failed', 'popup_diagnostics_cleared',
+  'popup_diagnostics_clear_failed', 'popup_diagnostics_unavailable',
+  'popup_diagnostics_status_success', 'popup_diagnostics_status_skipped',
+  'popup_diagnostics_status_failed', 'popup_diagnostics_reason_default',
+  'popup_diagnostics_reason_row', 'popup_diagnostics_reason_row_detailed',
+  'options_diagnostics_title', 'options_diagnostics_privacy', 'options_diagnostics_download',
+  'options_diagnostics_clear', 'options_diagnostics_cleared', 'options_diagnostics_empty'
 ];
+const messagePlaceholderNames = message => [...message.matchAll(/\$([A-Z_]+)\$/g)]
+  .map(match => match[1].toLowerCase())
+  .sort();
 
 test('every locale has popup result keys and exact placeholder parity', async () => {
   const directories = await readdir(localeRoot);
@@ -31,6 +47,11 @@ test('every locale has popup result keys and exact placeholder parity', async ()
       assert.equal(typeof catalog[key]?.message, 'string', `${directory} is missing ${key}`);
       assert.ok(catalog[key].message.length > 0, `${directory}.${key} must not be empty`);
       assert.deepEqual(
+        messagePlaceholderNames(catalog[key].message),
+        messagePlaceholderNames(english[key].message),
+        `${directory}.${key} message placeholders differ from the default locale`
+      );
+      assert.deepEqual(
         Object.keys(catalog[key].placeholders || {}).sort(),
         Object.keys(english[key].placeholders || {}).sort(),
         `${directory}.${key} placeholders differ from the default locale`
@@ -40,6 +61,45 @@ test('every locale has popup result keys and exact placeholder parity', async ()
           `${directory}.${key}.${name} has a different substitution position`);
       }
     }
+  }
+});
+
+test('non-English popup and diagnostic copy is genuinely localized', async () => {
+  const directories = (await readdir(localeRoot)).filter(directory => directory !== 'en');
+  const english = JSON.parse(await readFile(new URL('en/messages.json', localeRoot), 'utf8'));
+  // The product name is a proper noun. The two row formats contain only
+  // placeholders and punctuation, so translating them would change no user
+  // language. "Incident" is also the native spelling in these three locales.
+  const languageInvariant = new Set([
+    'popup_title',
+    'popup_diagnostics_reason_row',
+    'popup_diagnostics_reason_row_detailed'
+  ]);
+  const nativeEnglishSpellings = new Map([
+    ['fr', new Set(['popup_diagnostics_incident'])],
+    ['nl', new Set(['popup_diagnostics_incident'])],
+    ['sv', new Set(['popup_diagnostics_incident'])]
+  ]);
+
+  for (const directory of directories) {
+    const catalog = JSON.parse(await readFile(
+      new URL(`${directory}/messages.json`, localeRoot),
+      'utf8'
+    ));
+    for (const key of required) {
+      if (languageInvariant.has(key) || nativeEnglishSpellings.get(directory)?.has(key)) {
+        continue;
+      }
+      assert.notEqual(
+        catalog[key].message,
+        english[key].message,
+        `${directory}.${key} must be localized instead of copying English`
+      );
+    }
+    assert.match(catalog.popup_diagnostics_download.message, /latest\.log/,
+      `${directory}.popup_diagnostics_download must preserve the exported filename`);
+    assert.match(catalog.options_diagnostics_download.message, /latest\.log/,
+      `${directory}.options_diagnostics_download must preserve the exported filename`);
   }
 });
 
@@ -54,6 +114,9 @@ test('internal codes are localized and duplicate snapshots have one announcement
     popup_status_failed: 'failed',
     popup_status_interrupted: 'interrupted',
     popup_status_partial: 'partial',
+    popup_diagnostics_reason_default: 'classified',
+    popup_diagnostics_reason_row_detailed: '$1 $2: $3 / $4 ($5)',
+    popup_diagnostics_status_failed: 'failed-target',
     popup_no_safe_keeper_warning: '$1 stayed loaded: choose another tab and retry',
     popup_release_remains_frozen_warning: '$1 remained frozen after release; retry',
     popup_visual_unavailable_warning: '$1 visually unavailable'
@@ -71,6 +134,14 @@ test('internal codes are localized and duplicate snapshots have one announcement
     total: 12
   };
   assert.equal(statusText(snapshot, getMessage), 'complete 7 ok 3 skip 2 bad');
+  assert.equal(statusHeadlineText(snapshot, getMessage), 'complete');
+  assert.equal(diagnosticRowText({
+    code: 'TAB_FAILED',
+    count: 47,
+    reasonCode: 'OPERATION_FAILED',
+    stage: 'tab-operation',
+    status: 'failed'
+  }, getMessage), '47 failed-target: tab-operation / OPERATION_FAILED (TAB_FAILED)');
   const warned = {
     ...snapshot,
     outcomes: {
@@ -126,11 +197,21 @@ test('long pseudo-localized and RTL popup text uses wrapping and logical layout'
   assert.ok(text.length > 100);
   assert.match(script, /getMessage\('@@bidi_dir'\)/);
   assert.match(css, /overflow-wrap:\s*anywhere/);
+  assert.match(css, /@media\s*\(max-width:\s*377px\)[\s\S]*?body\s*\{[\s\S]*?min-width:\s*unset/);
+  assert.match(css, /\.mlt\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(7\.5rem,\s*45%\)/);
+  assert.match(css, /\.mlt\s*>\s*label\s*\{[\s\S]*?display:\s*grid/);
+  assert.doesNotMatch(css, /\.mlt\s*>\s*label\s*\{[^}]*display:\s*contents/);
   assert.match(css, /margin-inline-(?:start|end)/);
   assert.match(css, /inline-size:\s*100%/);
   assert.match(css, /text-align:\s*start/);
-  assert.match(html, /id="activity-status" role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(html,
+    /id="activity-announcement"[^>]*role="status" aria-live="polite" aria-atomic="true"/);
+  assert.match(html,
+    /id="activity-diagnostics-toggle"[^>]*aria-expanded="false"[^>]*aria-controls="activity-diagnostics-panel"/);
+  assert.match(html, /<bdi dir="ltr"><code id="activity-diagnostics-incident"/);
   assert.match(script, /key !== renderedAnnouncement/);
+  assert.match(script, /activityStatus\.textContent = statusHeadlineText/);
+  assert.match(script, /activityAnnouncement\.textContent = statusText/);
   assert.match(script, /'partial'/);
   assert.doesNotMatch(script, /['"](?:Action|Command) failed['"]/);
 });

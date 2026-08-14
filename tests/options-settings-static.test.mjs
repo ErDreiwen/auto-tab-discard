@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {restoreModeControl} from '../v3/data/options/core/mode-control.mjs';
 
 const source = await readFile(new URL('../v3/data/options/index.js', import.meta.url), 'utf8');
 const html = await readFile(new URL('../v3/data/options/index.html', import.meta.url), 'utf8');
+const prefsSource = await readFile(new URL('../v3/worker/core/prefs.mjs', import.meta.url), 'utf8');
+const transactionSource = await readFile(
+  new URL('../v3/worker/core/settings-import-transaction.mjs', import.meta.url),
+  'utf8'
+);
 
 test('options page loads as a module and presents distinct raw and sanitized exports', () => {
   assert.match(html, /<script type="module" src="index\.js"><\/script>/);
@@ -13,23 +19,105 @@ test('options page loads as a module and presents distinct raw and sanitized exp
   assert.match(source, /auto-tab-discard-SANITIZED-support\.json/);
 });
 
-test('import validates completely before listener removal, clearing, or reload', () => {
+test('options overlays managed preferences last and never hydrates the removed dummy control', () => {
+  assert.match(source, /chrome\.storage\.local, 'get', prefs/);
+  assert.match(source, /managedKeys = expandPluginPolicyKeys\(keys\)/);
+  assert.match(source, /chrome\.storage\.managed, 'get', managedKeys/);
+  assert.match(source, /overlayPreferenceLayers\(prefs, local/);
+  assert.doesNotMatch(source, /getElementById\('\.\/plugins\/dummy\/core\.js'\)/);
+  assert.doesNotMatch(html, /id="\.\/plugins\/dummy\/core\.js"/);
+  assert.match(source, /normalizeToolbarClick\(prefs\.click\)/);
+  assert.match(source, /querySelector\('\[name=left-click\]:checked'\)\?\.id/);
+  assert.match(source, /restoreModeControl\(document\.getElementById\('url-based'\), prefs\.mode\)/);
+  assert.doesNotMatch(source, /getElementById\('time-based'\)/);
+});
+
+test('options mode restore uses the one real checkbox for both stored modes', () => {
+  assert.match(html, /id="url-based"/);
+  assert.doesNotMatch(html, /id="time-based"/);
+
+  const control = {checked: false};
+  assert.equal(restoreModeControl(control, 'url-based'), true);
+  assert.equal(control.checked, true, 'url-based mode checks the URL-based control');
+
+  assert.equal(restoreModeControl(control, 'time-based'), true);
+  assert.equal(control.checked, false, 'time-based mode clears the same control');
+  assert.equal(restoreModeControl(null, 'time-based'), false,
+    'missing optional control stays null-safe');
+});
+
+test('options page exposes local sanitized diagnostic download and clear controls', () => {
+  assert.match(html, /id="diagnostics"[^>]+aria-labelledby="diagnostics-title"/);
+  assert.match(html, /id="download-diagnostics"[^>]+options_diagnostics_download/);
+  assert.match(html, /id="clear-diagnostics"[^>]+options_diagnostics_clear/);
+  assert.match(html, /id="diagnostics-info"[^>]+role="status"[^>]+aria-live="polite"/);
+  assert.match(html, /Diagnostic history stays on this device/);
+  assert.match(html, /excludes URLs, page titles, hostnames, site rules, tab and window identifiers, and raw error messages/);
+
+  assert.match(source, /diagnosticsRequest\('diagnostics-export'\)/);
+  assert.match(source, /diagnosticsRequest\('diagnostics-clear'\)/);
+  assert.match(source, /diagnosticsRequest\('diagnostics-snapshot'\)/);
+  assert.match(source, /auto-tab-discard-latest\.log/);
+  assert.match(source, /text\/plain;charset=utf-8/);
+  assert.match(source, /result\?\.cleared !== true/);
+  assert.match(source, /options_diagnostics_empty/);
+  assert.doesNotMatch(source, /diagnostics-(?:export|snapshot)'\)[\s\S]{0,200}chrome\.storage\.local/,
+    'diagnostic reads must use the worker boundary rather than raw local storage');
+});
+
+test('missing locale entries retain explicit English diagnostic fallback text', () => {
+  assert.match(source, /const localized = chrome\.i18n\.getMessage\(e\.dataset\.i18n\)/);
+  assert.match(source, /if \(localized\) \{[\s\S]*e\[e\.dataset\.i18nValue \|\| 'textContent'\] = localized/);
+  assert.match(html, />Diagnostics<\/h2>/);
+  assert.match(html, /value="Download latest\.log"/);
+  assert.match(html, /value="Clear diagnostic history"/);
+});
+
+test('import validates completely before its durable transaction or reload', () => {
   const parse = source.indexOf('parseSettingsBackup(text, {validateRules})');
   const apply = source.indexOf('applyImportedSettings(backup.settings)', parse);
   const reload = source.indexOf('chrome.runtime.reload()', apply);
-  const snapshot = source.indexOf('const storageSnapshot = await importAdapter.readStorage()');
-  const guard = source.indexOf('settingsMutating = true', snapshot);
-  const commit = source.indexOf('commitSettingsImport(settings, {', guard);
+  const guard = source.indexOf('settingsMutating = true');
+  const commit = source.indexOf('commitSettingsImport(settings, importAdapter', guard);
 
   assert.ok(parse > 0);
   assert.ok(apply > parse);
-  assert.ok(snapshot > 0);
-  assert.ok(guard > snapshot);
+  assert.ok(guard > 0);
   assert.ok(commit > guard);
   assert.ok(reload > apply);
   assert.match(source, /file\.size > MAX_BACKUP_BYTES/);
+  assert.match(source,
+    /readTransaction: \(\) => call\(chrome\.storage\.local, 'get', \[[\s\S]*SETTINGS_IMPORT_FENCE_KEY,[\s\S]*SETTINGS_IMPORT_TRANSACTION_KEY[\s\S]*\]\)/);
+  assert.match(source, /lockManager: navigator\.locks/);
+  assert.match(source, /requireLock: true/);
+  assert.match(source, /removeStorage: keys => call\(chrome\.storage\.local, 'remove', keys\)/);
+  assert.match(source,
+    /const storage = prefs => withImportLock\(async \(\) => \{\s*await recoverInterruptedImport\(\{lockHeld: true\}\)/);
+  assert.doesNotMatch(source, /clearStorage|chrome\.storage\.local, 'clear'/);
   assert.doesNotMatch(source, /removeListener\(onChanged\)/);
   assert.doesNotMatch(source, /100e6|100MB/);
+});
+
+test('worker preferences recover the reserved bounded transaction before local values', () => {
+  const recovery = prefsSource.indexOf(
+    'await recoverSettingsImportStorage(chrome.storage.local, {lockHeld: true})');
+  const migration = prefsSource.indexOf('await migrateLocalPreferences()', recovery);
+  const localRead = prefsSource.indexOf('readStorageArea(chrome.storage.local, requested)', migration);
+  assert.ok(recovery > 0);
+  assert.ok(migration > recovery);
+  assert.ok(localRead > migration);
+  assert.match(prefsSource,
+    /withSettingsImportLock\(globalThis\.navigator\?\.locks,[\s\S]*readPreferences\(requested, type\)/);
+  assert.match(source, /const storage = prefs => withImportLock\(async \(\) =>/);
+  assert.match(source,
+    /await withImportLock\(async \(\) => \{\s*await recoverInterruptedImport\(\{lockHeld: true\}\);\s*await call\(chrome\.storage\.local, 'set', settings\)/);
+  assert.match(transactionSource,
+    /SETTINGS_IMPORT_TRANSACTION_KEY = '__settingsImportTransaction'/);
+  assert.match(transactionSource, /SETTINGS_IMPORT_FENCE_KEY = '__settingsImportFence'/);
+  assert.match(transactionSource, /SETTINGS_IMPORT_LOCK_NAME = 'auto-tab-discard:settings-import'/);
+  assert.match(transactionSource, /MAX_SETTINGS_IMPORT_TRANSACTION_BYTES = 4 \* 1024 \* 1024/);
+  assert.match(transactionSource, /SETTINGS_IMPORT_PHASES\.LOCAL_ROLLBACK_PENDING/);
+  assert.match(transactionSource, /respectActiveGrace: true/);
 });
 
 test('lifecycle feedback is explicit opt-in and feedback stays on the fork', () => {

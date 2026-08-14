@@ -1618,8 +1618,9 @@ const safeProfile = (profileRoot, profile) => {
 };
 
 const run = async () => {
-  fs.mkdirSync(DEFAULT_RESULTS_ROOT, {recursive: true});
-  const reportPath = path.join(DEFAULT_RESULTS_ROOT, RESULT_FILE);
+  const resultsRoot = path.resolve(option('results-root', DEFAULT_RESULTS_ROOT));
+  fs.mkdirSync(resultsRoot, {recursive: true});
+  const reportPath = path.join(resultsRoot, RESULT_FILE);
   const report = {
     browser: {family: 'edge'},
     cleanup: {

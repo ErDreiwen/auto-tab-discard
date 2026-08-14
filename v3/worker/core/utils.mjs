@@ -15,9 +15,17 @@ const notify = e => chrome.notifications.create({
 });
 
 const query = options => new Promise((resolve, reject) => {
+  const accept = tabs => {
+    if (!Array.isArray(tabs)) {
+      reject(Error('tabs.query returned malformed tab data'));
+    }
+    else {
+      resolve(tabs);
+    }
+  };
   try {
-    const operation = chrome.tabs.query(options, tabs => {
-      const error = chrome.runtime.lastError;
+    const operation = chrome.tabs.query(options, (tabs, compatibilityError) => {
+      const error = chrome.runtime.lastError || compatibilityError;
       if (error) {
         const failure = Error(error.message || String(error));
         if (error.code !== undefined) {
@@ -26,14 +34,14 @@ const query = options => new Promise((resolve, reject) => {
         reject(failure);
       }
       else {
-        resolve(tabs || []);
+        accept(tabs);
       }
     });
     // Promise-only implementations (and compatibility shims) may ignore the
     // callback. Only attach to a returned Promise; callback APIs remain settled
     // by the callback above and duplicate resolution is harmless.
     if (operation?.then) {
-      operation.then(tabs => resolve(tabs || []), reject);
+      operation.then(accept, reject);
     }
   }
   catch (error) {

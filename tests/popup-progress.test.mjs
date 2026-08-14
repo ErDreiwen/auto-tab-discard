@@ -8,6 +8,7 @@ import {
   SNAPSHOT_VERSION,
   trackPopupTabTask
 } from '../v3/worker/core/popup-progress.mjs';
+import {FAILURE_CAUSES} from '../v3/worker/core/failure-causes.mjs';
 
 const memoryStore = initial => {
   let value = structuredClone(initial);
@@ -268,6 +269,7 @@ test('command result classifications produce truthful failed, partial, and physi
   });
   assert.deepEqual(mixed.outcomes[107], {
     code: POPUP_CODES.TAB_FAILED,
+    failureCause: FAILURE_CAUSES.OPERATION_FAILED,
     status: 'failed',
     tabId: 107
   });
@@ -497,9 +499,48 @@ test('authoritative command results replace provisional task outcomes exactly on
   assert.equal(finalFailure.state, 'failed');
   assert.deepEqual(finalFailure.outcomes[403], {
     code: POPUP_CODES.TAB_FAILED,
+    failureCause: FAILURE_CAUSES.OPERATION_FAILED,
     status: 'failed',
     tabId: 403
   });
+});
+
+test('generic failures retain only the strict fixed cause taxonomy', async () => {
+  const manager = createPopupProgressManager({store: memoryStore()});
+  const causes = Object.values(FAILURE_CAUSES);
+  const targets = causes.map((failureCause, index) => ({failureCause, tab: {id: 800 + index}}));
+  const result = await manager.run({cmd: 'discard-window', windowId: 80}, async progress => {
+    await progress.addTargets([...targets.map(entry => entry.tab), {id: 899}]);
+    return {
+      failed: [
+        ...targets.map(entry => ({
+          failureCause: entry.failureCause,
+          reason: 'SECRET raw browser failure',
+          tab: entry.tab
+        })),
+        {
+          failureCause: 'RAW_PRIVATE_BROWSER_CAUSE',
+          reason: 'SECRET invalid cause',
+          tab: {id: 899}
+        }
+      ]
+    };
+  });
+
+  for (const [index, failureCause] of causes.entries()) {
+    assert.equal(result.outcomes[800 + index].failureCause, failureCause);
+  }
+  assert.equal(result.outcomes[899].failureCause, FAILURE_CAUSES.OPERATION_FAILED);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|RAW_PRIVATE/);
+
+  const commandFailure = await manager.run({cmd: 'discard-window', windowId: 81}, async () => {
+    const error = Error('SECRET scope query response');
+    error.failureCause = FAILURE_CAUSES.SCOPE_QUERY_FAILED;
+    throw error;
+  });
+  assert.equal(commandFailure.errorCode, POPUP_CODES.COMMAND_FAILED);
+  assert.equal(commandFailure.errorCause, FAILURE_CAUSES.SCOPE_QUERY_FAILED);
+  assert.doesNotMatch(JSON.stringify(commandFailure), /SECRET/);
 });
 
 test('replacement lineage migrates a provisional predecessor into one authoritative successor', async () => {
@@ -543,4 +584,145 @@ test('popup cancellation is wired to the real queued and running takeover tokens
   assert.match(popup, /setConflictingControlsDisabled\(true\)/);
   assert.match(popup, /'partial'/);
   assert.match(popup, /pendingCommand \|\|/);
+});
+
+test('popup snapshots retain an opaque incident and exact retry modifiers', async () => {
+  const manager = createPopupProgressManager({
+    createIncidentId: (startedAt, sequence) => `ATD-TEST-${startedAt}-${sequence}`,
+    now: () => 1_234,
+    store: memoryStore()
+  });
+  const result = await manager.run({
+    checked: true,
+    cmd: 'discard-window',
+    shiftKey: true,
+    windowId: 91
+  }, async progress => {
+    await progress.addTargets([{id: 901}]);
+    return {succeeded: [{tab: {id: 901}}]};
+  });
+
+  assert.equal(result.incidentId, 'ATD-TEST-1234-1');
+  assert.equal(result.checked, true);
+  assert.equal(result.shiftKey, true);
+});
+
+test('one terminal diagnostic is awaited best-effort and never changes command results', async () => {
+  const checkpoints = [];
+  const manager = createPopupProgressManager({
+    recordDiagnostic: async snapshot => {
+      checkpoints.push(structuredClone(snapshot));
+      throw Error('diagnostic storage unavailable');
+    },
+    store: memoryStore()
+  });
+  const result = await manager.run({cmd: 'discard-tab', windowId: 92}, async progress => {
+    await progress.addTargets([{id: 902}]);
+    await progress.settle({id: 902}, 'success', POPUP_CODES.TAB_DISCARDED);
+    return {succeeded: [{tab: {id: 902}}]};
+  });
+
+  assert.equal(result.state, 'complete');
+  assert.equal(checkpoints.length, 1);
+  assert.equal(checkpoints[0].state, 'complete');
+  assert.equal(checkpoints[0].summary.success, 1);
+});
+
+test('a diagnostic backend that never settles cannot hang terminal command publication', async () => {
+  const published = [];
+  const manager = createPopupProgressManager({
+    diagnosticTimeout: 10,
+    publish: async snapshot => published.push(structuredClone(snapshot)),
+    recordDiagnostic: () => new Promise(() => {}),
+    store: memoryStore()
+  });
+  const result = await manager.run({cmd: 'discard-tab', windowId: 94}, async progress => {
+    await progress.addTargets([{id: 904}]);
+    return {succeeded: [{tab: {id: 904}}]};
+  });
+
+  assert.equal(result.state, 'complete');
+  assert.equal(published.at(-1).state, 'complete');
+});
+
+test('session progress read and write backends have independent hard deadlines', async () => {
+  const readHung = createPopupProgressManager({
+    storageTimeout: 10,
+    store: {
+      read: () => new Promise(() => {}),
+      write: async () => {}
+    }
+  });
+  assert.equal(await readHung.snapshot({windowId: 95}), undefined);
+
+  const writeHung = createPopupProgressManager({
+    storageTimeout: 10,
+    store: {
+      read: async () => undefined,
+      write: () => new Promise(() => {})
+    }
+  });
+  const result = await writeHung.run({cmd: 'discard-tab', windowId: 96}, async progress => {
+    await progress.addTargets([{id: 906}]);
+    return {succeeded: [{tab: {id: 906}}]};
+  });
+  assert.equal(result.state, 'complete');
+});
+
+test('a progress publisher that never settles cannot retain command completion', async () => {
+  let taskRan = false;
+  const manager = createPopupProgressManager({
+    publish: () => new Promise(() => {}),
+    publishTimeout: 10,
+    store: memoryStore()
+  });
+  const result = await manager.run({cmd: 'discard-tab', windowId: 97}, async progress => {
+    taskRan = true;
+    await progress.addTargets([{id: 907}]);
+    return {succeeded: [{tab: {id: 907}}]};
+  });
+
+  assert.equal(taskRan, true);
+  assert.equal(result.state, 'complete');
+  assert.deepEqual(result.summary, {failed: 0, skipped: 0, success: 1});
+});
+
+test('hydration publishes one fixed interrupted diagnostic checkpoint', async () => {
+  const interrupted = {
+    checked: false,
+    command: 'discard-tabs',
+    completed: 0,
+    expiresAt: 20_000,
+    incidentId: 'ATD-INTERRUPTED-1',
+    jobId: 'old-job',
+    outcomes: {},
+    scope: 'window:93',
+    shiftKey: false,
+    startedAt: 100,
+    state: 'running',
+    summary: {failed: 0, skipped: 0, success: 0},
+    targetIds: [903],
+    total: 1,
+    updatedAt: 100,
+    version: SNAPSHOT_VERSION,
+    windowId: 93
+  };
+  const store = memoryStore({
+    snapshots: {'window:93': interrupted},
+    version: SNAPSHOT_VERSION
+  });
+  const checkpoints = [];
+  const manager = createPopupProgressManager({
+    now: () => 1_000,
+    recordDiagnostic: async snapshot => checkpoints.push(snapshot),
+    store
+  });
+
+  const first = await manager.snapshot({windowId: 93});
+  const second = await manager.snapshot({windowId: 93});
+  assert.equal(first.state, 'interrupted');
+  assert.equal(second.state, 'interrupted');
+  assert.equal(first.errorCode, POPUP_CODES.INTERRUPTED);
+  assert.equal(checkpoints.length, 1);
+  assert.equal(checkpoints[0].outcomes[903].code, POPUP_CODES.TAB_SKIPPED);
 });

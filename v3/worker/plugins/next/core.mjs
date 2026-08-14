@@ -4,7 +4,7 @@ import {nextReleaseScope} from '../release-scopes.mjs';
 
 const observe = activeInfo => getTab(activeInfo.tabId).then(tab => {
   const scope = nextReleaseScope(activeInfo, tab);
-  return scope && query(scope.query).then(tabs => releaseMatching(tabs, scope.matches));
+  return scope && query(scope.query).then(tabs => releaseMatching(tabs, scope));
 }).catch(error => log('next release failed', error));
 
 function enable() {

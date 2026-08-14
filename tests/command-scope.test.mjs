@@ -13,6 +13,7 @@ import {
   scopeTakeoverTabs,
   scopeQuery
 } from '../v3/worker/core/command-scope.mjs';
+import {FAILURE_CAUSES} from '../v3/worker/core/failure-causes.mjs';
 
 const DISCARD_COMMANDS = [
   'discard-window',
@@ -49,6 +50,7 @@ test('query failures carry command/scope context and mutate no tabs', async () =
     assert.equal(error.code, 'TAB_QUERY_FAILED');
     assert.equal(error.command, 'discard-window');
     assert.equal(error.phase, 'initial-scope');
+    assert.equal(error.failureCause, FAILURE_CAUSES.SCOPE_QUERY_FAILED);
     assert.equal(error.transient, false);
     assert.deepEqual(error.query, {active: false, windowId: 3, windowType: 'normal'});
     assert.match(error.message, /discard-window initial-scope tab query failed/);
@@ -213,7 +215,10 @@ test('runs the selected-tab and tab-group rows through their real keeper executo
       },
       allTabs: [...targets, keeper],
       command,
-      discard: async tab => calls.push(`discard:${tab.id}:${tab.active}`),
+      discard: async tab => {
+        calls.push(`discard:${tab.id}:${tab.active}`);
+        return true;
+      },
       inProgress: () => false,
       notifyNoKeeper: () => calls.push('notify'),
       resolveFresh: async tab => {
@@ -288,7 +293,10 @@ test('revalidates native tab-group membership immediately before keeper activati
       targets: [{...selected}, {...child}],
       valid: true
     }),
-    discard: async tab => calls.push(`discard:${tab.id}`),
+    discard: async tab => {
+      calls.push(`discard:${tab.id}`);
+      return true;
+    },
     inProgress: () => false,
     notifyNoKeeper: () => assert.fail('a valid keeper exists'),
     resolveFresh: async () => assert.fail('loaded targets need no ownership read'),
@@ -297,6 +305,58 @@ test('revalidates native tab-group membership immediately before keeper activati
     targets: [{...selected}, {...child}]
   });
   assert.deepEqual(calls, ['activate:3', 'discard:1', 'discard:2']);
+});
+
+test('direct takeover scope preserves only the initially admitted normal window type', async () => {
+  for (const [initialWindowType, expectedWindowType] of [
+    ['normal', 'normal'],
+    [undefined, undefined],
+    ['popup', undefined]
+  ]) {
+    const raw = {
+      id: 1,
+      windowId: 7,
+      groupId: 4,
+      index: 0,
+      active: false,
+      discarded: true,
+      incognito: false,
+      status: 'unloaded'
+    };
+    let received;
+    const selected = {
+      ...raw,
+      ...(initialWindowType && {windowType: initialWindowType})
+    };
+    const result = await runDirectDiscardCommand({
+      activate: async () => assert.fail('an inactive target needs no keeper'),
+      allTabs: [{...raw}],
+      command: 'discard-tree',
+      commitScope: async () => ({
+        allTabs: [{...raw}],
+        selected: {...raw},
+        targets: [{...raw}],
+        valid: true
+      }),
+      discard: async () => assert.fail('a discarded target uses takeover'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('an inactive target is not blocked'),
+      resolveFresh: async tab => ({
+        marker: {state: 'owned', source: 'claimed'},
+        state: 'discarded',
+        tab: {...tab}
+      }),
+      selected,
+      shiftKey: false,
+      takeover: async tab => {
+        received = tab;
+        return true;
+      },
+      targets: [{...raw}]
+    });
+    assert.equal(result.failed.length, 0, String(initialWindowType));
+    assert.equal(received.windowType, expectedWindowType, String(initialWindowType));
+  }
 });
 
 test('aborts a queued group command when move, regroup, or ungroup changes its commit scope', async () => {
@@ -393,7 +453,10 @@ test('discards loaded inactive group children when the active root has no keeper
     activate: async () => assert.fail('there is no keeper to activate'),
     allTabs: [active, loaded],
     command: 'discard-tree',
-    discard: async tab => calls.push(`discard:${tab.id}`),
+    discard: async tab => {
+      calls.push(`discard:${tab.id}`);
+      return true;
+    },
     inProgress: () => false,
     notifyNoKeeper: () => calls.push('notify'),
     resolveFresh: async () => assert.fail('loaded tabs do not need ownership resolution'),
@@ -466,11 +529,17 @@ test('computes all five popup X controls from the worker scopes', async () => {
 });
 
 test('scopes temporarily active takeover jobs without admitting unrelated active tabs', async () => {
-  const selected = {id: 99, index: 5, windowId: 1};
+  const selected = {id: 99, incognito: false, index: 5, windowId: 1, windowType: 'normal'};
   const jobs = [
-    {id: 11, started: true, tab: {id: 11, index: 2, windowId: 1}},
-    {id: 12, started: false, tab: {id: 12, index: 8, windowId: 1}},
-    {id: 13, started: true, tab: {id: 13, index: 3, windowId: 2}}
+    {id: 11, started: true, tab: {
+      id: 11, incognito: false, index: 2, windowId: 1, windowType: 'normal'
+    }},
+    {id: 12, started: false, tab: {
+      id: 12, incognito: false, index: 8, windowId: 1, windowType: 'normal'
+    }},
+    {id: 13, started: true, tab: {
+      id: 13, incognito: false, index: 3, windowId: 2, windowType: 'normal'
+    }}
   ];
 
   assert.deepEqual(scopeTakeoverTabs('release-window', jobs, selected).map(tab => tab.id), [11, 12]);
@@ -486,12 +555,25 @@ test('scopes temporarily active takeover jobs without admitting unrelated active
   });
   assert.equal(snapshotReads, 1);
   assert.deepEqual(available, Object.fromEntries(releaseCommands.map(command => [command, true])));
+
+  const incomplete = [
+    {tab: {id: 21, index: 1, windowId: 1, windowType: 'normal'}},
+    {tab: {id: 22, incognito: false, index: 1, windowId: 1}},
+    {tab: {id: 23, incognito: false, index: 1, windowId: 1, windowType: 'popup'}},
+    {tab: {id: 24, incognito: true, index: 1, windowId: 1, windowType: 'normal'}}
+  ];
+  assert.deepEqual(scopeTakeoverTabs('release-tabs', incomplete, selected), [],
+    'missing, non-normal, and opposite-private snapshots must fail closed');
 });
 
 test('release cancels scoped takeover jobs before selecting live targets and preserves other active tabs', async () => {
   const ordinary = {id: 1, index: 1, windowId: 1, active: false, discarded: true};
-  const scopedJob = {id: 2, started: true, tab: {id: 2, index: 2, windowId: 1}};
-  const otherWindowJob = {id: 3, started: true, tab: {id: 3, index: 1, windowId: 2}};
+  const scopedJob = {id: 2, started: true, tab: {
+    id: 2, incognito: false, index: 2, windowId: 1, windowType: 'normal'
+  }};
+  const otherWindowJob = {id: 3, started: true, tab: {
+    id: 3, incognito: false, index: 1, windowId: 2, windowType: 'normal'
+  }};
   const unrelatedActive = {id: 4, index: 4, windowId: 1, active: true, discarded: false};
   const calls = [];
   let queryCount = 0;
@@ -523,7 +605,7 @@ test('release cancels scoped takeover jobs before selecting live targets and pre
       return {...tab, active: false, discarded: true};
     },
     reload: async tab => calls.push(`reload:${tab.id}`),
-    selected: {id: 99, index: 5, windowId: 1},
+    selected: {id: 99, incognito: false, index: 5, windowId: 1, windowType: 'normal'},
     shiftKey: false,
     takeoverSnapshot: () => [scopedJob, otherWindowJob]
   });
@@ -540,6 +622,31 @@ test('release cancels scoped takeover jobs before selecting live targets and pre
   ]);
   assert.equal(calls.some(call => call.endsWith(`:${otherWindowJob.id}`)), false);
   assert.equal(calls.some(call => call.endsWith(`:${unrelatedActive.id}`)), false);
+});
+
+test('release performs zero mutations for opposite-private, non-normal, or incomplete takeover jobs', async () => {
+  const calls = [];
+  const selected = {id: 99, incognito: false, index: 0, windowId: 1, windowType: 'normal'};
+  const result = await runScopedCommand({
+    cancelTakeover: async tab => calls.push(`cancel:${tab.id}`),
+    command: 'release-tabs',
+    query: async () => [],
+    refresh: async tab => {
+      calls.push(`refresh:${tab.id}`);
+      return tab;
+    },
+    reload: async tab => calls.push(`reload:${tab.id}`),
+    selected,
+    shiftKey: false,
+    takeoverSnapshot: () => [
+      {tab: {id: 1, incognito: true, windowId: 1, windowType: 'normal'}},
+      {tab: {id: 2, incognito: false, windowId: 1, windowType: 'popup'}},
+      {tab: {id: 3, windowId: 1, windowType: 'normal'}},
+      {tab: {id: 4, incognito: false, windowId: 1}}
+    ]
+  });
+  assert.deepEqual(result, {failed: [], released: []});
+  assert.deepEqual(calls, []);
 });
 
 test('release waits for discarded:false instead of erasing a concurrent rediscard', async () => {
@@ -659,6 +766,7 @@ test('release reports each verified loaded successor and isolates a peer failure
   assert.deepEqual(released.failed.map(entry => ({id: entry.tab.id, reason: entry.reason})), [
     {id: 2, reason: 'did not settle loaded'}
   ]);
+  assert.equal(released.failed[0].failureCause, FAILURE_CAUSES.RELEASE_FAILED);
 });
 
 test('release preserves the retained-frozen successor as a precise retryable failure', async () => {
@@ -783,7 +891,10 @@ test('the shared menu executor routes every bulk popup command through ownership
         return {marker: {state: 'owned', source: 'claimed'}, state: 'discarded', tab};
       },
       check: async candidates => calls.push(`check:${candidates.map(tab => tab.id).join(',')}`),
-      discard: async tab => calls.push(`discard:${tab.id}`),
+      discard: async tab => {
+        calls.push(`discard:${tab.id}`);
+        return true;
+      },
       takeover: async tab => {
         calls.push(`takeover:${tab.id}`);
         return true;
@@ -883,7 +994,10 @@ test('reclassifies a takeover target that wakes before execution into the loaded
         return {...tab, discarded: false, frozen: false, status: 'complete'};
       },
       check: async tabs => calls.push(`check:${tabs.map(tab => tab.id).join(',')}`),
-      discard: async tab => calls.push(`discard:${tab.id}`),
+      discard: async tab => {
+        calls.push(`discard:${tab.id}`);
+        return true;
+      },
       takeover: async () => assert.fail('an already-awake tab must not enter takeover'),
       reload: async () => assert.fail('discard commands do not use the release path')
     });
@@ -901,7 +1015,10 @@ test('reclassifies a takeover target that wakes before execution into the loaded
     activate: async () => assert.fail('an inactive target does not need a keeper'),
     allTabs: [stale],
     command: 'discard-tree',
-    discard: async tab => directCalls.push(`discard:${tab.id}`),
+    discard: async tab => {
+      directCalls.push(`discard:${tab.id}`);
+      return true;
+    },
     inProgress: () => false,
     notifyNoKeeper: () => assert.fail('an inactive target is not blocked'),
     refresh: async tab => {
@@ -1006,7 +1123,10 @@ test('reclassifies a target that wakes while its takeover waits in the queue', a
           {...tab, discarded: false, frozen: false, status: 'complete'};
       },
       check: async tabs => calls.push(`check:${tabs.map(tab => tab.id).join(',')}`),
-      discard: async tab => calls.push(`discard:${tab.id}`),
+      discard: async tab => {
+        calls.push(`discard:${tab.id}`);
+        return true;
+      },
       takeover: async tab => {
         calls.push(`takeover:${tab.id}`);
         throw Error(`tab ${tab.id} is no longer an inactive takeover target`);
@@ -1129,7 +1249,11 @@ test('does not report a normal popup discard command complete when takeover fail
     discard: async () => true,
     takeover: async () => false,
     reload: async () => {}
-  }), /takeovers failed/);
+  }), error => {
+    assert.match(error.message, /takeovers failed/);
+    assert.equal(error.result.failed[0].failureCause, FAILURE_CAUSES.TAKEOVER_FAILED);
+    return true;
+  });
 });
 
 test('a restarted direct-native frozen or transitional intent is protected without any second operation', async () => {
@@ -1292,6 +1416,103 @@ test('direct discard reports mixed loaded outcomes without hiding the failed tab
   assert.equal(result.failed[0].reason, 'loaded discard returned false');
 });
 
+test('loaded and takeover paths share the explicit discard success contract', async () => {
+  const confirmed = [
+    ['true', true],
+    ['succeeded-status', {status: 'succeeded'}],
+    ['ok-true', {ok: true}]
+  ];
+  for (const [label, value] of confirmed) {
+    const loaded = {
+      active: false,
+      discarded: false,
+      frozen: false,
+      id: 100,
+      incognito: false,
+      index: 1,
+      status: 'complete',
+      url: 'https://loaded-success.example/',
+      windowId: 1,
+      windowType: 'normal'
+    };
+    const loadedResult = await runDirectDiscardCommand({
+      activate: async () => assert.fail(`${label}: inactive target needs no keeper`),
+      allTabs: [loaded],
+      command: 'discard-tab',
+      discard: async () => value,
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail(`${label}: inactive target is not keeper-blocked`),
+      selected: loaded,
+      shiftKey: true,
+      takeover: async () => assert.fail(`${label}: loaded target must not use takeover`),
+      targets: [loaded]
+    });
+    assert.deepEqual(loadedResult.succeeded.map(entry => entry.tab.id), [loaded.id], label);
+    assert.deepEqual(loadedResult.failed, [], label);
+
+    const suspended = {
+      ...loaded,
+      discarded: true,
+      id: 200,
+      status: 'unloaded',
+      url: 'https://takeover-success.example/'
+    };
+    const takeoverResult = await runDirectDiscardCommand({
+      activate: async () => assert.fail(`${label}: inactive target needs no keeper`),
+      allTabs: [suspended],
+      command: 'discard-tab',
+      discard: async () => assert.fail(`${label}: suspended target must not use loaded discard`),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail(`${label}: inactive target is not keeper-blocked`),
+      resolveFresh: async tab => ({
+        marker: {source: 'claimed', state: 'owned'},
+        state: 'discarded',
+        tab
+      }),
+      selected: suspended,
+      shiftKey: true,
+      takeover: async () => value,
+      targets: [suspended]
+    });
+    assert.deepEqual(takeoverResult.succeeded.map(entry => entry.tab.id), [suspended.id], label);
+    assert.deepEqual(takeoverResult.failed, [], label);
+  }
+
+  for (const value of [undefined, null, {}, {status: 'unknown'}]) {
+    const suspended = {
+      active: false,
+      discarded: true,
+      frozen: false,
+      id: 300,
+      incognito: false,
+      index: 1,
+      status: 'unloaded',
+      url: 'https://takeover-unconfirmed.example/',
+      windowId: 1,
+      windowType: 'normal'
+    };
+    await assert.rejects(runDirectDiscardCommand({
+      activate: async () => assert.fail('inactive target needs no keeper'),
+      allTabs: [suspended],
+      command: 'discard-tab',
+      discard: async () => assert.fail('suspended target must not use loaded discard'),
+      inProgress: () => false,
+      notifyNoKeeper: () => assert.fail('inactive target is not keeper-blocked'),
+      resolveFresh: async tab => ({
+        marker: {source: 'claimed', state: 'owned'},
+        state: 'discarded',
+        tab
+      }),
+      selected: suspended,
+      shiftKey: true,
+      takeover: async () => value,
+      targets: [suspended]
+    }), error => error instanceof AggregateError &&
+      /all 1 intended discard takeovers failed/.test(error.message) &&
+      /takeover returned false/.test(error.result?.failed?.[0]?.reason || ''));
+  }
+});
+
 test('direct discard throws an aggregate carrying every false and thrown loaded outcome', async () => {
   const tabs = [
     {id: 1, index: 1, active: false, discarded: false, url: 'https://one.example/'},
@@ -1408,6 +1629,8 @@ test('normal bulk discard exposes a check throw as an all-failed aggregate resul
       [1, 'normal discard check failed: metadata pipeline stopped'],
       [2, 'normal discard check failed: metadata pipeline stopped']
     ]);
+    assert.equal(error.result.failed.every(entry =>
+      entry.failureCause === FAILURE_CAUSES.METADATA_CHECK_FAILED), true);
     return true;
   });
 });
@@ -1581,6 +1804,8 @@ test('normal commands never wake self-owned or external tabs when ownership stor
       [1, true],
       [2, true]
     ]);
+    assert.equal(error.result.failed.every(entry =>
+      entry.failureCause === FAILURE_CAUSES.OWNERSHIP_RESOLUTION_FAILED), true);
     assert.equal(error.result.errors.length, 2);
     return true;
   });

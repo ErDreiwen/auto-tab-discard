@@ -17,11 +17,20 @@ import {
   POPUP_CODES,
   trackPopupTabTask as trackTabTask
 } from './core/popup-progress.mjs';
+import {createDiagnosticJournal} from './core/diagnostic-journal.mjs';
+import {FAILURE_CAUSES, safeFailureCause} from './core/failure-causes.mjs';
 import {releaseTab} from './core/release.mjs';
 import {ownership} from './core/ownership.mjs';
 import {SUSPENDED_POLICY_DEFAULTS} from './core/suspended-protection.mjs';
 import {attachWindowScope, createWindowScope} from './core/window-scope.mjs';
-import {dispatchPopup, respondAsync} from './core/respond.mjs';
+import {
+  authorizeDiagnosticAccess,
+  authorizePopupRequest,
+  dispatchPopup,
+  filterPopupTakeoverSnapshot,
+  respondAsync
+} from './core/respond.mjs';
+import {resolveTreeStyleTabTargets} from './core/tree-style-tab.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
 // Context Menu
@@ -148,8 +157,10 @@ import {interrupts} from './plugins/loader.mjs';
       resolve();
     }
   });
+  const diagnosticJournal = createDiagnosticJournal();
   const popupProgress = createPopupProgressManager({
     publish: publishPopupProgress,
+    recordDiagnostic: snapshot => diagnosticJournal.record(snapshot),
     resolveId: ownership.resolveId
   });
   const trackCheck = (progress, task) => async tabs => {
@@ -166,7 +177,9 @@ import {interrupts} from './plugins/loader.mjs';
     chrome.windows.get(tab.windowId, windowInfo => {
       const error = chrome.runtime.lastError;
       if (error) {
-        reject(Error(error.message));
+        reject(Object.assign(Error(error.message), {
+          failureCause: FAILURE_CAUSES.SCOPE_QUERY_FAILED
+        }));
         return;
       }
       try {
@@ -176,6 +189,12 @@ import {interrupts} from './plugins/loader.mjs';
         reject(error);
       }
     });
+  });
+  const diagnosticAccess = (request, sender) => authorizeDiagnosticAccess(request, sender, {
+    expectedExtensionId: chrome.runtime.id,
+    expectedPopupUrl: chrome.runtime.getURL('data/popup/index.html'),
+    query,
+    resolveWindowScopedTab
   });
 
   const onClicked = async (info, tab) => {
@@ -274,25 +293,27 @@ import {interrupts} from './plugins/loader.mjs';
     }
     else if (menuItemId === 'discard-tab' || menuItemId === 'discard-tree') {
       // it is possible to have multiple highlighted tabs. Let's discard all of them
-      const tabs = await query({
-        windowId: selectedTab.windowId,
-        windowType: 'normal'
-      });
+      let tabs;
+      try {
+        tabs = await query({
+          windowId: selectedTab.windowId,
+          windowType: 'normal'
+        });
+      }
+      catch (error) {
+        if (error && typeof error === 'object' && !safeFailureCause(error.failureCause)) {
+          error.failureCause = FAILURE_CAUSES.SCOPE_QUERY_FAILED;
+        }
+        throw error;
+      }
 
       const htabs = []; // these are tabs that will be discarded
       // discard-tree for Tree Style Tab
       if (menuItemId === 'discard-tree' && info.viewType === 'sidebar') {
-        htabs.push(selectedTab);
-        await new Promise(resolve => chrome.runtime.sendMessage('treestyletab@piro.sakura.ne.jp', {
-          type: 'get-tree',
-          tab: selectedTab.id
-        }, tree => {
-          const add = node => {
-            htabs.push(...node.children);
-            node.children.filter(child => child.children).forEach(add);
-          };
-          add(tree);
-          resolve();
+        htabs.push(...await resolveTreeStyleTabTargets({
+          runtime: chrome.runtime,
+          selectedTab,
+          tabs
         }));
       }
       // Chromium/Edge native tab groups. Group membership is the only selector:
@@ -350,7 +371,8 @@ import {interrupts} from './plugins/loader.mjs';
         takeover: trackTabTask(
           progress,
           target => discard.takeover(target, {manual: true}),
-          POPUP_CODES.TAB_DISCARDED
+          POPUP_CODES.TAB_DISCARDED,
+          FAILURE_CAUSES.TAKEOVER_FAILED
         ),
         targets: htabs,
         waitForTakeover: discard.waitForTakeover
@@ -428,7 +450,8 @@ import {interrupts} from './plugins/loader.mjs';
         takeover: trackTabTask(
           progress,
           target => discard.takeover(target, {manual: true}),
-          POPUP_CODES.TAB_DISCARDED
+          POPUP_CODES.TAB_DISCARDED,
+          FAILURE_CAUSES.TAKEOVER_FAILED
         )
       }));
     }
@@ -475,7 +498,7 @@ import {interrupts} from './plugins/loader.mjs';
     void runEntry(info.menuItemId, () => onClicked(info, tab));
   });
   chrome.action.onClicked.addListener(async tab => {
-    await runEntry('toolbar', async () => {
+    return await runEntry('toolbar', async () => {
       const menuItemId = await actionCommand(storage);
       if (menuItemId === 'popup') {
         await chrome.action.setPopup({popup: '/data/popup/index.html'});
@@ -484,15 +507,15 @@ import {interrupts} from './plugins/loader.mjs';
         }
       }
       else {
-        await onClicked({menuItemId}, tab);
+        return onClicked({menuItemId}, tab);
       }
     });
   });
   // commands
   chrome.commands.onCommand.addListener(async command => {
-    await runEntry(command, async () => {
+    return await runEntry(command, async () => {
       if (command.startsWith('move-') || command === 'close') {
-        await handleNavigation(command);
+        return handleNavigation(command);
       }
       else {
         const tabs = await query({
@@ -500,7 +523,7 @@ import {interrupts} from './plugins/loader.mjs';
           currentWindow: true
         });
         if (tabs.length) {
-          await onClicked({
+          return onClicked({
             menuItemId: command
           }, tabs[0]);
         }
@@ -509,17 +532,42 @@ import {interrupts} from './plugins/loader.mjs';
   });
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.method === 'popup') {
-      return respondAsync(() => scopedCommands.has(request.cmd) ? popupProgress.run(
-          request,
-          progress => dispatchPopup({...request, progress}, query, onClicked),
+      return respondAsync(async () => {
+        const {request: authorized} = await authorizePopupRequest(request, query);
+        return scopedCommands.has(authorized.cmd) ? popupProgress.run(
+          authorized,
+          progress => dispatchPopup({...authorized, progress}, query, onClicked),
           progress => Promise.all(progress.targetIds().map(id => discard.cancelTakeover(id)))
-        ) : dispatchPopup(request, query, onClicked), sendResponse);
+        ) : dispatchPopup(authorized, query, onClicked);
+      }, sendResponse);
     }
     else if (request.method === 'popup-progress-snapshot') {
       return respondAsync(() => popupProgress.snapshot(request), sendResponse);
     }
     else if (request.method === 'popup-progress-cancel') {
       return respondAsync(() => popupProgress.cancel(request.jobId), sendResponse);
+    }
+    else if (request.method === 'diagnostics-latest') {
+      return respondAsync(async () => diagnosticJournal.latest(
+        request.incidentId,
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
+    }
+    else if (request.method === 'diagnostics-export') {
+      return respondAsync(async () => diagnosticJournal.exportText(
+        request.incidentId,
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
+    }
+    else if (request.method === 'diagnostics-snapshot') {
+      return respondAsync(async () => diagnosticJournal.snapshot(
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
+    }
+    else if (request.method === 'diagnostics-clear') {
+      return respondAsync(async () => diagnosticJournal.clear(
+        await diagnosticAccess(request, sender)
+      ), sendResponse);
     }
     else if (request.method === 'simulate') {
       return respondAsync(() => onClicked({
@@ -530,7 +578,11 @@ import {interrupts} from './plugins/loader.mjs';
       return respondAsync(() => onStartup(), sendResponse);
     }
     else if (request.method === 'takeover-snapshot') {
-      return respondAsync(() => discard.takeoverSnapshot(), sendResponse);
+      return respondAsync(async () => {
+        const {tab} = await authorizePopupRequest(request, query);
+        const selected = await resolveWindowScopedTab(tab);
+        return filterPopupTakeoverSnapshot(discard.takeoverSnapshot(), selected);
+      }, sendResponse);
     }
     else if (request.method === 'run-check-on-action') {
       const tabs = request.ids.map(id => ({id}));

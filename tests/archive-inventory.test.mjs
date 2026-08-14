@@ -9,7 +9,9 @@ import {packageRelease} from '../scripts/package-release.mjs';
 
 test('each target archive inventory matches its independently extracted artifact tree', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'release-inventory-'));
+  const outputRoot = await mkdtemp(path.join(tmpdir(), 'release-inventory-output-'));
   t.after(() => rm(root, {recursive: true, force: true}));
+  t.after(() => rm(outputRoot, {recursive: true, force: true}));
   const source = path.join(root, 'v3');
   await mkdir(path.join(source, 'firefox'), {recursive: true});
   await mkdir(path.join(source, 'worker'), {recursive: true});
@@ -34,7 +36,7 @@ test('each target archive inventory matches its independently extracted artifact
   await writeFile(path.join(source, 'worker', 'core.mjs'), 'export {};\n');
   const packaged = await packageRelease({
     repositoryRoot: root,
-    outputDirectory: path.join(root, 'out'),
+    outputDirectory: path.join(outputRoot, 'out'),
     releaseMode: false
   });
   const inspectedByTarget = {};

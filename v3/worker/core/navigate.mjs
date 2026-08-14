@@ -1,15 +1,17 @@
 import {query} from './utils.mjs';
 import {ownership} from './ownership.mjs';
 
-const update = (id, properties) => new Promise((resolve, reject) => chrome.tabs.update(id, properties, tab => {
-  const error = chrome.runtime.lastError;
-  if (error) {
-    reject(Error(error.message));
+const update = (id, properties) => new Promise((resolve, reject) => chrome.tabs.update(
+  id, properties, (tab, compatibilityError) => {
+    const error = chrome.runtime.lastError || compatibilityError;
+    if (error) {
+      reject(Error(error.message));
+    }
+    else {
+      resolve(tab);
+    }
   }
-  else {
-    resolve(tab);
-  }
-}));
+));
 const remove = id => new Promise((resolve, reject) => chrome.tabs.remove(id, () => {
   const error = chrome.runtime.lastError;
   if (error) {

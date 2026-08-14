@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Auto Tab Discard diagnostic preview</title>
+    <link rel="stylesheet" href="../v3/data/popup/index.css">
+  </head>
+  <body>
+    <header><h1 id="popup-heading">Auto Tab Discard</h1></header>
+    <section id="activity" role="region" aria-labelledby="activity-status" aria-busy="false">
+      <div id="activity-status" tabindex="-1">The action could not be completed.</div>
+      <div id="activity-announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">The action could not be completed. 0 succeeded, 19 skipped, 47 failed.</div>
+      <progress id="activity-progress" value="66" max="66" aria-labelledby="activity-status" aria-describedby="activity-summary" hidden></progress>
+      <div id="activity-summary">0 succeeded, 19 skipped, 47 failed.</div>
+      <div id="activity-actions">
+        <button type="button" id="activity-retry">Retry</button>
+        <button type="button" id="activity-diagnostics-toggle" aria-expanded="true" aria-controls="activity-diagnostics-panel">Hide diagnostics</button>
+      </div>
+      <span id="activity-diagnostics-heading" class="visually-hidden">Command diagnostics</span>
+      <section id="activity-diagnostics-panel" role="region" aria-labelledby="activity-diagnostics-heading">
+        <div id="activity-diagnostics-meta">
+          <span id="activity-diagnostics-incident-label">Incident</span>
+          <bdi dir="ltr"><code id="activity-diagnostics-incident">ATD-PREVIEW-1</code></bdi>
+        </div>
+        <h2 id="activity-diagnostics-reasons-heading">What happened</h2>
+        <ul id="activity-diagnostics-reasons" aria-labelledby="activity-diagnostics-reasons-heading">
+          <li>47 failed: native-discard / NATIVE_POSTCONDITION_FAILED (<code>TAB_FAILED</code>)</li>
+          <li>19 skipped: eligibility / PROTECTION_RULE (<code>TAB_PROTECTED</code>)</li>
+        </ul>
+        <h2 id="activity-diagnostics-log-heading">Sanitized latest.log</h2>
+        <pre id="activity-diagnostics-log" tabindex="0" aria-labelledby="activity-diagnostics-log-heading"># Auto Tab Discard SANITIZED latest.log
+[2026-08-14T00:00:00.000Z] [AutoTabDiscard/INFO] incident=ATD-PREVIEW-1 event=COMMAND_START command=discard-window forced=false total=66
+[2026-08-14T00:00:02.500Z] [AutoTabDiscard/ERROR] incident=ATD-PREVIEW-1 event=OUTCOME status=failed stage=native-discard reason=NATIVE_POSTCONDITION_FAILED code=TAB_FAILED count=47
+[2026-08-14T00:00:02.500Z] [AutoTabDiscard/WARN] incident=ATD-PREVIEW-1 event=OUTCOME status=skipped stage=eligibility reason=PROTECTION_RULE code=TAB_PROTECTED count=19
+[2026-08-14T00:00:02.500Z] [AutoTabDiscard/ERROR] incident=ATD-PREVIEW-1 event=COMMAND_END state=failed duration_ms=2500 success=0 skipped=19 failed=47</pre>
+        <div id="activity-diagnostics-actions">
+          <button type="button" id="activity-diagnostics-copy">Copy diagnostic log</button>
+          <button type="button" id="activity-diagnostics-download">Download .log</button>
+          <button type="button" id="activity-diagnostics-clear">Clear history</button>
+        </div>
+        <div id="activity-diagnostics-feedback" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+      </section>
+    </section>
+    <ul aria-labelledby="popup-heading">
+      <li><button type="button" class="row">Discard Tab</button></li>
+      <li><button type="button" class="row">Discard Tab Group</button></li>
+      <li class="group"><button type="button">Discard Other Tabs in This Window</button></li>
+      <li class="group"><button type="button">Discard Tabs to the Right</button></li>
+      <li class="group"><button type="button">Discard Tabs to the Left</button></li>
+    </ul>
+    <div class="mlt" id="whitelist-layout-preview">
+      <span>Keep tabs for this site</span>
+      <label>
+        <input type="checkbox">
+        <span>Session</span>
+      </label>
+      <label>
+        <input type="checkbox">
+        <span>Always</span>
+      </label>
+    </div>
+  </body>
+</html>

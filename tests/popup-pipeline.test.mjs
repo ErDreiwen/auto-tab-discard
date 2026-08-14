@@ -4,9 +4,32 @@ import assert from 'node:assert/strict';
 test('keeps a popup command alive through native tab discard completion', async () => {
   let finishDiscard;
   const event = {addListener() {}, removeListener() {}};
+  const readArea = (state, query) => {
+    if (query === null || query === undefined) {
+      return {...state};
+    }
+    if (Array.isArray(query)) {
+      return Object.fromEntries(query
+        .filter(key => Object.prototype.hasOwnProperty.call(state, key))
+        .map(key => [key, state[key]]));
+    }
+    if (typeof query === 'string') {
+      return Object.prototype.hasOwnProperty.call(state, query) ?
+        {[query]: state[query]} : {};
+    }
+    return {...query, ...state};
+  };
+  const localState = {prepends: '', favicon: false};
   const sessionState = {};
   const storedMarker = id => sessionState[`__discardOwnership:tab:${id}`]?.marker;
-  const background = {id: 2, active: false, discarded: false, status: 'complete'};
+  const background = {
+    id: 2,
+    active: false,
+    discarded: false,
+    incognito: false,
+    status: 'complete',
+    windowId: 1
+  };
 
   globalThis.chrome = {
     runtime: {
@@ -14,18 +37,28 @@ test('keeps a popup command alive through native tab discard completion', async 
     },
     storage: {
       managed: {
-        get(defaults, callback) {
-          callback(defaults);
+        get(query, callback) {
+          callback(readArea({}, query));
         }
       },
       local: {
-        get(defaults, callback) {
-          callback({...defaults, prepends: '', favicon: false});
+        get(query, callback) {
+          callback(readArea(localState, query));
+        },
+        remove(keys, callback) {
+          for (const key of Array.isArray(keys) ? keys : [keys]) {
+            delete localState[key];
+          }
+          callback();
+        },
+        set(values, callback) {
+          Object.assign(localState, values);
+          callback();
         }
       },
       session: {
-        get(defaults, callback) {
-          callback({...defaults, ...sessionState});
+        get(query, callback) {
+          callback(readArea(sessionState, query));
         },
         set(values, callback) {
           Object.assign(sessionState, values);
@@ -38,6 +71,11 @@ test('keeps a popup command alive through native tab discard completion', async 
       },
       onChanged: {
         addListener() {}
+      }
+    },
+    windows: {
+      get(id, callback) {
+        callback({id, incognito: false, type: 'normal'});
       }
     },
     tabs: {
@@ -70,7 +108,7 @@ test('keeps a popup command alive through native tab discard completion', async 
       import('../v3/worker/core/discard.mjs'),
       import('../v3/worker/core/respond.mjs')
     ]);
-    const active = {id: 1, active: true};
+    const active = {id: 1, active: true, incognito: false, windowId: 1};
     let responded = false;
     const response = new Promise(resolve => {
       const keepAlive = respondAsync(() => dispatchPopup(

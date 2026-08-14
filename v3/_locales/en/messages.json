@@ -527,5 +527,120 @@
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Show diagnostics"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Hide diagnostics"
+  },
+  "popup_diagnostics_region": {
+    "message": "Action diagnostics"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incident"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Grouped outcomes"
+  },
+  "popup_diagnostics_log": {
+    "message": "Sanitized diagnostic log"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copy log"
+  },
+  "popup_diagnostics_download": {
+    "message": "Download latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Clear diagnostics"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnostic log copied."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Could not copy the diagnostic log."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Diagnostic log download started."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Could not download the diagnostic log."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostics cleared."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Could not clear diagnostics."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "No sanitized diagnostic is available."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "succeeded"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "skipped"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "failed"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Classified outcome"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostics"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Sanitized logs exclude URLs, titles, tab and window IDs, site rules, and private-window activity."
+  },
+  "options_diagnostics_download": {
+    "message": "Download latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Clear diagnostics"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostics cleared."
+  },
+  "options_diagnostics_empty": {
+    "message": "No sanitized diagnostics are available."
   }
 }

@@ -9,6 +9,7 @@ import {
   EXTERNAL_CONCURRENCY_LIMIT,
   EXTERNAL_TRUSTED_IDS_KEY,
   normalizeTrustedIds,
+  readTrustedExtensionIds,
   sanitizeExternalDiscardResult,
   validateExternalDiscardRequest
 } from '../v3/worker/core/external-api-policy.mjs';
@@ -58,6 +59,54 @@ test('trusted sender normalization is exact, bounded, and fails malformed policy
     SECOND_TRUSTED
   ]), [TRUSTED, SECOND_TRUSTED]);
   assert.equal(normalizeTrustedIds(Array.from({length: 40}, (_, i) => `id-${i}`)).length, 32);
+});
+
+test('managed trusted-ID read failure denies local fallback while successful absence permits it', async () => {
+  let localReads = 0;
+  const local = {
+    get(key, callback) {
+      localReads += 1;
+      callback({[EXTERNAL_TRUSTED_IDS_KEY]: [TRUSTED]});
+    }
+  };
+
+  assert.deepEqual(await readTrustedExtensionIds({
+    storage: {
+      local,
+      managed: {get(key, callback) { callback({}); }}
+    }
+  }), [TRUSTED]);
+  assert.equal(localReads, 1, 'successful managed absence may use the explicit local pairing fallback');
+
+  assert.deepEqual(await readTrustedExtensionIds({
+    storage: {
+      local,
+      managed: {
+        get(key, callback) {
+          callback({[EXTERNAL_TRUSTED_IDS_KEY]: [SECOND_TRUSTED]});
+        }
+      }
+    }
+  }), [SECOND_TRUSTED]);
+  assert.equal(localReads, 1, 'an explicit managed allowlist must remain authoritative');
+
+  await assert.rejects(readTrustedExtensionIds({
+    storage: {
+      local,
+      managed: {
+        get(key, callback) {
+          callback({}, Error('managed policy read failed'));
+        }
+      }
+    }
+  }), /managed policy read failed/);
+  assert.equal(localReads, 1, 'managed failure must never be reclassified as policy absence');
+
+  await assert.rejects(readTrustedExtensionIds({
+    storage: {local},
+    timeoutMs: 10
+  }), /unavailable/);
+  assert.equal(localReads, 1, 'missing managed API must deny before local storage is read');
 });
 
 test('unknown, missing, and malformed senders are denied without executing tab code', async () => {
@@ -335,7 +384,9 @@ test('production listener is allowlisted and cannot consume caller-supplied quer
   assert.match(runtime, /shiftKey: false/);
   assert.match(runtime, /number\.check\(tabs, number\.IGNORE/);
   assert.match(runtime, /resolveFresh: ownership\.resolveFresh/);
-  assert.match(runtime, /discard\.takeover\(tab, \{manual: true\}\)/);
+  assert.match(runtime,
+    /discard\.takeover\(\{\.\.\.tab, windowType: 'normal'\}, \{manual: true\}\)/,
+    'the fixed normal-window query scope must reach the strict takeover boundary');
   assert.doesNotMatch(runtime, /request\.(query|forced)/);
   assert.ok(schema.properties[EXTERNAL_TRUSTED_IDS_KEY]);
 });

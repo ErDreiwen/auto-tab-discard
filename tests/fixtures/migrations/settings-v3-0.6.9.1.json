@@ -13,7 +13,7 @@
     "startup-unpinned": true
   },
   "expected": {
-    "click": "click.discard",
+    "click": "click.discard-tab",
     "discard-protected-on-close": true,
     "favicon": true,
     "favicon-delay": 350,

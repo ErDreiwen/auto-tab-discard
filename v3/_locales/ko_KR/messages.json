@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "취소"
   },
   "popup_retry": {
     "message": "다시 시도"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "전체 $TOTAL$개 탭 중 $COMPLETED$개 완료",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$개 성공, $SKIPPED$개 건너뜀, $FAILED$개 실패.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "안전하게 취소 중…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "취소됨."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "완료됨."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "일부 탭이 처리되지 않은 채 완료됨."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "작업을 완료할 수 없습니다."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "브라우저가 이전 작업을 중단했습니다."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "이 창에서 다른 탭 작업이 이미 실행 중입니다."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "탭 작업에 실패했습니다."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "사용할 수 있는 활성 탭이 없습니다."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "작업 실행 전에 선택한 탭이 변경되었습니다."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$개의 탭이 확장 프로그램 소유의 기본 폐기 상태로 전환되었지만 렌더러가 이미 고정되어 Edge에서 제목이나 favicon 표시를 추가하지 못했습니다.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$개의 탭이 해제용 새로고침 후에도 고정된 상태였습니다. Edge에서 활성화 없이 깨울 수 없어 두 번째 새로고침은 시도하지 않았습니다. 다시 시도하세요.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "진단 표시"
+  },
+  "popup_diagnostics_hide": {
+    "message": "진단 숨기기"
+  },
+  "popup_diagnostics_region": {
+    "message": "작업 진단"
+  },
+  "popup_diagnostics_incident": {
+    "message": "사건"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "그룹화된 결과"
+  },
+  "popup_diagnostics_log": {
+    "message": "정리된 진단 로그"
+  },
+  "popup_diagnostics_copy": {
+    "message": "로그 복사"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log 다운로드"
+  },
+  "popup_diagnostics_clear": {
+    "message": "진단 지우기"
+  },
+  "popup_diagnostics_copied": {
+    "message": "진단 로그를 복사했습니다."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "진단 로그를 복사할 수 없습니다."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "진단 로그 다운로드를 시작했습니다."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "진단 로그를 다운로드할 수 없습니다."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "진단을 지웠습니다."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "진단을 지울 수 없습니다."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "사용할 수 있는 정리된 진단이 없습니다."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "성공"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "건너뜀"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "실패"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "분류된 결과"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "진단"
+  },
+  "options_diagnostics_privacy": {
+    "message": "정리된 로그에는 URL, 제목, 탭 및 창 ID, 사이트 규칙, 비공개 창 활동이 포함되지 않습니다."
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log 다운로드"
+  },
+  "options_diagnostics_clear": {
+    "message": "진단 지우기"
+  },
+  "options_diagnostics_cleared": {
+    "message": "진단을 지웠습니다."
+  },
+  "options_diagnostics_empty": {
+    "message": "사용할 수 있는 정리된 진단이 없습니다."
   }
 }

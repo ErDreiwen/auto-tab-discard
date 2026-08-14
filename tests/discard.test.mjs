@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {FAILURE_CAUSES} from '../v3/worker/core/failure-causes.mjs';
+import {releaseAvailability} from '../v3/worker/core/command-scope.mjs';
 
 test('waits for tabs.discard before releasing the next queued job', async () => {
   let active = 0;
@@ -14,7 +16,13 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     [1, {id: 1, active: false, discarded: false, status: 'complete'}],
     [2, {id: 2, active: false, discarded: false, status: 'complete'}]
   ]);
+  const scopedTab = current => current && {
+    incognito: false,
+    windowId: 1,
+    ...current
+  };
   const tabListeners = {
+    attached: [],
     created: [],
     removed: [],
     replaced: [],
@@ -27,14 +35,14 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     },
     storage: {
       managed: {
-        get(defaults, callback) {
-          callback(defaults);
+        get(query, callback) {
+          callback({});
         }
       },
       local: {
         get(defaults, callback) {
           callback({
-            ...defaults,
+            ...(Array.isArray(defaults) ? {} : defaults),
             prepends,
             favicon,
             'simultaneous-jobs': 1
@@ -58,9 +66,19 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
         addListener() {}
       }
     },
+    windows: {
+      get(id, callback) {
+        callback({id, incognito: false, type: 'normal'});
+      }
+    },
     tabs: {
       query(options, callback) {
         callback([...liveTabs.values()]);
+      },
+      onAttached: {
+        addListener(listener) {
+          tabListeners.attached.push(listener);
+        }
       },
       onCreated: {
         addListener(listener) {
@@ -83,7 +101,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
         }
       },
       get(id, callback) {
-        callback(liveTabs.get(id));
+        callback(scopedTab(liveTabs.get(id)));
       },
       async discard(id) {
         pendingAtNativeCall.push(storedMarker(id)?.state);
@@ -109,6 +127,8 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
       import('../v3/worker/core/discard.mjs'),
       import('../v3/worker/core/ownership.mjs')
     ]);
+    const unscopedPerform = discard.perform;
+    discard.perform = (tab, visual) => unscopedPerform(scopedTab(tab), visual);
 
     const results = await Promise.all([
       discard({id: 1, active: false, discarded: false}),
@@ -178,8 +198,10 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
         status: 'unloaded'
       }, tab));
     };
-    chrome.tabs.get = (id, callback) => callback(liveTabs.get(id));
-    assert.equal((await discard.perform({id: 3})).status, 'succeeded');
+    chrome.tabs.get = (id, callback) => callback(scopedTab(liveTabs.get(id)));
+    liveTabs.set(3, {id: 3, active: false, discarded: false, status: 'complete'});
+    const directPerform = await discard.perform({id: 3});
+    assert.equal(directPerform.status, 'succeeded', directPerform.reason);
     assert.equal(storedMarker(3).source, 'self');
 
     prepends = 'sleep:';
@@ -307,13 +329,21 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
         discarded: true
       }));
     });
-    chrome.tabs.get = () => {};
-    assert.equal((await discard.perform({
+    let timeoutWindowId = 1;
+    chrome.tabs.get = (id, callback) => callback(scopedTab({
+      id,
+      windowId: timeoutWindowId,
+      url: 'https://timeout.example/',
+      discarded: false
+    }));
+    const timedOut = await discard.perform({
       id: 5,
       windowId: 1,
       url: 'https://timeout.example/',
       discarded: false
-    })).status, 'failed');
+    });
+    assert.equal(timedOut.status, 'failed');
+    assert.equal(timedOut.failureCause, FAILURE_CAUSES.NATIVE_TIMEOUT);
     assert.equal(storedMarker(5).state, 'late-native');
     // The unresolved API Promise retains durable/job authority but no repeating
     // polling timer (this standalone test must exit naturally with it pending).
@@ -321,7 +351,39 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     discard.releaseNativeFenceTimeout = 2;
     await assert.rejects(discard.cancelTakeover(5),
       /native discard operation is still pending/);
-    assert.equal(discard.takeoverSnapshot().some(job => job.id === 5), true);
+    const boundaryJobs = discard.takeoverSnapshot();
+    assert.deepEqual(boundaryJobs.find(job => job.id === 5)?.tab, {
+      id: 5,
+      incognito: false,
+      index: undefined,
+      windowId: 1,
+      windowType: 'normal'
+    });
+    const boundaryAvailability = await releaseAvailability(async () => [], {
+      id: 500,
+      incognito: false,
+      index: 0,
+      windowId: 1,
+      windowType: 'normal'
+    }, boundaryJobs);
+    assert.equal(boundaryAvailability['release-window'], true,
+      'the real executor boundary must remain visible to its release scope');
+    timeoutWindowId = 2;
+    tabListeners.attached.forEach(listener => listener(5, {newPosition: 0, newWindowId: 2}));
+    assert.deepEqual(discard.takeoverSnapshot().find(job => job.id === 5)?.tab, {
+      id: 5,
+      index: 0,
+      windowId: 2
+    }, 'attachment must invalidate scope instead of adopting the destination window');
+    const movedAvailability = await releaseAvailability(async () => [], {
+      id: 501,
+      incognito: false,
+      index: 0,
+      windowId: 2,
+      windowType: 'normal'
+    }, discard.takeoverSnapshot());
+    assert.equal(movedAvailability['release-window'], false,
+      'a moved native boundary must not become authorized in its destination window');
 
     const edgeOriginal = {
       id: 6,
@@ -333,7 +395,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     };
     const edgeSuccessor = {...edgeOriginal, id: 60, discarded: true, status: 'unloaded'};
     const edgeTabs = new Map([[edgeOriginal.id, edgeOriginal]]);
-    chrome.tabs.get = (id, callback) => callback(edgeTabs.get(id));
+    chrome.tabs.get = (id, callback) => callback(scopedTab(edgeTabs.get(id)));
     chrome.tabs.discard = async id => {
       assert.equal(id, edgeOriginal.id);
       edgeTabs.delete(edgeOriginal.id);
@@ -354,6 +416,53 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     assert.equal(storedMarker(edgeOriginal.id), undefined);
     assert.equal(storedMarker(edgeSuccessor.id).source, 'self');
 
+    const rejectedNative = {
+      id: 63,
+      windowId: 2,
+      active: false,
+      discarded: false,
+      status: 'complete'
+    };
+    liveTabs.set(rejectedNative.id, rejectedNative);
+    chrome.tabs.get = (id, callback) => callback(scopedTab(liveTabs.get(id)));
+    chrome.tabs.discard = async () => {
+      throw Error('private browser rejection');
+    };
+    const rejectedNativeResult = await discard.perform(rejectedNative);
+    assert.equal(rejectedNativeResult.status, 'failed');
+    assert.equal(rejectedNativeResult.failureCause, FAILURE_CAUSES.NATIVE_REJECTED,
+      rejectedNativeResult.reason);
+
+    const ownershipRejected = {
+      id: 64,
+      windowId: 2,
+      active: false,
+      discarded: false,
+      status: 'complete'
+    };
+    liveTabs.set(ownershipRejected.id, ownershipRejected);
+    chrome.tabs.discard = async id => {
+      const tab = {...liveTabs.get(id), discarded: true, status: 'unloaded'};
+      liveTabs.set(id, tab);
+      tabListeners.updated.forEach(listener => listener(id, {
+        discarded: true,
+        status: 'unloaded'
+      }, tab));
+      return tab;
+    };
+    const confirmSelf = ownership.confirmSelf;
+    let ownershipRejectedResult;
+    try {
+      ownership.confirmSelf = async () => false;
+      ownershipRejectedResult = await discard.perform(ownershipRejected);
+    }
+    finally {
+      ownership.confirmSelf = confirmSelf;
+    }
+    assert.equal(ownershipRejectedResult.status, 'failed');
+    assert.equal(ownershipRejectedResult.failureCause,
+      FAILURE_CAUSES.OWNERSHIP_FINALIZATION_FAILED);
+
     // A successful native callback and first discarded read are not enough:
     // activation in the following task wakes the tab and must turn the command
     // into a truthful failure without retaining a transient self marker.
@@ -373,7 +482,7 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
     };
     let activationReads = 0;
     chrome.tabs.get = (id, callback) => {
-      callback(liveTabs.get(id));
+      callback(scopedTab(liveTabs.get(id)));
       if (id === activationRace.id && activationReads++ === 0) {
         queueMicrotask(() => liveTabs.set(id, {
           ...liveTabs.get(id),
@@ -383,7 +492,10 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
         }));
       }
     };
-    assert.equal((await discard.perform(activationRace)).status, 'failed');
+    const activationFailure = await discard.perform(activationRace);
+    assert.equal(activationFailure.status, 'failed');
+    assert.equal(activationFailure.failureCause,
+      FAILURE_CAUSES.NATIVE_POSTCONDITION_FAILED);
     assert.notEqual((await ownership.status(activationRace.id)).marker?.source, 'self');
 
     // A Promise-shaped native call can settle after both timeout fences. The
@@ -399,14 +511,16 @@ test('waits for tabs.discard before releasing the next queued job', async () => 
       url: 'https://late-native.example/'
     };
     liveTabs.set(late.id, late);
-    chrome.tabs.get = (id, callback) => callback(liveTabs.get(id));
+    chrome.tabs.get = (id, callback) => callback(scopedTab(liveTabs.get(id)));
     let finishLate;
     chrome.tabs.discard = () => new Promise(resolve => finishLate = resolve);
     discard.nativeTimeout = 5;
     discard.takeoverFenceTimeout = 5;
     discard.getTimeout = 20;
     discard.nativeSettleTimeout = 50;
-    assert.equal((await discard.perform(late)).status, 'failed');
+    const lateFailure = await discard.perform(late);
+    assert.equal(lateFailure.status, 'failed');
+    assert.equal(lateFailure.failureCause, FAILURE_CAUSES.NATIVE_TIMEOUT);
     assert.equal(typeof finishLate, 'function');
     Object.assign(late, {discarded: true, status: 'unloaded'});
     tabListeners.updated.forEach(listener => listener(late.id, {

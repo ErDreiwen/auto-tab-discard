@@ -2,7 +2,7 @@ import {runScopedCommand} from './command-scope.mjs';
 import {discard} from './discard.mjs';
 import {
   createExternalDiscardController,
-  EXTERNAL_TRUSTED_IDS_KEY
+  readTrustedExtensionIds
 } from './external-api-policy.mjs';
 import {ownership} from './ownership.mjs';
 import {storage} from './prefs.mjs';
@@ -36,41 +36,6 @@ const suspendedPolicy = async () => Object.assign(
   await storage({'whitelist.session': []}, 'session')
 );
 
-const readArea = (area, key, {optional = false} = {}) => new Promise((resolve, reject) => {
-  try {
-    const operation = area.get(key, values => {
-      const error = chrome.runtime.lastError;
-      if (error) {
-        optional ? resolve({}) : reject(Error(error.message || String(error)));
-      }
-      else {
-        resolve(values || {});
-      }
-    });
-    if (operation?.then) {
-      operation.then(values => resolve(values || {}), error => {
-        optional ? resolve({}) : reject(error);
-      });
-    }
-  }
-  catch (error) {
-    optional ? resolve({}) : reject(error);
-  }
-});
-
-// A managed allowlist, when present, is authoritative. Local storage is the
-// explicit developer/pairing fallback and cannot override enterprise policy.
-const readTrustedExtensionIds = async () => {
-  const managed = await readArea(chrome.storage.managed, EXTERNAL_TRUSTED_IDS_KEY, {
-    optional: true
-  });
-  if (Object.hasOwn(managed, EXTERNAL_TRUSTED_IDS_KEY)) {
-    return managed[EXTERNAL_TRUSTED_IDS_KEY];
-  }
-  const local = await readArea(chrome.storage.local, EXTERNAL_TRUSTED_IDS_KEY);
-  return local[EXTERNAL_TRUSTED_IDS_KEY] || [];
-};
-
 const executeExternalDiscard = async ({tabIds}) => {
   const declared = new Set(tabIds);
   const takeoverFailures = new Map();
@@ -96,7 +61,11 @@ const executeExternalDiscard = async ({tabIds}) => {
     // return a truthful settled record for each independent declared tab.
     takeover: async tab => {
       try {
-        if (await discard.takeover(tab, {manual: true}) === true) {
+        // runScopedCommand admitted this target through its fixed
+        // `windowType: normal` query. Preserve that authoritative scope on the
+        // Tabs.Tab snapshot passed to the takeover boundary; tabs.query does
+        // not itself add a windowType property to returned tabs.
+        if (await discard.takeover({...tab, windowType: 'normal'}, {manual: true}) === true) {
           return true;
         }
       }

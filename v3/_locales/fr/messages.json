@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Annuler"
   },
   "popup_retry": {
     "message": "Réessayer"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ onglets terminés sur $TOTAL$",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ réussis, $SKIPPED$ ignorés, $FAILED$ échoués.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Annulation sécurisée…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Annulé."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Terminé."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Terminé, avec certains onglets non traités."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "L’action n’a pas pu être terminée."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Le navigateur a interrompu l’action précédente."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "Une autre action sur les onglets est déjà en cours dans cette fenêtre."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "L’action sur les onglets a échoué."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Aucun onglet actif n’est disponible."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "L’onglet sélectionné a changé avant l’exécution de l’action."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ onglet(s) ont été déchargés nativement par l’extension, mais Edge n’a pas pu ajouter l’indicateur au titre ou au favicon, car le moteur de rendu était déjà figé.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ onglet(s) sont restés figés après le rechargement de libération. Edge ne permettait pas de les réveiller sans les activer : aucun second rechargement n’a été tenté. Réessayez.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Afficher le diagnostic"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Masquer le diagnostic"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnostic de l’action"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incident"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Résultats regroupés"
+  },
+  "popup_diagnostics_log": {
+    "message": "Journal de diagnostic nettoyé"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copier le journal"
+  },
+  "popup_diagnostics_download": {
+    "message": "Télécharger latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Effacer le diagnostic"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Journal de diagnostic copié."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Impossible de copier le journal de diagnostic."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Téléchargement du journal de diagnostic lancé."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Impossible de télécharger le journal de diagnostic."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostic effacé."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Impossible d’effacer le diagnostic."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Aucun diagnostic nettoyé disponible."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "réussis"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "ignorés"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "échoués"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Résultat classé"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostic"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Les journaux nettoyés excluent les URL, titres, identifiants d’onglets et de fenêtres, règles de sites et activités des fenêtres privées."
+  },
+  "options_diagnostics_download": {
+    "message": "Télécharger latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Effacer le diagnostic"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostic effacé."
+  },
+  "options_diagnostics_empty": {
+    "message": "Aucun diagnostic nettoyé disponible."
   }
 }

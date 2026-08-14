@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Annulla"
   },
   "popup_retry": {
     "message": "Riprova"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ schede completate su $TOTAL$",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ riuscite, $SKIPPED$ ignorate, $FAILED$ non riuscite.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Annullamento sicuro…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Annullato."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Completato."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Completato con alcune schede non elaborate."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Impossibile completare l’azione."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Il browser ha interrotto l’azione precedente."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "In questa finestra è già in corso un’altra azione sulle schede."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "L’azione sulle schede non è riuscita."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Non è disponibile alcuna scheda attiva."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "La scheda selezionata è cambiata prima dell’esecuzione dell’azione."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ scheda/e sono state scartate in modo nativo dall’estensione, ma Edge non ha potuto aggiungere l’indicatore al titolo o alla favicon perché il renderer era già bloccato.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ scheda/e sono rimaste bloccate dopo il ricaricamento di rilascio. Edge non consentiva il risveglio senza attivazione, quindi non è stato tentato un secondo ricaricamento. Riprova.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostra diagnostica"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Nascondi diagnostica"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnostica dell’azione"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Evento"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Risultati raggruppati"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registro diagnostico ripulito"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copia registro"
+  },
+  "popup_diagnostics_download": {
+    "message": "Scarica latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Cancella diagnostica"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registro diagnostico copiato."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Impossibile copiare il registro diagnostico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Download del registro diagnostico avviato."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Impossibile scaricare il registro diagnostico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnostica cancellata."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Impossibile cancellare la diagnostica."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Nessuna diagnostica ripulita disponibile."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "riuscite"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "ignorate"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "non riuscite"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Risultato classificato"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnostica"
+  },
+  "options_diagnostics_privacy": {
+    "message": "I registri ripuliti escludono URL, titoli, ID di schede e finestre, regole dei siti e attività delle finestre private."
+  },
+  "options_diagnostics_download": {
+    "message": "Scarica latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Cancella diagnostica"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnostica cancellata."
+  },
+  "options_diagnostics_empty": {
+    "message": "Nessuna diagnostica ripulita disponibile."
   }
 }

@@ -1,3 +1,5 @@
+import {readStorageArea} from './storage-read.mjs';
+
 const EXTERNAL_DISCARD_METHOD = 'discard';
 const EXTERNAL_TRUSTED_IDS_KEY = 'external.trusted-ids';
 const EXTERNAL_BATCH_LIMIT = 25;
@@ -33,6 +35,22 @@ const normalizeTrustedIds = value => {
     }
   }
   return Object.freeze(trusted);
+};
+
+// A successful managed read with no value means that pairing may use the
+// local developer allowlist. A failed managed read is different: policy is
+// unknown, so it is authoritative denial and local storage is never consulted.
+const readTrustedExtensionIds = async ({
+  readArea = readStorageArea,
+  storage = globalThis.chrome?.storage,
+  timeoutMs
+} = {}) => {
+  const managed = await readArea(storage?.managed, EXTERNAL_TRUSTED_IDS_KEY, {timeoutMs});
+  if (Object.hasOwn(managed, EXTERNAL_TRUSTED_IDS_KEY)) {
+    return managed[EXTERNAL_TRUSTED_IDS_KEY];
+  }
+  const local = await readArea(storage?.local, EXTERNAL_TRUSTED_IDS_KEY, {timeoutMs});
+  return local[EXTERNAL_TRUSTED_IDS_KEY] || [];
 };
 
 const validateExternalDiscardRequest = request => {
@@ -222,6 +240,7 @@ export {
   EXTERNAL_RATE_WINDOW,
   EXTERNAL_TRUSTED_IDS_KEY,
   normalizeTrustedIds,
+  readTrustedExtensionIds,
   sanitizeExternalDiscardResult,
   validateExternalDiscardRequest
 };

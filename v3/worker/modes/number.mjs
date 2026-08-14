@@ -6,6 +6,7 @@ import {starters} from '../core/startup.mjs';
 import {createFrameMetadataCollector} from '../core/frame-metadata.mjs';
 import {createAlarmCatchUp} from '../core/alarm-catch-up.mjs';
 import {markerFallback} from '../core/marker-fallback.mjs';
+import {FAILURE_CAUSES, failureCauseFrom} from '../core/failure-causes.mjs';
 import {
   createSingleFlightQueue,
   METADATA_SCAN_CONCURRENCY,
@@ -63,7 +64,7 @@ number.remove = () => {
 };
 // filterTabsFrom is a list of tab that if provided, discarding only happens on them
 // ops is the preference object overwrite
-const runCheck = async (filterTabsFrom, ops = {}, reason) => {
+const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefined) => {
   // A nonempty explicit list is a command contract, not merely a hint for the
   // automatic scanner. Keep one terminal reason for every intended tab even
   // when Chromium omits its URL scheme from a renderer-only tabs.query filter.
@@ -210,7 +211,8 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
   // get the total number of active tabs
   const options = {
     url: '*://*/*',
-    discarded: false
+    discarded: false,
+    windowType: 'normal'
     // we need to update the icon for not-discardable tabs. So do not exclude them
     // autoDiscardable: true
   };
@@ -544,6 +546,7 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
     tab: entry.tab,
     time: entry.time
   }]));
+  const forcedRecovery = new Set();
   const failed = [];
   const forced = [];
   const successful = [];
@@ -577,6 +580,13 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
 
       // is the tab using too much memory, discard instantly
       if (prefs['memory-enabled'] && meta.memory && meta.memory > prefs['memory-value'] * 1024 * 1024) {
+        if (recoveryIds instanceof Set) {
+          // The normal automatic path executes this before ready/media/form,
+          // count-floor, and per-scan-limit checks. Record the same forced
+          // decision without crossing the native boundary during recovery.
+          forcedRecovery.add(tb.id);
+          continue;
+        }
         log('forced discarding', 'memory usage');
         const [result] = await runDiscardCandidates([{
           kind: 'discard',
@@ -684,6 +694,9 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
         classify('protected', candidate.tab,
           `configured tab-count floor (${prefs.number}) prevents this targeted discard`);
       }
+      if (recoveryIds instanceof Set) {
+        return new Set([...forcedRecovery].filter(id => recoveryIds.has(id)));
+      }
       return finalizeTargeted({
         candidates: arr.length,
         discarded: [],
@@ -720,6 +733,15 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
     Number.isFinite(maximum) ? Math.max(0, Math.floor(maximum)) : arr.length
   );
   const candidates = selectOldest(arr, candidate => candidate.time, limit);
+  if (recoveryIds instanceof Set) {
+    // Worker-restart recovery asks the complete current automatic policy and
+    // metadata pipeline which of its durable ordinary intents would be chosen
+    // now. It must never cross the native boundary while answering.
+    return new Set([
+      ...[...forcedRecovery].filter(id => recoveryIds.has(id)),
+      ...candidates.map(candidate => candidate.tab.id).filter(id => recoveryIds.has(id))
+    ]);
+  }
   if (targeted && candidates.length < arr.length) {
     const selected = new Set(candidates.map(candidate => candidate.tab.id));
     const maximumLabel = Number.isFinite(maximum) ? Math.max(0, Math.floor(maximum)) : 'unlimited';
@@ -735,7 +757,7 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
   log('number check', 'discarding', candidates.length);
   const settled = await runDiscardCandidates(candidates, {
     discard,
-    takeover: tab => discard.takeover(tab)
+    takeover: tab => discard.takeover({...tab, windowType: 'normal'})
   });
   for (const result of settled) {
     if (result.error) {
@@ -759,6 +781,10 @@ const runCheck = async (filterTabsFrom, ops = {}, reason) => {
       }
       else {
         failed.push({
+          failureCause: failureCauseFrom(
+            result.error || result.value,
+            FAILURE_CAUSES.TAKEOVER_FAILED
+          ),
           tab: result.tab,
           reason: result.error ?
             `frozen takeover failed: ${result.error.message || String(result.error)}` :
@@ -824,6 +850,26 @@ number.check = (filterTabsFrom, ops, reason) => {
     log('number.check', 'joined an automatic metadata scan already in flight', reason);
   }
   return flight.promise;
+};
+
+number.revalidateOrdinaryIntents = tabs => {
+  const ids = new Set((tabs || []).map(tab => tab?.id).filter(Number.isInteger));
+  if (ids.size === 0) {
+    return Promise.resolve(ids);
+  }
+  // Run one full automatic eligibility pass for the whole restart batch. The
+  // private fourth argument turns the final action phase into an ID-only proof
+  // and cannot be supplied through extension messages or preferences.
+  // Keep restart recovery on the same FIFO as automatic and manual metadata
+  // scans. It is intentionally unkeyed: it must run as one fresh generation,
+  // never join a pre-existing automatic snapshot with different proof output.
+  return checkQueue.run(
+    undefined,
+    undefined,
+    {},
+    'ordinary/restart-revalidation',
+    ids
+  ).promise.then(result => result instanceof Set ? result : new Set());
 };
 
 const alarmCatchUp = createAlarmCatchUp({

@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Ακύρωση"
   },
   "popup_retry": {
     "message": "Επανάληψη"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "Ολοκληρώθηκαν $COMPLETED$ από $TOTAL$ καρτέλες",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ επιτυχείς, $SKIPPED$ παραλείφθηκαν, $FAILED$ απέτυχαν.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Ασφαλής ακύρωση…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Ακυρώθηκε."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Ολοκληρώθηκε."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Ολοκληρώθηκε με ορισμένες καρτέλες εκκρεμείς."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Η ενέργεια δεν μπόρεσε να ολοκληρωθεί."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Το πρόγραμμα περιήγησης διέκοψε την προηγούμενη ενέργεια."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "Μια άλλη ενέργεια καρτελών εκτελείται ήδη σε αυτό το παράθυρο."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "Η ενέργεια καρτελών απέτυχε."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Δεν υπάρχει διαθέσιμη ενεργή καρτέλα."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "Η επιλεγμένη καρτέλα άλλαξε πριν εκτελεστεί η ενέργεια."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ καρτέλα/-ες απορρίφθηκαν εγγενώς από την επέκταση, αλλά το Edge δεν μπόρεσε να προσθέσει ένδειξη στον τίτλο ή στο favicon επειδή η διεργασία απόδοσης ήταν ήδη παγωμένη.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ καρτέλα/-ες παρέμειναν παγωμένες μετά την επαναφόρτωση αποδέσμευσης. Το Edge δεν παρείχε αφύπνιση χωρίς ενεργοποίηση, οπότε δεν έγινε δεύτερη επαναφόρτωση. Δοκιμάστε ξανά.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Εμφάνιση διαγνωστικών"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Απόκρυψη διαγνωστικών"
+  },
+  "popup_diagnostics_region": {
+    "message": "Διαγνωστικά ενέργειας"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Συμβάν"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Ομαδοποιημένα αποτελέσματα"
+  },
+  "popup_diagnostics_log": {
+    "message": "Καθαρισμένο αρχείο διαγνωστικών"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Αντιγραφή αρχείου"
+  },
+  "popup_diagnostics_download": {
+    "message": "Λήψη latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Εκκαθάριση διαγνωστικών"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Το αρχείο διαγνωστικών αντιγράφηκε."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Δεν ήταν δυνατή η αντιγραφή του αρχείου διαγνωστικών."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Η λήψη του αρχείου διαγνωστικών ξεκίνησε."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Δεν ήταν δυνατή η λήψη του αρχείου διαγνωστικών."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Τα διαγνωστικά εκκαθαρίστηκαν."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Δεν ήταν δυνατή η εκκαθάριση των διαγνωστικών."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Δεν υπάρχουν καθαρισμένα διαγνωστικά."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "επιτυχείς"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "παραλείφθηκαν"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "απέτυχαν"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Ταξινομημένο αποτέλεσμα"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Διαγνωστικά"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Τα καθαρισμένα αρχεία εξαιρούν URL, τίτλους, αναγνωριστικά καρτελών και παραθύρων, κανόνες ιστοτόπων και δραστηριότητα ιδιωτικών παραθύρων."
+  },
+  "options_diagnostics_download": {
+    "message": "Λήψη latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Εκκαθάριση διαγνωστικών"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Τα διαγνωστικά εκκαθαρίστηκαν."
+  },
+  "options_diagnostics_empty": {
+    "message": "Δεν υπάρχουν καθαρισμένα διαγνωστικά."
   }
 }

@@ -15,7 +15,8 @@ test('worker and popup exchange safe takeover snapshots for release availability
   assert.doesNotMatch(discard, /discard\.takeoverJobs = takeoverJobs;/);
   assert.match(menu, /takeoverSnapshot: discard\.takeoverSnapshot,/);
   assert.match(menu, /request\.method === 'takeover-snapshot'/);
-  assert.match(menu, /respondAsync\(\(\) => discard\.takeoverSnapshot\(\), sendResponse\)/);
-  assert.match(popup, /chrome\.runtime\.sendMessage\(\{method: 'takeover-snapshot'\}/);
-  assert.match(popup, /releaseAvailability\(queryTabs, tab, queryTakeoverSnapshot\)/);
+  assert.match(menu, /authorizePopupRequest\(request, query\)/);
+  assert.match(menu, /filterPopupTakeoverSnapshot\(discard\.takeoverSnapshot\(\), selected\)/);
+  assert.match(popup, /method: 'takeover-snapshot',[\s\S]*tabId: selected\?\.id,[\s\S]*windowId: selected\?\.windowId/);
+  assert.match(popup, /releaseAvailability\(queryTabs, tab, \(\) => queryTakeoverSnapshot\(tab\)\)/);
 });

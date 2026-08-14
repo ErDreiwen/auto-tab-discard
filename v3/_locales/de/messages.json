@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Abbrechen"
   },
   "popup_retry": {
     "message": "Wiederholen"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ von $TOTAL$ Tabs abgeschlossen",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ erfolgreich, $SKIPPED$ übersprungen, $FAILED$ fehlgeschlagen.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Wird sicher abgebrochen…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Abgebrochen."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Fertig."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Fertig; einige Tabs wurden nicht abgeschlossen."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Die Aktion konnte nicht abgeschlossen werden."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Der Browser hat die vorherige Aktion unterbrochen."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "In diesem Fenster läuft bereits eine andere Tab-Aktion."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "Die Tab-Aktion ist fehlgeschlagen."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Kein aktiver Tab verfügbar."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "Der ausgewählte Tab änderte sich, bevor die Aktion ausgeführt werden konnte."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ Tab(s) wurden nativ durch die Erweiterung verworfen, aber Edge konnte Titel oder Favicon nicht kennzeichnen, weil der Renderer bereits eingefroren war.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ Tab(s) blieben nach dem Freigabe-Neuladen eingefroren. Edge bot kein Aufwecken ohne Aktivierung, daher erfolgte kein zweites Neuladen. Versuchen Sie die Freigabe erneut.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Diagnose anzeigen"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Diagnose ausblenden"
+  },
+  "popup_diagnostics_region": {
+    "message": "Aktionsdiagnose"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Vorfall"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Gruppierte Ergebnisse"
+  },
+  "popup_diagnostics_log": {
+    "message": "Bereinigtes Diagnoseprotokoll"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Protokoll kopieren"
+  },
+  "popup_diagnostics_download": {
+    "message": "latest.log herunterladen"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Diagnose löschen"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Diagnoseprotokoll kopiert."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Diagnoseprotokoll konnte nicht kopiert werden."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Download des Diagnoseprotokolls gestartet."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Diagnoseprotokoll konnte nicht heruntergeladen werden."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnose gelöscht."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Diagnose konnte nicht gelöscht werden."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Keine bereinigte Diagnose verfügbar."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "erfolgreich"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "übersprungen"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "fehlgeschlagen"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Klassifiziertes Ergebnis"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnose"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Bereinigte Protokolle enthalten keine URLs, Titel, Tab- und Fenster-IDs, Websiteregeln oder Aktivitäten privater Fenster."
+  },
+  "options_diagnostics_download": {
+    "message": "latest.log herunterladen"
+  },
+  "options_diagnostics_clear": {
+    "message": "Diagnose löschen"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnose gelöscht."
+  },
+  "options_diagnostics_empty": {
+    "message": "Keine bereinigten Diagnosen verfügbar."
   }
 }

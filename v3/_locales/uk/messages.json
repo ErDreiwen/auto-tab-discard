@@ -572,13 +572,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Скасувати"
   },
   "popup_retry": {
     "message": "Повторити"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "Завершено $COMPLETED$ із $TOTAL$ вкладок",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -589,7 +589,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ успішно, $SKIPPED$ пропущено, $FAILED$ з помилкою.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -603,37 +603,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "Безпечне скасування…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Скасовано."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Готово."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Готово, але деякі вкладки не оброблено."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Не вдалося виконати дію."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "Браузер перервав попередню дію."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "У цьому вікні вже виконується інша дія з вкладками."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "Не вдалося виконати дію з вкладками."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Немає доступної активної вкладки."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "Вибрана вкладка змінилася до запуску дії."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ вкладок було нативно вивантажено розширенням, але Edge не зміг додати індикатор до заголовка чи значка, оскільки процес відображення вже був заморожений.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -649,11 +649,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ вкладок залишилися замороженими після перезавантаження для звільнення. Edge не зміг пробудити їх без активації, тому повторне перезавантаження не виконувалося. Повторіть спробу.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Показати діагностику"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Сховати діагностику"
+  },
+  "popup_diagnostics_region": {
+    "message": "Діагностика дії"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Інцидент"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Згруповані результати"
+  },
+  "popup_diagnostics_log": {
+    "message": "Очищений діагностичний журнал"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Копіювати журнал"
+  },
+  "popup_diagnostics_download": {
+    "message": "Завантажити latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Очистити діагностику"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Діагностичний журнал скопійовано."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Не вдалося скопіювати діагностичний журнал."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "Завантаження діагностичного журналу розпочато."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Не вдалося завантажити діагностичний журнал."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Діагностику очищено."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Не вдалося очистити діагностику."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Очищена діагностика недоступна."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "успішно"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "пропущено"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "з помилкою"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Класифікований результат"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Діагностика"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Очищені журнали не містять URL, заголовків, ідентифікаторів вкладок і вікон, правил сайтів та активності приватних вікон."
+  },
+  "options_diagnostics_download": {
+    "message": "Завантажити latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Очистити діагностику"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Діагностику очищено."
+  },
+  "options_diagnostics_empty": {
+    "message": "Очищена діагностика недоступна."
   }
 }

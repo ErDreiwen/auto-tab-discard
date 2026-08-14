@@ -581,13 +581,13 @@
     "message": "Auto Tab Discard"
   },
   "popup_cancel": {
-    "message": "Cancel"
+    "message": "Cancelar"
   },
   "popup_retry": {
     "message": "Tentar novamente"
   },
   "popup_progress": {
-    "message": "Completed $COMPLETED$ of $TOTAL$ tabs",
+    "message": "$COMPLETED$ de $TOTAL$ separadores concluídos",
     "placeholders": {
       "completed": {
         "content": "$1"
@@ -598,7 +598,7 @@
     }
   },
   "popup_result_summary": {
-    "message": "$SUCCESS$ succeeded, $SKIPPED$ skipped, $FAILED$ failed.",
+    "message": "$SUCCESS$ com êxito, $SKIPPED$ ignorados, $FAILED$ falharam.",
     "placeholders": {
       "success": {
         "content": "$1"
@@ -612,37 +612,37 @@
     }
   },
   "popup_status_cancelling": {
-    "message": "Cancelling safely…"
+    "message": "A cancelar em segurança…"
   },
   "popup_status_cancelled": {
-    "message": "Cancelled."
+    "message": "Cancelado."
   },
   "popup_status_complete": {
-    "message": "Finished."
+    "message": "Concluído."
   },
   "popup_status_partial": {
-    "message": "Finished with some tabs not completed."
+    "message": "Concluído com alguns separadores por processar."
   },
   "popup_status_failed": {
-    "message": "The action could not be completed."
+    "message": "Não foi possível concluir a ação."
   },
   "popup_status_interrupted": {
-    "message": "The browser interrupted the previous action."
+    "message": "O navegador interrompeu a ação anterior."
   },
   "popup_error_busy": {
-    "message": "Another tab action is already running in this window."
+    "message": "Já está em curso outra ação de separadores nesta janela."
   },
   "popup_error_command_failed": {
-    "message": "The tab action failed."
+    "message": "A ação de separadores falhou."
   },
   "popup_error_no_active_tab": {
-    "message": "No active tab is available."
+    "message": "Não está disponível nenhum separador ativo."
   },
   "popup_error_target_changed": {
-    "message": "The selected tab changed before the action could run."
+    "message": "O separador selecionado mudou antes de a ação ser executada."
   },
   "popup_visual_unavailable_warning": {
-    "message": "$COUNT$ tab(s) were converted to extension-owned native discards, but Edge could not add the title or favicon indicator because the renderer was already frozen.",
+    "message": "$COUNT$ separador(es) foram descartados nativamente pela extensão, mas o Edge não conseguiu marcar o título ou favicon porque o renderizador já estava congelado.",
     "placeholders": {
       "count": {
         "content": "$1"
@@ -658,11 +658,126 @@
     }
   },
   "popup_release_remains_frozen_warning": {
-    "message": "$COUNT$ tab(s) remained frozen after the release reload. Edge did not provide a non-activating wake, so no second reload was attempted. Retry to make another explicit release attempt.",
+    "message": "$COUNT$ separador(es) permaneceram congelados após o recarregamento de libertação. O Edge não permitiu reativá-los sem os selecionar, por isso não foi tentado outro recarregamento. Tente novamente.",
     "placeholders": {
       "count": {
         "content": "$1"
       }
     }
+  },
+  "popup_diagnostics_show": {
+    "message": "Mostrar diagnóstico"
+  },
+  "popup_diagnostics_hide": {
+    "message": "Ocultar diagnóstico"
+  },
+  "popup_diagnostics_region": {
+    "message": "Diagnóstico da ação"
+  },
+  "popup_diagnostics_incident": {
+    "message": "Incidente"
+  },
+  "popup_diagnostics_reasons": {
+    "message": "Resultados agrupados"
+  },
+  "popup_diagnostics_log": {
+    "message": "Registo de diagnóstico sanitizado"
+  },
+  "popup_diagnostics_copy": {
+    "message": "Copiar registo"
+  },
+  "popup_diagnostics_download": {
+    "message": "Transferir latest.log"
+  },
+  "popup_diagnostics_clear": {
+    "message": "Limpar diagnóstico"
+  },
+  "popup_diagnostics_copied": {
+    "message": "Registo de diagnóstico copiado."
+  },
+  "popup_diagnostics_copy_failed": {
+    "message": "Não foi possível copiar o registo de diagnóstico."
+  },
+  "popup_diagnostics_downloaded": {
+    "message": "A transferência do registo de diagnóstico começou."
+  },
+  "popup_diagnostics_download_failed": {
+    "message": "Não foi possível transferir o registo de diagnóstico."
+  },
+  "popup_diagnostics_cleared": {
+    "message": "Diagnóstico limpo."
+  },
+  "popup_diagnostics_clear_failed": {
+    "message": "Não foi possível limpar o diagnóstico."
+  },
+  "popup_diagnostics_unavailable": {
+    "message": "Não está disponível nenhum diagnóstico sanitizado."
+  },
+  "popup_diagnostics_status_success": {
+    "message": "com êxito"
+  },
+  "popup_diagnostics_status_skipped": {
+    "message": "ignorados"
+  },
+  "popup_diagnostics_status_failed": {
+    "message": "falharam"
+  },
+  "popup_diagnostics_reason_default": {
+    "message": "Resultado classificado"
+  },
+  "popup_diagnostics_reason_row": {
+    "message": "$COUNT$ $STATUS$: $REASON$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "reason": {
+        "content": "$3"
+      },
+      "code": {
+        "content": "$4"
+      }
+    }
+  },
+  "popup_diagnostics_reason_row_detailed": {
+    "message": "$COUNT$ $STATUS$: $STAGE$ / $CAUSE$ ($CODE$)",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "status": {
+        "content": "$2"
+      },
+      "stage": {
+        "content": "$3"
+      },
+      "cause": {
+        "content": "$4"
+      },
+      "code": {
+        "content": "$5"
+      }
+    }
+  },
+  "options_diagnostics_title": {
+    "message": "Diagnóstico"
+  },
+  "options_diagnostics_privacy": {
+    "message": "Os registos sanitizados excluem URL, títulos, IDs de separadores e janelas, regras de sites e atividade de janelas privadas."
+  },
+  "options_diagnostics_download": {
+    "message": "Transferir latest.log"
+  },
+  "options_diagnostics_clear": {
+    "message": "Limpar diagnóstico"
+  },
+  "options_diagnostics_cleared": {
+    "message": "Diagnóstico limpo."
+  },
+  "options_diagnostics_empty": {
+    "message": "Não estão disponíveis diagnósticos sanitizados."
   }
 }

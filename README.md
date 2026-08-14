@@ -28,6 +28,23 @@ This fork uses its own name, GitHub homepage, and Gecko ID (`{b3b398c4-27bc-46b6
 All install/update/uninstall navigation is disabled by default, strictly
 allowlisted, and documented in [docs/LIFECYCLE_NAVIGATION.md](docs/LIFECYCLE_NAVIGATION.md).
 
+Bulk-command failures now produce a bounded, local, privacy-safe incident
+journal with grouped reason codes and a downloadable `latest.log`. See
+[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for the popup controls, log format,
+retention limits, and excluded browsing data.
+
+The full reliability backlog is mirrored in
+[docs/RELIABILITY_ISSUE_MATRIX.md](docs/RELIABILITY_ISSUE_MATRIX.md): exactly 25
+current issues and 35 forward risks, each with 4–7 independently verifiable
+subissues and a link to its GitHub tracking record.
+
+The iframe-heavy P18 item still has one explicit browser-bound gap: result
+retention is capped, but `scripting.executeScript({allFrames: true})` starts
+before that cap can apply. This release does not add the warned
+`webNavigation` permission or regress every framed page to fail-closed merely
+to overstate that boundary. The retained stress evidence and permission
+decision are documented in [docs/PERMISSION_CHANGES.md](docs/PERMISSION_CHANGES.md).
+
 ### Preview
 
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/S0rHU38OnTE/0.jpg)](https://www.youtube.com/watch?v=S0rHU38OnTE)

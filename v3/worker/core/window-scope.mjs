@@ -24,8 +24,10 @@ const createWindowScope = (selected, windowInfo = {}) => {
   });
 };
 
-const tabInAllowedWindowScope = (tab, selected) => Boolean(tab &&
-  (!tab.windowType || allowedTypes.has(tab.windowType)) &&
+const tabInAllowedWindowScope = (tab, selected, {requireExplicit = false} = {}) => Boolean(tab &&
+  (requireExplicit ? allowedTypes.has(tab.windowType) :
+    (!tab.windowType || allowedTypes.has(tab.windowType))) &&
+  (requireExplicit ? typeof tab.incognito === 'boolean' : true) &&
   Boolean(tab.incognito) === Boolean(selected?.incognito));
 
 const attachWindowScope = (selected, scope) => ({

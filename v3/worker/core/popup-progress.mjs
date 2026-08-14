@@ -1,7 +1,16 @@
+import {
+  FAILURE_CAUSES,
+  failureCauseFrom,
+  normalizeFailureCause
+} from './failure-causes.mjs';
+
 const STORAGE_KEY = '__popupCommandActivity';
 const SNAPSHOT_VERSION = 1;
 const DEFAULT_RESULT_TTL = 30_000;
 const DEFAULT_RUNNING_TTL = 5 * 60_000;
+const DEFAULT_DIAGNOSTIC_TIMEOUT = 2500;
+const DEFAULT_PUBLISH_TIMEOUT = 1000;
+const DEFAULT_STORAGE_TIMEOUT = 1000;
 
 const POPUP_CODES = Object.freeze({
   BUSY: 'POPUP_BUSY',
@@ -30,6 +39,15 @@ const POPUP_CODES = Object.freeze({
 const terminalStates = new Set(['cancelled', 'complete', 'failed', 'interrupted', 'partial']);
 const statusPriority = Object.freeze({skipped: 1, success: 2, failed: 3});
 
+const settledOutcome = (code, status, id, failureCause) => ({
+  code,
+  ...(code === POPUP_CODES.TAB_FAILED && {
+    failureCause: normalizeFailureCause(failureCause)
+  }),
+  status,
+  tabId: id
+});
+
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const tabId = value => Number.isInteger(value) ? value :
   Number.isInteger(value?.tab?.id) ? value.tab.id :
@@ -44,6 +62,9 @@ const fingerprint = request => [
   request?.shiftKey === true ? 1 : 0,
   request?.checked === true ? 1 : request?.checked === false ? 0 : ''
 ].join(':');
+
+const defaultIncidentId = (startedAt, sequence) =>
+  `ATD-${startedAt.toString(36).toUpperCase()}-${sequence.toString(36).toUpperCase()}`;
 
 const classifyPopupError = error => {
   if (error?.code && Object.values(POPUP_CODES).includes(error.code)) {
@@ -63,7 +84,12 @@ const provisionalTaskFailureCode = error =>
   error?.code === POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN ?
     POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN : POPUP_CODES.TAB_FAILED;
 
-const trackPopupTabTask = (progress, task, successCode) => async (tab, ...args) => {
+const trackPopupTabTask = (
+  progress,
+  task,
+  successCode,
+  fallbackFailureCause = FAILURE_CAUSES.OPERATION_FAILED
+) => async (tab, ...args) => {
   if (!progress) {
     return task(tab, ...args);
   }
@@ -78,7 +104,8 @@ const trackPopupTabTask = (progress, task, successCode) => async (tab, ...args) 
       retainedFrozen && Number.isInteger(value?.tab?.id) ? value.tab : tab,
       failed ? 'failed' : 'success',
       retainedFrozen ? POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN :
-        failed ? POPUP_CODES.TAB_FAILED : successCode
+        failed ? POPUP_CODES.TAB_FAILED : successCode,
+      failureCauseFrom(value, fallbackFailureCause)
     );
     return value;
   }
@@ -86,7 +113,8 @@ const trackPopupTabTask = (progress, task, successCode) => async (tab, ...args) 
     await progress.settle(
       Number.isInteger(error?.tab?.id) ? error.tab : tab,
       progress.cancelled() ? 'skipped' : 'failed',
-      progress.cancelled() ? POPUP_CODES.TAB_CANCELLED : provisionalTaskFailureCode(error)
+      progress.cancelled() ? POPUP_CODES.TAB_CANCELLED : provisionalTaskFailureCode(error),
+      failureCauseFrom(error, fallbackFailureCause)
     );
     throw error;
   }
@@ -139,11 +167,16 @@ const entries = value => value && value.version === SNAPSHOT_VERSION &&
   value.snapshots && typeof value.snapshots === 'object' ? value.snapshots : {};
 
 const createPopupProgressManager = ({
+  createIncidentId = defaultIncidentId,
+  diagnosticTimeout = DEFAULT_DIAGNOSTIC_TIMEOUT,
   now = () => Date.now(),
   publish = async () => {},
+  publishTimeout = DEFAULT_PUBLISH_TIMEOUT,
+  recordDiagnostic = async () => {},
   resolveId = id => id,
   resultTtl = DEFAULT_RESULT_TTL,
   runningTtl = DEFAULT_RUNNING_TTL,
+  storageTimeout = DEFAULT_STORAGE_TIMEOUT,
   store = storageAdapter(globalThis.chrome?.storage?.session)
 } = {}) => {
   const active = new Map();
@@ -151,6 +184,47 @@ const createPopupProgressManager = ({
   let hydrated;
   let sequence = 0;
   let writeChain = Promise.resolve();
+
+  const settleWithin = (task, fallback, timeout, defaultTimeout) => new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(fallback), Math.max(1,
+      Number(timeout) || defaultTimeout));
+    Promise.resolve().then(task).then(finish, () => finish(fallback));
+  });
+  const settleStore = (task, fallback) => settleWithin(
+    task,
+    fallback,
+    storageTimeout,
+    DEFAULT_STORAGE_TIMEOUT
+  );
+  const publishSnapshot = snapshot => settleWithin(
+    () => publish(clone(snapshot)),
+    undefined,
+    publishTimeout,
+    DEFAULT_PUBLISH_TIMEOUT
+  );
+
+  // Support logging is never command authority. A storage implementation that
+  // fails to callback must not prevent the terminal result from reaching the
+  // popup or its caller.
+  const recordTerminalDiagnostic = snapshot => new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.max(1,
+      Number(diagnosticTimeout) || DEFAULT_DIAGNOSTIC_TIMEOUT));
+    Promise.resolve().then(() => recordDiagnostic(clone(snapshot))).then(finish, finish);
+  });
 
   const persist = snapshot => {
     if (snapshot) {
@@ -166,7 +240,7 @@ const createPopupProgressManager = ({
       snapshots: Object.fromEntries([...snapshots].map(([scope, value]) => [scope, clone(value)])),
       version: SNAPSHOT_VERSION
     };
-    writeChain = writeChain.then(() => store.write(envelope)).catch(() => {});
+    writeChain = writeChain.then(() => settleStore(() => store.write(envelope))).catch(() => {});
     return writeChain;
   };
 
@@ -176,15 +250,24 @@ const createPopupProgressManager = ({
     snapshot.completed = Object.keys(snapshot.outcomes).length;
     snapshot.total = Math.max(snapshot.total, snapshot.completed);
     await persist(snapshot);
-    try {
-      await publish(clone(snapshot));
+    // The session activity record already protects in-flight state. Persist a
+    // diagnostic only at the terminal boundary to avoid one local-storage
+    // write per tab. Do this before publishing the terminal snapshot so its
+    // Copy/Download controls never race the durable incident. Interrupted
+    // hydration below records the one worker-loss terminal exactly once.
+    if (terminalStates.has(snapshot.state)) {
+      await recordTerminalDiagnostic(snapshot);
     }
-    catch (error) {}
+    // Live progress is best-effort UI telemetry. A receiver that closes or a
+    // browser message callback that never fires must not retain the command
+    // channel after session state and terminal diagnostics have settled.
+    await publishSnapshot(snapshot);
   };
 
   const hydrate = () => hydrated ||= (async () => {
     const current = now();
-    const stored = entries(await store.read());
+    const stored = entries(await settleStore(() => store.read(), undefined));
+    const interrupted = [];
     for (const [scope, original] of Object.entries(stored)) {
       if (!original || Number(original.expiresAt) <= current) {
         continue;
@@ -208,10 +291,14 @@ const createPopupProgressManager = ({
         snapshot.summary = summary(snapshot.outcomes);
         snapshot.completed = Object.keys(snapshot.outcomes).length;
         snapshot.total = Math.max(snapshot.total || 0, snapshot.completed);
+        interrupted.push(snapshot);
       }
       snapshots.set(scope, snapshot);
     }
     await persist();
+    for (const snapshot of interrupted) {
+      await recordTerminalDiagnostic(snapshot);
+    }
   })();
 
   const publicSnapshot = snapshot => clone(snapshot);
@@ -307,7 +394,7 @@ const createPopupProgressManager = ({
       }
       return snapshot.total;
     };
-    const settle = async (tab, status, code) => {
+    const settle = async (tab, status, code, failureCause) => {
       await addTargets([tab]);
       const id = canonicalId(tab);
       if (!Number.isInteger(id) || !Object.hasOwn(statusPriority, status)) {
@@ -323,11 +410,11 @@ const createPopupProgressManager = ({
       if (previous && statusPriority[previous.status] >= statusPriority[status]) {
         return false;
       }
-      snapshot.outcomes[id] = {code, status, tabId: id};
+      snapshot.outcomes[id] = settledOutcome(code, status, id, failureCause);
       await emit(snapshot);
       return true;
     };
-    const settleAuthoritative = async (tab, status, code) => {
+    const settleAuthoritative = async (tab, status, code, failureCause) => {
       await addTargets([tab]);
       const id = canonicalId(tab);
       if (!Number.isInteger(id) || !Object.hasOwn(statusPriority, status)) {
@@ -338,7 +425,7 @@ const createPopupProgressManager = ({
           statusPriority[previous.status] >= statusPriority[status]) {
         return false;
       }
-      snapshot.outcomes[id] = {code, status, tabId: id};
+      snapshot.outcomes[id] = settledOutcome(code, status, id, failureCause);
       authoritativeIds.add(id);
       await emit(snapshot);
       return true;
@@ -353,7 +440,10 @@ const createPopupProgressManager = ({
       }
       for (const value of result?.failed || []) {
         await settleAuthoritative(
-          byId.get(canonicalId(value)) || value, 'failed', POPUP_CODES.TAB_FAILED
+          byId.get(canonicalId(value)) || value,
+          'failed',
+          POPUP_CODES.TAB_FAILED,
+          failureCauseFrom(value, FAILURE_CAUSES.METADATA_CHECK_FAILED)
         );
       }
       for (const key of ['protected', 'unsupported']) {
@@ -395,7 +485,8 @@ const createPopupProgressManager = ({
           remember(value),
           'failed',
           value?.code === POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN ?
-            POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN : POPUP_CODES.TAB_FAILED
+            POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN : POPUP_CODES.TAB_FAILED,
+          failureCauseFrom(value)
         );
       }
       for (const value of result.unsupported || []) {
@@ -429,7 +520,12 @@ const createPopupProgressManager = ({
         canonicalizeSet(classifiedIds);
         const id = canonicalId(value);
         if (Number.isInteger(id) && !classifiedIds.has(id)) {
-          await settleAuthoritative(value, 'failed', POPUP_CODES.TAB_FAILED);
+          await settleAuthoritative(
+            value,
+            'failed',
+            POPUP_CODES.TAB_FAILED,
+            failureCauseFrom(value)
+          );
         }
       }
       // A direct command with no safe keeper deliberately leaves its active
@@ -491,7 +587,8 @@ const createPopupProgressManager = ({
           await context.settle(
             id,
             state === 'failed' ? 'failed' : 'skipped',
-            state === 'failed' ? POPUP_CODES.TAB_FAILED : POPUP_CODES.TAB_SKIPPED
+            state === 'failed' ? POPUP_CODES.TAB_FAILED : POPUP_CODES.TAB_SKIPPED,
+            state === 'failed' ? failureCauseFrom(error) : undefined
           );
         }
       }
@@ -505,6 +602,7 @@ const createPopupProgressManager = ({
     }
     snapshot.state = state;
     snapshot.errorCode = error ? classifyPopupError(error) : undefined;
+    snapshot.errorCause = error ? failureCauseFrom(error) : undefined;
     if (state === 'cancelled') {
       snapshot.errorCode = POPUP_CODES.CANCELLED;
     }
@@ -532,13 +630,18 @@ const createPopupProgressManager = ({
     }
 
     const startedAt = now();
+    const nextSequence = ++sequence;
     const snapshot = {
+      checked: request?.checked === true,
       command: request?.cmd || '',
       completed: 0,
       errorCode: undefined,
+      errorCause: undefined,
       expiresAt: startedAt + runningTtl,
-      jobId: `${startedAt.toString(36)}-${(++sequence).toString(36)}`,
+      incidentId: createIncidentId(startedAt, nextSequence),
+      jobId: `${startedAt.toString(36)}-${nextSequence.toString(36)}`,
       outcomes: {},
+      privateContext: request?.incognito === true,
       scope,
       startedAt,
       state: 'running',
@@ -547,7 +650,8 @@ const createPopupProgressManager = ({
       total: 0,
       updatedAt: startedAt,
       version: SNAPSHOT_VERSION,
-      windowId: Number.isInteger(request?.windowId) ? request.windowId : undefined
+      windowId: Number.isInteger(request?.windowId) ? request.windowId : undefined,
+      shiftKey: request?.shiftKey === true
     };
     const job = {
       cancel: onCancel,
@@ -605,6 +709,9 @@ const createPopupProgressManager = ({
 
 export {
   createPopupProgressManager,
+  DEFAULT_PUBLISH_TIMEOUT,
+  DEFAULT_STORAGE_TIMEOUT,
+  defaultIncidentId,
   POPUP_CODES,
   SNAPSHOT_VERSION,
   STORAGE_KEY,

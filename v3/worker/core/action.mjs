@@ -1,20 +1,7 @@
-const ACTIONS = new Set([
-  'popup',
-  'discard-tab',
-  'discard-tabs',
-  'release-tabs',
-  'discard-window',
-  'release-window',
-  'discard-other-windows',
-  'release-other-windows',
-  'toggle-allowed'
-]);
+import {normalizeToolbarClick} from './preference-migrations.mjs';
 
 const normalizeActionCommand = click => {
-  const value = typeof click === 'string' ? click : 'click.popup';
-  const command = value.startsWith('click.') ? value.slice('click.'.length) : value;
-
-  return ACTIONS.has(command) ? command : 'popup';
+  return normalizeToolbarClick(click).slice('click.'.length);
 };
 
 const actionCommand = async storage => {

@@ -12,6 +12,7 @@ import {
   createPopupProgressManager,
   POPUP_CODES
 } from '../v3/worker/core/popup-progress.mjs';
+import {FAILURE_CAUSES} from '../v3/worker/core/failure-causes.mjs';
 import {
   commitSettingsImport,
   parseSettingsBackup,
@@ -46,7 +47,7 @@ const runGcProbe = source => {
 const sortedIds = values => values.map(value => value?.tab?.id ?? value?.id ?? value)
   .toSorted((a, b) => a - b);
 
-test('issue 2: false discard results fail visibly for all seven discard commands', async () => {
+test('issue 2: unconfirmed discard results fail visibly for all seven discard commands', async () => {
   const commands = [
     'discard-tab',
     'discard-tree',
@@ -56,67 +57,78 @@ test('issue 2: false discard results fail visibly for all seven discard commands
     'discard-other-windows',
     'discard-tabs'
   ];
+  const unconfirmed = [
+    ['false', false],
+    ['undefined', undefined],
+    ['null', null],
+    ['empty-object', {}],
+    ['unknown-status', {status: 'unknown'}]
+  ];
 
-  for (const [ordinal, command] of commands.entries()) {
-    const selected = {
-      active: false,
-      discarded: false,
-      frozen: false,
-      id: 10_000 + ordinal * 10,
-      incognito: false,
-      index: 5,
-      status: 'complete',
-      url: `https://selected-${command}.example/`,
-      windowId: 100 + ordinal,
-      windowType: 'normal'
-    };
-    const target = command === 'discard-tab' || command === 'discard-tree' ? selected : {
-      ...selected,
-      active: false,
-      id: selected.id + 1,
-      index: command === 'discard-rights' ? 6 : 4,
-      url: `https://target-${command}.example/`,
-      windowId: command === 'discard-other-windows' ? selected.windowId + 1 : selected.windowId
-    };
-    const manager = createPopupProgressManager();
-    const request = {cmd: command, tabId: selected.id, windowId: selected.windowId};
-    const snapshot = await manager.run(request, async progress => {
-      await progress.addTargets([target]);
-      if (command === 'discard-tab' || command === 'discard-tree') {
-        return runDirectDiscardCommand({
-          activate: async () => assert.fail(`${command}: inactive target needs no keeper`),
-          allTabs: [target],
+  for (const [resultOrdinal, [resultLabel, discardResult]] of unconfirmed.entries()) {
+    for (const [ordinal, command] of commands.entries()) {
+      const assertionLabel = `${command}/${resultLabel}`;
+      const selected = {
+        active: false,
+        discarded: false,
+        frozen: false,
+        id: 10_000 + resultOrdinal * 1_000 + ordinal * 10,
+        incognito: false,
+        index: 5,
+        status: 'complete',
+        url: `https://selected-${command}.example/`,
+        windowId: 100 + ordinal,
+        windowType: 'normal'
+      };
+      const target = command === 'discard-tab' || command === 'discard-tree' ? selected : {
+        ...selected,
+        active: false,
+        id: selected.id + 1,
+        index: command === 'discard-rights' ? 6 : 4,
+        url: `https://target-${command}.example/`,
+        windowId: command === 'discard-other-windows' ? selected.windowId + 1 : selected.windowId
+      };
+      const manager = createPopupProgressManager();
+      const request = {cmd: command, tabId: selected.id, windowId: selected.windowId};
+      const snapshot = await manager.run(request, async progress => {
+        await progress.addTargets([target]);
+        if (command === 'discard-tab' || command === 'discard-tree') {
+          return runDirectDiscardCommand({
+            activate: async () => assert.fail(`${command}: inactive target needs no keeper`),
+            allTabs: [target],
+            command,
+            discard: async () => discardResult,
+            inProgress: () => false,
+            notifyNoKeeper: () => assert.fail(`${command}: inactive target is not keeper-blocked`),
+            selected,
+            shiftKey: true,
+            takeover: async () => assert.fail(`${command}: loaded target must not use takeover`),
+            targets: [target]
+          });
+        }
+        return runScopedCommand({
+          check: async () => assert.fail(`${command}: Shift must use the forced loaded path`),
           command,
-          discard: async () => false,
-          inProgress: () => false,
-          notifyNoKeeper: () => assert.fail(`${command}: inactive target is not keeper-blocked`),
+          discard: async () => discardResult,
+          query: async () => [target],
           selected,
           shiftKey: true,
-          takeover: async () => assert.fail(`${command}: loaded target must not use takeover`),
-          targets: [target]
+          takeover: async () => assert.fail(`${command}: loaded target must not use takeover`)
         });
-      }
-      return runScopedCommand({
-        check: async () => assert.fail(`${command}: Shift must use the forced loaded path`),
-        command,
-        discard: async () => false,
-        query: async () => [target],
-        selected,
-        shiftKey: true,
-        takeover: async () => assert.fail(`${command}: loaded target must not use takeover`)
       });
-    });
 
-    assert.equal(snapshot.state, 'failed', command);
-    assert.equal(snapshot.errorCode, POPUP_CODES.COMMAND_FAILED, command);
-    assert.deepEqual(snapshot.summary, {failed: 1, skipped: 0, success: 0}, command);
-    assert.deepEqual(snapshot.outcomes[target.id], {
-      code: POPUP_CODES.TAB_FAILED,
-      status: 'failed',
-      tabId: target.id
-    }, command);
-    assert.deepEqual(await manager.snapshot(request), snapshot,
-      `${command}: useful terminal failure must remain available after popup recreation`);
+      assert.equal(snapshot.state, 'failed', assertionLabel);
+      assert.equal(snapshot.errorCode, POPUP_CODES.COMMAND_FAILED, assertionLabel);
+      assert.deepEqual(snapshot.summary, {failed: 1, skipped: 0, success: 0}, assertionLabel);
+      assert.deepEqual(snapshot.outcomes[target.id], {
+        code: POPUP_CODES.TAB_FAILED,
+        failureCause: FAILURE_CAUSES.OPERATION_FAILED,
+        status: 'failed',
+        tabId: target.id
+      }, assertionLabel);
+      assert.deepEqual(await manager.snapshot(request), snapshot,
+        `${assertionLabel}: useful terminal failure must remain available after popup recreation`);
+    }
   }
 });
 
@@ -314,20 +326,21 @@ test('issue 12: 25- and 100-target batches meet p95 and retained-memory budgets'
 test('issue 21: 100 delayed/hung metadata targets stay deadline- and memory-bounded', () => {
   const moduleUrl = new URL('../v3/worker/core/metadata-scan.mjs', import.meta.url).href;
   const metrics = runGcProbe(`
-    const {runBoundedScan} = await import(${JSON.stringify(moduleUrl)});
+    const {metadataPhysicalPoolSnapshot, runBoundedScan} = await import(${JSON.stringify(moduleUrl)});
     const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+    const retained = [];
+    let active = 0;
+    let maximum = 0;
+    let physicalStarted = 0;
     const run = async count => {
-      let active = 0;
-      let maximum = 0;
       const startedAt = performance.now();
       const scan = await runBoundedScan(Array.from({length: count}, (_, index) => index), item => {
         active += 1;
+        physicalStarted += 1;
         maximum = Math.max(maximum, active);
-        if (item % 3 === 0) return new Promise(() => {});
-        return pause(20 + item % 5).then(() => {
-          active -= 1;
-          return item;
-        });
+        const operation = new Promise(() => {});
+        retained.push(operation);
+        return operation;
       }, {concurrency: 4, timeout: 75});
       return {
         completed: scan.completed.length,
@@ -340,30 +353,41 @@ test('issue 21: 100 delayed/hung metadata targets stay deadline- and memory-boun
       };
     };
 
-    await run(12);
-    await pause(40);
+    const first = await run(100);
     global.gc();
     global.gc();
     const before = process.memoryUsage().heapUsed;
     let last;
     for (let pass = 0; pass < 8; pass += 1) last = await run(100);
-    await pause(50);
     global.gc();
     global.gc();
     const after = process.memoryUsage().heapUsed;
-    console.log(JSON.stringify({before, after, retained: after - before, last}));
+    console.log(JSON.stringify({
+      before,
+      after,
+      first,
+      last,
+      maximum,
+      physicalStarted,
+      pool: metadataPhysicalPoolSnapshot(),
+      retainedBytes: after - before
+    }));
   `);
 
+  assert.equal(metrics.first.started, 4);
   assert.equal(metrics.last.total, 100);
   assert.equal(metrics.last.timedOut, true);
-  assert.equal(metrics.last.maximum, 4);
-  assert.ok(metrics.last.completed > 0, 'the bounded workers must retain completed delayed results');
-  assert.ok(metrics.last.skipped > 0, 'hung/deadline targets must be explicit skips');
-  assert.ok(metrics.last.started < 100, 'the total deadline must stop launching stale work');
+  assert.equal(metrics.maximum, 4);
+  assert.equal(metrics.physicalStarted, 4,
+    'repeated scans must not start more physical operations while the first four remain hung');
+  assert.equal(metrics.last.completed, 0);
+  assert.equal(metrics.last.skipped, 100);
+  assert.equal(metrics.last.started, 0);
+  assert.deepEqual(metrics.pool, {active: 4, limit: 4, maxQueued: 4, queued: 0});
   assert.ok(metrics.last.elapsed < 500,
     `100-target delayed scan took ${metrics.last.elapsed.toFixed(1)}ms (500ms budget)`);
-  assert.ok(metrics.retained < 4 * 1024 * 1024,
-    `repeated delayed scans retained ${metrics.retained} bytes (4 MiB budget)`);
+  assert.ok(metrics.retainedBytes < 4 * 1024 * 1024,
+    `repeated delayed scans retained ${metrics.retainedBytes} bytes (4 MiB budget)`);
 });
 
 const shuffled = (values, seed) => {
@@ -499,6 +523,12 @@ test('issue 26: a seeded 10-hop lifecycle preserves one current marker/job', asy
       assert.equal((await ownership.status(predecessor.id)).marker.source, 'self');
     }
     assert.equal(hops.length, 10);
+
+    // The production event path must prune completed lineage without relying
+    // on a worker restart or a test-only explicit reconcile call.
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.equal((await ownership.diagnostics()).replacements, 0);
+    assert.equal(ownership.resolveId(original.id), original.id);
   }
   finally {
     delete globalThis.chrome;
@@ -603,20 +633,20 @@ test('issue 47: seeded import fuzz is bounded, atomic, and exactly round-trippab
         storage: structuredClone(stableExistingSettings)
       };
       await commitSettingsImport(parsed.document.settings, {
-        async clearStorage() {
-          state.storage = {};
-        },
         async readLocalStorage() {
           return structuredClone(state.local);
         },
         async readStorage() {
           return structuredClone(state.storage);
         },
+        async removeStorage(keys) {
+          keys.forEach(key => delete state.storage[key]);
+        },
         async replaceLocalStorage(value) {
           state.local = structuredClone(value);
         },
         async writeStorage(value) {
-          state.storage = structuredClone(value);
+          Object.assign(state.storage, structuredClone(value));
         }
       }, {validateRules});
       assert.deepEqual(state.storage, parsed.document.settings);

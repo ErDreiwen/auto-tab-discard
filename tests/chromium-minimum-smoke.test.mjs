@@ -40,7 +40,8 @@ test('Chromium minimum runtime proof requires identity, version, origin, and bot
       timedOut: false
     },
     origin: `chrome-extension://${expectedId}`,
-    version: expectedVersion
+    version: expectedVersion,
+    webLocks: true
   };
   assert.equal(validateRuntimeProbe({expectedId, expectedVersion, probe}), true);
   assert.throws(() => validateRuntimeProbe({
@@ -63,6 +64,11 @@ test('Chromium minimum runtime proof requires identity, version, origin, and bot
     expectedVersion,
     probe: {...probe, version: '0.6.9.1'}
   }), /runtime version/);
+  assert.throws(() => validateRuntimeProbe({
+    expectedId,
+    expectedVersion,
+    probe: {...probe, webLocks: false}
+  }), /Web Locks API/);
 });
 
 test('runtime readiness retries target/listener races but accepts only a real sentinel response', async () => {
@@ -159,6 +165,20 @@ test('Chromium 102 profile budget admits 259 characters and rejects legacy MAX_P
     error.message === 'The isolated Chromium profile exceeds the Chromium 102 managed-storage MAX_PATH budget');
 });
 
+test('Chromium 102 managed schema omits its unsupported top-level closure keyword', async () => {
+  const [manifest, schema] = await Promise.all([
+    readFile(new URL('../v3/manifest.json', import.meta.url), 'utf8').then(JSON.parse),
+    readFile(new URL('../v3/schema.json', import.meta.url), 'utf8').then(JSON.parse)
+  ]);
+  assert.equal(manifest.minimum_chrome_version, '102',
+    'this compatibility regression is pinned to the declared minimum browser');
+  assert.equal(schema.type, 'object');
+  assert.equal(Object.hasOwn(schema, 'additionalProperties'), false,
+    'Chromium 102 hangs before DevTools while parsing this managed-schema keyword');
+  assert.ok(Object.keys(schema.properties || {}).length > 0,
+    'the compatible managed schema must retain its explicit policy catalog');
+});
+
 test('Chromium minimum harness uses a public extension-page realm and fail-closed cleanup', async () => {
   const source = await readFile(new URL('../e2e/chromium-minimum-smoke.cjs', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /chromium\.launchPersistentContext/);
@@ -171,6 +191,8 @@ test('Chromium minimum harness uses a public extension-page realm and fail-close
   assert.match(source, /return page\.evaluate\(\(\{attemptTimeout, managedSentinel, sessionSentinel\}\) => new Promise/);
   assert.match(source, /chrome\.runtime\.sendMessage\(\{/);
   assert.match(source, /method: 'storage'/);
+  assert.match(source, /webLocks: typeof navigator\.locks\?\.request === 'function'/);
+  assert.match(source, /serviceWorkerWebLockAcquired: true/);
   assert.match(source, /ROUND_TRIP_ATTEMPT_TIMEOUT = 2500/);
   assert.match(source, /ROUND_TRIP_READY_TIMEOUT = 30000/);
   assert.match(source, /const runId = randomBytes\(8\)\.toString\('hex'\)/);

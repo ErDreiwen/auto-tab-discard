@@ -48,6 +48,7 @@ const createBrowser = () => {
     metadataFailures: new Set(),
     metadataHangs: new Set(),
     metadataCalls: [],
+    nativeCalls: [],
     queryCalls: [],
     session: {},
     tabs: []
@@ -139,7 +140,10 @@ const createBrowser = () => {
     storage: {local, managed, onChanged: changed, session},
     tabs: {
       create(options, callback) { callback?.({id: 9000, ...options}); },
-      discard(id, callback) { callback?.(state.tabs.find(tab => tab.id === id)); },
+      discard(id, callback) {
+        state.nativeCalls.push(id);
+        callback?.(state.tabs.find(tab => tab.id === id));
+      },
       get(id, callback) { callback?.(state.tabs.find(tab => tab.id === id)); },
       onActivated: event(),
       onAttached: event(),
@@ -494,4 +498,66 @@ test('automatic scans retain their renderer URL optimization', async t => {
   browser.state.tabs = [target(50)];
   await number.check(undefined, {...safeOptions, number: 1}, 'test/automatic');
   assert.equal(browser.state.queryCalls[0].url, '*://*/*');
+});
+
+test('ordinary restart revalidation uses one full automatic selection without native work', async t => {
+  const browser = createBrowser();
+  globalThis.chrome = browser.chrome;
+  t.after(() => delete globalThis.chrome);
+  const {number} = await import(
+    `../v3/worker/modes/number.mjs?ordinary-revalidation=${Date.now()}`
+  );
+  const nonIntent = target(60);
+  const firstIntent = target(61);
+  const secondIntent = target(62);
+  browser.state.tabs = [nonIntent, firstIntent, secondIntent];
+  browser.state.metadata.set(60, {
+    audible: false, forms: false, paused: false, permission: false, ready: true, time: 0
+  });
+  browser.state.metadata.set(61, {
+    audible: false, forms: false, paused: false, permission: false, ready: true, time: 100
+  });
+  browser.state.metadata.set(62, {
+    audible: false, forms: false, paused: false, permission: false, ready: true, time: 200
+  });
+  Object.assign(browser.state.local, safeOptions, {
+    'max.single.discard': 1,
+    number: 0,
+    period: 0
+  });
+
+  const limited = await number.revalidateOrdinaryIntents([firstIntent, secondIntent]);
+  assert.deepEqual([...limited], [],
+    'the non-intent global oldest tab consumes the exact automatic per-scan limit');
+  assert.equal(browser.state.queryCalls[0].url, '*://*/*');
+  assert.deepEqual(browser.state.nativeCalls, []);
+
+  browser.state.local['max.single.discard'] = 2;
+  browser.state.queryCalls.length = 0;
+  const selected = await number.revalidateOrdinaryIntents([firstIntent, secondIntent]);
+  assert.deepEqual([...selected], [firstIntent.id]);
+  assert.equal(browser.state.queryCalls[0].url, '*://*/*');
+  assert.deepEqual(browser.state.nativeCalls, [],
+    'restart eligibility proof must never cross tabs.discard itself');
+
+  // High-memory decisions occur before ready/media/form, count-floor, and
+  // per-scan-limit checks in the real automatic path. Recovery must preserve
+  // that exact selection while still remaining proof-only.
+  browser.state.local['icon-update'] = true;
+  browser.state.local['max.single.discard'] = 0;
+  browser.state.local['memory-enabled'] = true;
+  browser.state.local['memory-value'] = 1;
+  browser.state.local.number = 100;
+  browser.state.metadata.set(firstIntent.id, {
+    audible: true,
+    forms: true,
+    memory: 2 * 1024 * 1024,
+    paused: true,
+    permission: true,
+    ready: false,
+    time: Date.now()
+  });
+  const forced = await number.revalidateOrdinaryIntents([firstIntent]);
+  assert.deepEqual([...forced], [firstIntent.id]);
+  assert.deepEqual(browser.state.nativeCalls, []);
 });
