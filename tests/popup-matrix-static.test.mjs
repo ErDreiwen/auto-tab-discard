@@ -40,7 +40,40 @@ test('popup serves Chromium 152 own pinned PDF extension fixture', async () => {
   assert.match(source,
     /url\.pathname === '\/document\.pdf'[\s\S]*'Content-Type': 'application\/pdf'[\s\S]*response\.end\(PDF_FIXTURE\)/);
   assert.match(source,
+    /url\.pathname === '\/document\.pdf'[\s\S]*response\.once\('finish', \(\) => pdfResponses \+= 1\)/);
+  assert.match(source,
+    /pdfCount\(\) \{\s*return pdfResponses;/);
+  assert.match(source,
     /key: 'restricted-pdf',[\s\S]*scheme: 'pdf',[\s\S]*url: `\$\{fixture\.baseUrl\}\/document\.pdf/);
+  const restrictedScope = source.slice(
+    source.indexOf('const buildRestrictedScope = async prefix =>'),
+    source.indexOf('function tabIds(', source.indexOf('const buildRestrictedScope = async prefix =>'))
+  );
+  assert.match(restrictedScope,
+    /initializeActive: true,[\s\S]*key: 'restricted-pdf'/);
+  assert.equal((restrictedScope.match(/initializeActive: true/g) || []).length, 1,
+    'only the real PDF needs a foreground initialization path');
+  assert.match(restrictedScope,
+    /chrome\.tabs\.create\(\{active, url, windowId\}\)/);
+  assert.match(restrictedScope,
+    /active: specification\.initializeActive === true/);
+  assert.match(restrictedScope,
+    /specification\.initializeActive === true \?[\s\S]*value\.active === true && value\.status === 'complete'/);
+  assert.match(restrictedScope,
+    /const responseComplete = specification\.scheme !== 'pdf' \|\|[\s\S]*fixture\.pdfCount\(\) > pdfResponsesBefore/);
+  const initialFocus = restrictedScope.indexOf('await focusSelected(layout);');
+  const restrictedLoop = restrictedScope.indexOf('for (const specification of specifications)');
+  assert.ok(initialFocus > 0 && initialFocus < restrictedLoop,
+    'the primary window must be focused before the PDF is initialized as its active tab');
+  assert.ok(restrictedScope.lastIndexOf('await focusSelected(layout);') >
+    restrictedLoop,
+  'the keeper must be restored after the temporarily active PDF becomes ready');
+  assert.match(restrictedScope,
+    /pdfCapability\?\.availability, 'available',[\s\S]*real PDF fixture is mandatory/);
+  assert.match(restrictedScope,
+    /assert\.ok\(layout\.tabs\['restricted-pdf'\]/);
+  assert.match(restrictedScope,
+    /assert\.deepEqual\(activeState, \{keeperActive: true, pdfActive: false\}/);
 });
 
 const memoryProbeChild = () => {
@@ -215,6 +248,18 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(nativeHelper, /ParentProcessId/);
   assert.match(nativeHelper, /HashSet\[int\]/);
   assert.match(nativeHelper, /allowed\.Contains/);
+  assert.match(nativeHelper, /TH32CS_SNAPPROCESS = 0x2/);
+  assert.match(nativeHelper, /struct ProcessEntry32/);
+  assert.match(nativeHelper, /CreateToolhelp32Snapshot/);
+  assert.match(nativeHelper, /EntryPoint = "Process32FirstW"/);
+  assert.match(nativeHelper, /EntryPoint = "Process32NextW"/);
+  assert.match(nativeHelper, /Marshal\.GetLastWin32Error\(\) != ERROR_NO_MORE_FILES/);
+  assert.match(nativeHelper, /finally \{\s*if \(!CloseHandle\(snapshot\)\)/);
+  assert.equal((nativeHelper.match(/\[AtdNativePointer\]::SnapshotProcessParents\(\)/g) || []).length, 2,
+    'document and menu scans must each refresh the exact process-parent snapshot');
+  assert.equal((nativeHelper.match(/process-scope-root-missing/g) || []).length, 2,
+    'both transitive process scopes must fail when the authoritative browser root disappears');
+  assert.doesNotMatch(nativeHelper, /Get-CimInstance|Win32_Process/);
   assert.match(nativeHelper, /TreeScope\]::Children/);
   assert.match(nativeHelper, /if \(!\$allowed\.Contains\(\[int\] \$root\.Current\.ProcessId\)\)/);
   assert.match(nativeHelper, /TreeScope\]::Subtree/);
@@ -290,6 +335,11 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.ok(foregroundGate > 0 && foregroundGate < pointerPosition && pointerPosition < hitTest &&
       hitTest < pointerAttempt && pointerAttempt < pointerDown,
     'verified foreground/process scope must precede every pointer input');
+  const processSnapshots = [...nativeHelper.matchAll(/\[AtdNativePointer\]::SnapshotProcessParents\(\)/g)]
+    .map(match => match.index);
+  const pointerResult = nativeHelper.indexOf('ATD_UIA_POINTER_RESULT:CheckedSendInputHeldRightClick');
+  assert.ok(processSnapshots[0] < pointerAttempt && processSnapshots[1] > pointerResult,
+    'the document scan must precede input and the native-menu scan must refresh after input');
   assert.match(nativeHelper, /\$hitRootWindow = \[AtdNativePointer\]::GetAncestor\(\$hitWindow, 2\)/);
   assert.match(nativeHelper, /\$hitRootOwnerWindow = \[AtdNativePointer\]::GetAncestor\(\$hitWindow, 3\)/);
   assert.match(nativeHelper, /GetCursorPos\(\[ref\] \$pointerPoint\)[\s\S]*\$pointerPoint\.x -ne \$clickX[\s\S]*\$pointerPoint\.y -ne \$clickY/);
@@ -609,7 +659,9 @@ test('embedded native-menu UIA helper parses as PowerShell without controlling a
   const compiler = [
     '$source=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($env:ATD_UIA_CSHARP));',
     'Add-Type -TypeDefinition $source -ErrorAction Stop;',
-    "if (-not ('AtdNativePointer' -as [type])) { exit 1 }"
+    "if (-not ('AtdNativePointer' -as [type])) { exit 1 }",
+    '$rows=@([AtdNativePointer]::SnapshotProcessParents());',
+    'if ($rows.Count -lt 1 -or -not @($rows | Where-Object ProcessId -eq $PID)) { exit 1 }'
   ].join(' ');
   const compilation = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', compiler], {
     encoding: 'utf8',
@@ -622,7 +674,7 @@ test('embedded native-menu UIA helper parses as PowerShell without controlling a
   });
   assert.equal(compilation.error, undefined, 'native pointer type compilation must finish within its bound');
   assert.equal(compilation.status, 0,
-    'native pointer P/Invoke declarations must compile without invoking user input');
+    'native pointer and process-snapshot P/Invokes must compile and enumerate without user input');
 
   // Exercise the production stdin transport with the full helper, but
   // fail closed at its first validation before UIA or user32 can be reached.

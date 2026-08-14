@@ -250,9 +250,83 @@ try {
   Add-Type -AssemblyName UIAutomationTypes
   Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public static class AtdNativePointer {
+  private const uint TH32CS_SNAPPROCESS = 0x2;
+  private const int ERROR_NO_MORE_FILES = 18;
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct ProcessEntry32 {
+    public uint dwSize;
+    public uint cntUsage;
+    public uint th32ProcessID;
+    public UIntPtr th32DefaultHeapID;
+    public uint th32ModuleID;
+    public uint cntThreads;
+    public uint th32ParentProcessID;
+    public int pcPriClassBase;
+    public uint dwFlags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+    public string szExeFile;
+  }
+
+  public sealed class ProcessParent {
+    public int ProcessId {get; private set;}
+    public int ParentProcessId {get; private set;}
+
+    public ProcessParent(int processId, int parentProcessId) {
+      ProcessId = processId;
+      ParentProcessId = parentProcessId;
+    }
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "Process32FirstW",
+      SetLastError = true)]
+  private static extern bool Process32First(IntPtr snapshot, ref ProcessEntry32 entry);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "Process32NextW",
+      SetLastError = true)]
+  private static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry32 entry);
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool CloseHandle(IntPtr handle);
+
+  public static ProcessParent[] SnapshotProcessParents() {
+    IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1)) {
+      throw new InvalidOperationException("process-snapshot-open-failed");
+    }
+    try {
+      var processes = new List<ProcessParent>();
+      var entry = new ProcessEntry32();
+      entry.dwSize = (uint) Marshal.SizeOf(typeof(ProcessEntry32));
+      if (!Process32First(snapshot, ref entry)) {
+        throw new InvalidOperationException("process-snapshot-first-failed");
+      }
+      do {
+        processes.Add(new ProcessParent(
+          checked((int) entry.th32ProcessID),
+          checked((int) entry.th32ParentProcessID)
+        ));
+        entry.dwSize = (uint) Marshal.SizeOf(typeof(ProcessEntry32));
+      } while (Process32Next(snapshot, ref entry));
+      if (Marshal.GetLastWin32Error() != ERROR_NO_MORE_FILES) {
+        throw new InvalidOperationException("process-snapshot-next-failed");
+      }
+      return processes.ToArray();
+    }
+    finally {
+      if (!CloseHandle(snapshot)) {
+        throw new InvalidOperationException("process-snapshot-close-failed");
+      }
+    }
+  }
+
   [DllImport("user32.dll", SetLastError = true)]
   public static extern bool SetForegroundWindow(IntPtr hWnd);
 
@@ -364,19 +438,26 @@ public static class AtdNativePointer {
   $documentTarget = $null
   $lastDocumentMatchCount = 0
   do {
-    $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction Stop)
+    $processes = @([AtdNativePointer]::SnapshotProcessParents())
     $allowed = [System.Collections.Generic.HashSet[int]]::new()
     [void] $allowed.Add($rootProcessId)
+    $rootObserved = $false
     do {
       $added = $false
       foreach ($process in $processes) {
         $processId = [int] $process.ProcessId
         $parentId = [int] $process.ParentProcessId
+        if ($processId -eq $rootProcessId) {
+          $rootObserved = $true
+        }
         if ($allowed.Contains($parentId) -and $allowed.Add($processId)) {
           $added = $true
         }
       }
     } while ($added)
+    if (!$rootObserved) {
+      Stop-Sanitized 20 'process-scope-root-missing'
+    }
 
     $documents = @{}
     $topLevel = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
@@ -611,19 +692,26 @@ public static class AtdNativePointer {
     # Refresh the transitive process tree on every bounded poll. Chromium can
     # create its native UI host after the page's right click, so a one-time
     # child snapshot can incorrectly exclude the real menu provider.
-    $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId -ErrorAction Stop)
+    $processes = @([AtdNativePointer]::SnapshotProcessParents())
     $allowed = [System.Collections.Generic.HashSet[int]]::new()
     [void] $allowed.Add($rootProcessId)
+    $rootObserved = $false
     do {
       $added = $false
       foreach ($process in $processes) {
         $processId = [int] $process.ProcessId
         $parentId = [int] $process.ParentProcessId
+        if ($processId -eq $rootProcessId) {
+          $rootObserved = $true
+        }
         if ($allowed.Contains($parentId) -and $allowed.Add($processId)) {
           $added = $true
         }
       }
     } while ($added)
+    if (!$rootObserved) {
+      Stop-Sanitized 20 'process-scope-root-missing'
+    }
 
     $preferred = @{}
     $fallbacks = @{}
@@ -1418,6 +1506,7 @@ const loadChromiumPdfFixture = () => {
 const PDF_FIXTURE = loadChromiumPdfFixture();
 
 const startFixtureServer = async () => {
+  let pdfResponses = 0;
   const requests = [];
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1');
@@ -1432,9 +1521,10 @@ const startFixtureServer = async () => {
       return;
     }
     if (url.pathname === '/document.pdf') {
+      response.once('finish', () => pdfResponses += 1);
       response.writeHead(200, {
         'Cache-Control': 'no-store, no-cache, must-revalidate',
-        'Content-Disposition': 'inline; filename="atd-e2e.pdf"',
+        'Content-Disposition': 'inline; filename="document.pdf"',
         'Content-Length': PDF_FIXTURE.length,
         'Content-Type': 'application/pdf'
       });
@@ -1526,6 +1616,9 @@ const startFixtureServer = async () => {
     },
     entries(id) {
       return requests.filter(entry => entry.id === id);
+    },
+    pdfCount() {
+      return pdfResponses;
     },
     requests,
     stop: () => new Promise(resolve => {
@@ -2708,6 +2801,8 @@ const main = async () => {
       mergeWindow(layout, primary, [selectedEntry]);
       layout.primaryWindowId = primary.windowId;
       layout.selectedId = layout.tabs[selectedEntry.key].id;
+      trackLayout(layout);
+      await focusSelected(layout);
 
       const specifications = [{
         expectedProtocols: ['file:'],
@@ -2720,6 +2815,7 @@ const main = async () => {
         scheme: 'data',
         url: 'data:text/html;charset=utf-8,%3Ctitle%3EATD%20data%20fixture%3C%2Ftitle%3EATD'
       }, {
+        initializeActive: true,
         expectedProtocols: ['http:', 'chrome-extension:', 'edge-extension:'],
         key: 'restricted-pdf',
         scheme: 'pdf',
@@ -2738,15 +2834,20 @@ const main = async () => {
       const capabilities = [];
 
       for (const specification of specifications) {
-        const creation = await driver.evaluate(async ({url, windowId}) => {
+        const pdfResponsesBefore = fixture.pdfCount();
+        const creation = await driver.evaluate(async ({active, url, windowId}) => {
           try {
-            const tab = await chrome.tabs.create({active: false, url, windowId});
+            const tab = await chrome.tabs.create({active, url, windowId});
             return {ok: true, tab};
           }
           catch (error) {
             return {message: error?.message || String(error), ok: false};
           }
-        }, {url: specification.url, windowId: primary.windowId});
+        }, {
+          active: specification.initializeActive === true,
+          url: specification.url,
+          windowId: primary.windowId
+        });
         if (creation?.ok !== true || !Number.isInteger(creation.tab?.id)) {
           capabilities.push({
             availability: 'unavailable',
@@ -2761,7 +2862,14 @@ const main = async () => {
         try {
           current = await waitFor(async () => {
             const value = await driver.evaluate(id => chrome.tabs.get(id).catch(() => undefined), creation.tab.id);
-            return value && value.status !== 'loading' ? value : false;
+            if (!value) {
+              return false;
+            }
+            const ready = specification.initializeActive === true ?
+              value.active === true && value.status === 'complete' : value.status !== 'loading';
+            const responseComplete = specification.scheme !== 'pdf' ||
+              fixture.pdfCount() > pdfResponsesBefore;
+            return ready && responseComplete ? value : false;
           }, `${specification.scheme} restricted fixture to settle`, 10000, 100);
         }
         catch (error) {
@@ -2827,8 +2935,21 @@ const main = async () => {
         });
       }
 
-      trackLayout(layout);
       await focusSelected(layout);
+      const pdfCapability = capabilities.find(entry => entry.scheme === 'pdf');
+      assert.equal(pdfCapability?.availability, 'available',
+        'the real PDF fixture is mandatory and cannot be reported as an unavailable capability');
+      assert.ok(layout.tabs['restricted-pdf'],
+        'the ready real PDF must remain in the exact restricted command scope');
+      const activeState = await driver.evaluate(async ({keeperId, pdfId}) => {
+        const [keeper, pdf] = await Promise.all([chrome.tabs.get(keeperId), chrome.tabs.get(pdfId)]);
+        return {keeperActive: keeper.active, pdfActive: pdf.active};
+      }, {
+        keeperId: layout.selectedId,
+        pdfId: layout.tabs['restricted-pdf'].id
+      });
+      assert.deepEqual(activeState, {keeperActive: true, pdfActive: false},
+        'restricted PDF must be initialized in foreground, then restored as a background target');
       const expectedIds = tabIds(layout).sort((left, right) => left - right);
       const actualIds = (await driver.evaluate(windowId => chrome.tabs.query({windowId}), primary.windowId))
         .map(tab => tab.id).sort((left, right) => left - right);
