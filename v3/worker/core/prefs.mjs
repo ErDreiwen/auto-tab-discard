@@ -4,7 +4,11 @@ import {
   planLocalPreferenceMigration
 } from './preference-migrations.mjs';
 import {expandPluginPolicyKeys} from './plugin-catalog.mjs';
-import {readStorageArea} from './storage-read.mjs';
+import {
+  MANAGED_STORAGE_READ_TIMEOUT,
+  readManagedStorageArea,
+  readStorageArea
+} from './storage-read.mjs';
 import {
   recoverSettingsImportStorage,
   withSettingsImportLock
@@ -35,7 +39,6 @@ const defaults = Object.freeze({
 });
 
 const prefs = {...defaults};
-
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 
 const mutateArea = (area, method, value) => new Promise(resolve => {
@@ -81,44 +84,35 @@ const migrateLocalPreferences = () => {
   return migration;
 };
 
-const readPreferences = async (requested, type = 'managed') => {
-  if (type === 'managed') {
-    // Never expose a partially imported local layer. A fresh live transaction
-    // fails closed; a stale/restarted transaction is completed or rolled back
-    // before migration/default/managed overlays can observe it.
-    await recoverSettingsImportStorage(chrome.storage.local, {lockHeld: true});
-    await migrateLocalPreferences();
-    const keys = Object.keys(requested || {});
-    const managedKeys = expandPluginPolicyKeys(keys);
-    const [local, managed] = await Promise.all([
-      readStorageArea(chrome.storage.local, requested),
-      // An array query returns only values explicitly supplied by enterprise
-      // policy. Passing defaults here would make them indistinguishable from
-      // managed values and allow local storage to win incorrectly.
-      readStorageArea(chrome.storage.managed, managedKeys)
-    ]);
-    const effective = overlayPreferenceLayers(
-      requested,
-      pick(local, keys),
-      pick(managed, managedKeys)
-    );
-    return pick(effective, keys);
-  }
+const storage = async (requested, type = 'managed') => {
   if (type === 'session') {
     return readStorageArea(chrome.storage.session, requested);
   }
-  throw Error('storage type is not supported');
-};
-
-const storage = (requested, type = 'managed') => {
-  if (type === 'session') {
-    return readPreferences(requested, type);
+  if (type !== 'managed') {
+    throw Error('storage type is not supported');
   }
-  // Keep recovery, migration, and the authoritative local read in one
-  // origin-wide critical section. Releasing after recovery but before get()
-  // would let Options expose a half-written import to command code.
-  return withSettingsImportLock(globalThis.navigator?.locks,
-    () => readPreferences(requested, type));
+  const keys = Object.keys(requested || {});
+  const managedKeys = expandPluginPolicyKeys(keys);
+  // Chrome can defer the first managed-storage callback while its policy
+  // provider initializes. It is independent of settings import, so wait for it
+  // outside the origin lock and retain a separate, bounded cold-start budget.
+  // Holding the import lock here would block every startup preference reader.
+  const managed = await readManagedStorageArea(chrome.storage.managed, managedKeys);
+  // Keep recovery, migration, and the authoritative local read in one short
+  // origin-wide critical section. This snapshot is taken after the potentially
+  // slow managed read, so an import cannot expose a partial or stale local
+  // image while the effective preferences are assembled.
+  const local = await withSettingsImportLock(globalThis.navigator?.locks, async () => {
+    await recoverSettingsImportStorage(chrome.storage.local, {lockHeld: true});
+    await migrateLocalPreferences();
+    return readStorageArea(chrome.storage.local, requested);
+  });
+  const effective = overlayPreferenceLayers(
+    requested,
+    pick(local, keys),
+    pick(managed, managedKeys)
+  );
+  return pick(effective, keys);
 };
 
 const samePreferenceValue = (first, second) => Object.is(first, second) ||
@@ -141,32 +135,56 @@ const samePreferenceValue = (first, second) => Object.is(first, second) ||
     const keys = Object.keys(ps).filter(key =>
       !key.startsWith('__') && (hasOwn(defaults, key) || hasOwn(cache, key))
     );
-    for (const key of keys) {
+    const refreshes = keys.map(key => {
       const revision = (storage.revisions.get(key) || 0) + 1;
       storage.revisions.set(key, revision);
-      const fallback = hasOwn(defaults, key) ? defaults[key] : undefined;
-      void storage({[key]: fallback}).then(effective => {
-        if (storage.revisions.get(key) !== revision) {
-          return;
-        }
-        const next = effective[key];
-        if (samePreferenceValue(prefs[key], next)) {
-          return;
-        }
-        prefs[key] = next;
-        for (const callback of cache[key] || []) {
-          callback();
-        }
-      }).catch(error => {
-        console.error(`preference refresh failed: ${key}`, error);
-      });
+      return {
+        fallback: hasOwn(defaults, key) ? defaults[key] : undefined,
+        key,
+        revision
+      };
+    });
+    if (keys.length === 0) {
+      return;
     }
+    // One chrome.storage.set() can report dozens of changed preferences. Read
+    // their authoritative local/managed overlay under one origin lock instead
+    // of queueing one lock request per key. Per-key revisions still prevent an
+    // older batch from publishing over a newer change event.
+    const requested = Object.fromEntries(
+      refreshes.map(({fallback, key}) => [key, fallback])
+    );
+    void storage(requested).then(effective => {
+      for (const {key, revision} of refreshes) {
+        if (storage.revisions.get(key) !== revision) {
+          continue;
+        }
+        try {
+          const next = effective[key];
+          if (samePreferenceValue(prefs[key], next)) {
+            continue;
+          }
+          prefs[key] = next;
+          for (const callback of cache[key] || []) {
+            callback();
+          }
+        }
+        catch (error) {
+          console.error(`preference refresh failed: ${key}`, error);
+        }
+      }
+    }).catch(error => {
+      for (const {key} of refreshes) {
+        console.error(`preference refresh failed: ${key}`, error);
+      }
+    });
   });
   storage.revisions = new Map();
 }
 
 export {
   defaults,
+  MANAGED_STORAGE_READ_TIMEOUT,
   migrateLocalPreferences,
   prefs,
   storage

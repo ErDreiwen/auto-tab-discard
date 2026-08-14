@@ -49,7 +49,7 @@ export const createExclusiveReleaseWorkspace = async ({
   await assertReleaseOutput({
     repositoryRoot: workspaceRepositoryRoot,
     sourceRoot,
-    outputDirectory: path.join(workspaceParent, 'release-gate-work-probe')
+    outputDirectory: path.join(workspaceParent, 'rg-probe')
   });
   await assertUnaliasedReleaseWorkspace({
     repositoryRoot: workspaceRepositoryRoot,
@@ -60,7 +60,10 @@ export const createExclusiveReleaseWorkspace = async ({
     repositoryRoot: workspaceRepositoryRoot,
     workspaceDirectory: workspaceParent
   });
-  const workspaceDirectory = await mkdtemp(path.join(workspaceParent, 'release-gate-work-'));
+  // Browser profile databases still contain Windows components that can fail
+  // below the nominal MAX_PATH boundary once their own temporary suffixes are
+  // appended. Keep the exclusive ignored workspace name deliberately short.
+  const workspaceDirectory = await mkdtemp(path.join(workspaceParent, 'rg-'));
   const resolvedWorkspace = await assertReleaseOutput({
     repositoryRoot: workspaceRepositoryRoot,
     sourceRoot,
@@ -464,7 +467,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'popup-matrix.cjs'),
       arguments_: [
         '--extension', extractedRoot, '--baseline', baselineRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'chrome'),
+        '--profile-root', path.join(outputDirectory, 'p', 'c'),
         '--results', path.join(evidenceRoot, 'chrome-popup')
       ],
       reportDirectory: path.join(evidenceRoot, 'chrome-popup'),
@@ -477,7 +480,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'external-api-smoke.cjs'),
       arguments_: [
         '--extension', extractedRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'chrome-external-api'),
+        '--profile-root', path.join(outputDirectory, 'p', 'cx'),
         '--results', path.join(evidenceRoot, 'chrome-external-api')
       ],
       reportDirectory: path.join(evidenceRoot, 'chrome-external-api'),
@@ -491,7 +494,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'form-protection-smoke.cjs'),
       arguments_: [
         '--extension', extractedRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'chrome-form-protection'),
+        '--profile-root', path.join(outputDirectory, 'p', 'cf'),
         '--results', path.join(evidenceRoot, 'chrome-form-protection')
       ],
       reportDirectory: path.join(evidenceRoot, 'chrome-form-protection'),
@@ -509,7 +512,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'window-scope-smoke.cjs'),
       arguments_: [
         '--extension', extractedRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'chrome-window-scope'),
+        '--profile-root', path.join(outputDirectory, 'p', 'cw'),
         '--results', path.join(evidenceRoot, 'chrome-window-scope')
       ],
       reportDirectory: path.join(evidenceRoot, 'chrome-window-scope'),
@@ -527,7 +530,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'upgrade-rollback-smoke.cjs'),
       arguments_: [
         '--extension', extractedRoot, '--baseline', baselineRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'chrome-upgrade'),
+        '--profile-root', path.join(outputDirectory, 'p', 'cu'),
         '--results', path.join(evidenceRoot, 'chrome-upgrade')
       ],
       reportDirectory: path.join(evidenceRoot, 'chrome-upgrade'),
@@ -548,7 +551,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'popup-matrix.cjs'),
       arguments_: [
         '--allow-edge', '--extension', extractedRoot, '--baseline', baselineRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'edge-popup'),
+        '--profile-root', path.join(outputDirectory, 'p', 'ep'),
         '--results', path.join(evidenceRoot, 'edge-popup')
       ],
       reportDirectory: path.join(evidenceRoot, 'edge-popup'),
@@ -561,7 +564,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'edge-direct-native-races.cjs'),
       arguments_: [
         '--allow-edge', '--extension', extractedRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'edge-direct-native-races'),
+        '--profile-root', path.join(outputDirectory, 'p', 'ed'),
         '--results', path.join(evidenceRoot, 'edge-direct-native-races')
       ],
       reportDirectory: path.join(evidenceRoot, 'edge-direct-native-races'),
@@ -604,7 +607,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'upgrade-rollback-smoke.cjs'),
       arguments_: [
         '--allow-edge', '--extension', extractedRoot, '--baseline', baselineRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'edge-upgrade'),
+        '--profile-root', path.join(outputDirectory, 'p', 'eu'),
         '--results', path.join(evidenceRoot, 'edge-upgrade')
       ],
       reportDirectory: path.join(evidenceRoot, 'edge-upgrade'),
@@ -622,7 +625,7 @@ export const releaseGate = async ({
     const frozen = await run(process.execPath, [
       path.join(repositoryRoot, 'e2e', 'edge-frozen-smoke.cjs'),
       '--allow-edge', '--executable', edgeExecutable, '--extension', extractedRoot,
-      '--profile-root', path.join(outputDirectory, 'profiles', 'edge-frozen'),
+      '--profile-root', path.join(outputDirectory, 'p', 'ef'),
       '--results-root', frozenDirectory
     ]);
     await writeCommandEvidence(path.join(frozenDirectory, 'command.txt'), frozen);
@@ -671,7 +674,7 @@ export const releaseGate = async ({
       script: path.join(repositoryRoot, 'e2e', 'firefox-bidi-smoke.cjs'),
       arguments_: [
         '--extension', firefoxExtractedRoot,
-        '--profile-root', path.join(outputDirectory, 'profiles', 'firefox'),
+        '--profile-root', path.join(outputDirectory, 'p', 'fx'),
         '--results-root', path.join(evidenceRoot, 'firefox')
       ],
       reportDirectory: path.join(evidenceRoot, 'firefox'),

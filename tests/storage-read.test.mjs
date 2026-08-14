@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {readStorageArea} from '../v3/worker/core/storage-read.mjs';
+import {
+  FIREFOX_MANAGED_MANIFEST_MISSING,
+  readManagedStorageArea,
+  readStorageArea
+} from '../v3/worker/core/storage-read.mjs';
 
 test('policy storage reads reject every browser failure channel instead of returning defaults', async t => {
   await t.test('missing API', async () => {
@@ -54,6 +58,24 @@ test('successful empty managed storage remains distinct from a failed read', asy
       callback({});
     }
   }, ['pinned']), {});
+});
+
+test('only Firefox exact missing managed manifest is an empty policy layer', async () => {
+  const missing = {
+    get(query, callback) {
+      callback(undefined, Error(FIREFOX_MANAGED_MANIFEST_MISSING));
+    }
+  };
+  assert.deepEqual(await readManagedStorageArea(missing, ['pinned'], {firefox: true}), {});
+  await assert.rejects(
+    readManagedStorageArea(missing, ['pinned'], {firefox: false}),
+    /Managed storage manifest not found/
+  );
+  await assert.rejects(readManagedStorageArea({
+    get(query, callback) {
+      callback(undefined, Error('managed policy backend failed'));
+    }
+  }, ['pinned'], {firefox: true}), /managed policy backend failed/);
 });
 
 test('preference layering rejects unknown managed and local policy state', async t => {

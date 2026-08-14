@@ -457,7 +457,7 @@ test('release gate isolates evidence in ignored repository staging and reserves 
   const edge = await readFile(path.resolve(import.meta.dirname, '..', 'e2e', 'edge-frozen-smoke.cjs'), 'utf8');
   const initialization = gate.slice(gate.indexOf('export const releaseGate'), gate.indexOf('const blockers = []'));
   assert.match(gate, /releaseWorkspaceParent = path\.join\(repositoryRoot, 'build'\)/);
-  assert.match(gate, /mkdtemp\(path\.join\(workspaceParent, 'release-gate-work-'\)\)/);
+  assert.match(gate, /mkdtemp\(path\.join\(workspaceParent, 'rg-'\)\)/);
   assert.doesNotMatch(initialization, /rm\(outputDirectory, \{recursive: true/,
     'an existing workspace pathname must never receive recursive deletion authority');
   assert.ok(initialization.indexOf('await assertReleaseContext(') <

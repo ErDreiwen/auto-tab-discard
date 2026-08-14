@@ -100,8 +100,10 @@ const trackPopupTabTask = (
     const retainedFrozen = value?.code === POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN;
     const failed = retainedFrozen || value === false ||
       value?.status === 'failed' || value?.status === 'skipped';
+    const settledTab = Number.isInteger(value?.tab?.id) ? value.tab : tab;
+    await progress.replaceTarget(tab, settledTab);
     await progress.settle(
-      retainedFrozen && Number.isInteger(value?.tab?.id) ? value.tab : tab,
+      settledTab,
       failed ? 'failed' : 'success',
       retainedFrozen ? POPUP_CODES.TAB_RELEASE_REMAINS_FROZEN :
         failed ? POPUP_CODES.TAB_FAILED : successCode,
@@ -110,8 +112,10 @@ const trackPopupTabTask = (
     return value;
   }
   catch (error) {
+    const settledTab = Number.isInteger(error?.tab?.id) ? error.tab : tab;
+    await progress.replaceTarget(tab, settledTab);
     await progress.settle(
-      Number.isInteger(error?.tab?.id) ? error.tab : tab,
+      settledTab,
       progress.cancelled() ? 'skipped' : 'failed',
       progress.cancelled() ? POPUP_CODES.TAB_CANCELLED : provisionalTaskFailureCode(error),
       failureCauseFrom(error, fallbackFailureCause)
@@ -310,18 +314,34 @@ const createPopupProgressManager = ({
     // that provisional value exactly once; after that, normal status priority
     // prevents a contradictory lower-severity final array from hiding failure.
     const authoritativeIds = new Set();
+    // Edge can replace a tab ID while tabs.discard() settles, then ownership
+    // can retire its global lineage before the command result is merged. Keep
+    // this command-local logical lineage until its terminal snapshot so the
+    // predecessor and successor can never become two diagnostic outcomes.
+    const replacementAliases = new Map();
+    const resolveLocalAlias = value => {
+      let id = value;
+      const seen = new Set();
+      while (Number.isInteger(id) && replacementAliases.has(id) && !seen.has(id)) {
+        seen.add(id);
+        id = replacementAliases.get(id);
+      }
+      return id;
+    };
     const canonicalId = value => {
-      const id = tabId(value);
+      let id = resolveLocalAlias(tabId(value));
       if (!Number.isInteger(id)) {
         return undefined;
       }
       try {
         const current = resolveId(id);
-        return Number.isInteger(current) ? current : id;
+        id = Number.isInteger(current) ? current : id;
       }
       catch (error) {
-        return id;
+        // The command-local alias remains authoritative for this diagnostic
+        // even when the shared ownership resolver is temporarily unavailable.
       }
+      return resolveLocalAlias(id);
     };
     const canonicalizeSet = set => {
       const current = [...set];
@@ -393,6 +413,16 @@ const createPopupProgressManager = ({
         await emit(snapshot);
       }
       return snapshot.total;
+    };
+    const replaceTarget = async (predecessor, successor) => {
+      const from = tabId(predecessor);
+      const to = canonicalId(successor);
+      if (!Number.isInteger(from) || !Number.isInteger(to) || from === to ||
+          canonicalId(to) === from) {
+        return false;
+      }
+      replacementAliases.set(from, to);
+      return canonicalizeLineage();
     };
     const settle = async (tab, status, code, failureCause) => {
       await addTargets([tab]);
@@ -555,6 +585,7 @@ const createPopupProgressManager = ({
       jobId: snapshot.jobId,
       mergeCheckResult,
       mergeResult,
+      replaceTarget,
       settle,
       snapshot: () => publicSnapshot(snapshot),
       targetIds: () => [...snapshot.targetIds],

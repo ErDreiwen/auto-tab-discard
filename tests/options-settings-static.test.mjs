@@ -22,7 +22,7 @@ test('options page loads as a module and presents distinct raw and sanitized exp
 test('options overlays managed preferences last and never hydrates the removed dummy control', () => {
   assert.match(source, /chrome\.storage\.local, 'get', prefs/);
   assert.match(source, /managedKeys = expandPluginPolicyKeys\(keys\)/);
-  assert.match(source, /chrome\.storage\.managed, 'get', managedKeys/);
+  assert.match(source, /readManagedStorageArea\(chrome\.storage\.managed, managedKeys\)/);
   assert.match(source, /overlayPreferenceLayers\(prefs, local/);
   assert.doesNotMatch(source, /getElementById\('\.\/plugins\/dummy\/core\.js'\)/);
   assert.doesNotMatch(html, /id="\.\/plugins\/dummy\/core\.js"/);
@@ -91,8 +91,14 @@ test('import validates completely before its durable transaction or reload', () 
   assert.match(source, /lockManager: navigator\.locks/);
   assert.match(source, /requireLock: true/);
   assert.match(source, /removeStorage: keys => call\(chrome\.storage\.local, 'remove', keys\)/);
-  assert.match(source,
-    /const storage = prefs => withImportLock\(async \(\) => \{\s*await recoverInterruptedImport\(\{lockHeld: true\}\)/);
+  const managedRead = source.indexOf(
+    'const managed = await readManagedStorageArea(chrome.storage.managed, managedKeys)'
+  );
+  const localLock = source.indexOf('const local = await withImportLock(async () => {', managedRead);
+  assert.ok(managedRead > 0 && localLock > managedRead,
+    'cold managed policy reads must finish before Options acquires the import lock');
+  assert.match(source.slice(localLock),
+    /await recoverInterruptedImport\(\{lockHeld: true\}\)[\s\S]*chrome\.storage\.local, 'get', prefs/);
   assert.doesNotMatch(source, /clearStorage|chrome\.storage\.local, 'clear'/);
   assert.doesNotMatch(source, /removeListener\(onChanged\)/);
   assert.doesNotMatch(source, /100e6|100MB/);
@@ -103,12 +109,21 @@ test('worker preferences recover the reserved bounded transaction before local v
     'await recoverSettingsImportStorage(chrome.storage.local, {lockHeld: true})');
   const migration = prefsSource.indexOf('await migrateLocalPreferences()', recovery);
   const localRead = prefsSource.indexOf('readStorageArea(chrome.storage.local, requested)', migration);
+  const managedRead = prefsSource.indexOf(
+    'const managed = await readManagedStorageArea(chrome.storage.managed, managedKeys'
+  );
+  const localLock = prefsSource.indexOf(
+    'const local = await withSettingsImportLock(globalThis.navigator?.locks', managedRead
+  );
+  assert.ok(managedRead > 0 && localLock > managedRead,
+    'cold managed policy reads must not hold the settings-import lock');
   assert.ok(recovery > 0);
+  assert.ok(recovery > localLock);
   assert.ok(migration > recovery);
   assert.ok(localRead > migration);
-  assert.match(prefsSource,
-    /withSettingsImportLock\(globalThis\.navigator\?\.locks,[\s\S]*readPreferences\(requested, type\)/);
-  assert.match(source, /const storage = prefs => withImportLock\(async \(\) =>/);
+  assert.match(prefsSource.slice(localLock),
+    /withSettingsImportLock\(globalThis\.navigator\?\.locks, async \(\) => \{[\s\S]*recoverSettingsImportStorage[\s\S]*readStorageArea\(chrome\.storage\.local, requested\)/);
+  assert.match(source, /const local = await withImportLock\(async \(\) =>/);
   assert.match(source,
     /await withImportLock\(async \(\) => \{\s*await recoverInterruptedImport\(\{lockHeld: true\}\);\s*await call\(chrome\.storage\.local, 'set', settings\)/);
   assert.match(transactionSource,

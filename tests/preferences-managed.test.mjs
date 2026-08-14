@@ -244,6 +244,84 @@ test('worker holds the import lock through the authoritative preference read', a
   }
 });
 
+test('cold managed policy reads do not hold the settings-import lock', async () => {
+  const state = {local: {audio: false}, managed: {}};
+  let managedCallback;
+  const local = {
+    get(query, callback) {
+      const source = state.local;
+      const value = query === null ? structuredClone(source) : Array.isArray(query) ?
+        Object.fromEntries(query.filter(key => key in source).map(key => [key, source[key]])) :
+        {...query, ...Object.fromEntries(Object.keys(query).filter(key => key in source)
+          .map(key => [key, source[key]]))};
+      callback(structuredClone(value));
+    },
+    remove(keys, callback) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        delete state.local[key];
+      }
+      callback();
+    },
+    set(values, callback) {
+      Object.assign(state.local, structuredClone(values));
+      callback();
+    }
+  };
+  globalThis.chrome = {
+    runtime: {lastError: null},
+    storage: {
+      local,
+      managed: {
+        get(query, callback) {
+          assert.ok(Array.isArray(query));
+          managedCallback = callback;
+        }
+      },
+      session: local,
+      onChanged: {addListener() {}}
+    }
+  };
+  let releaseWriter;
+  let writerEntered;
+  const writerHeld = new Promise(resolve => {
+    releaseWriter = resolve;
+  });
+  const writerAcquired = new Promise(resolve => {
+    writerEntered = resolve;
+  });
+
+  try {
+    const {storage} = await import(`../v3/worker/core/prefs.mjs?cold-managed=${Date.now()}`);
+    let readSettled = false;
+    const read = storage({audio: false}).then(value => {
+      readSettled = true;
+      return value;
+    });
+    await waitFor(() => typeof managedCallback === 'function');
+
+    const writer = withSettingsImportLock(navigator.locks, async () => {
+      state.local.audio = true;
+      writerEntered();
+      await writerHeld;
+      state.local.audio = false;
+    });
+    await writerAcquired;
+    assert.equal(readSettled, false,
+      'managed policy is still pending while another import-lock owner can enter');
+
+    managedCallback({});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(readSettled, false,
+      'the final local snapshot must wait for the active import owner');
+    releaseWriter();
+    await writer;
+    assert.deepEqual(await read, {audio: false});
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
 test('worker policy wins local writes and policy removal restores the local value', async () => {
   const state = {
     local: {
@@ -354,6 +432,83 @@ test('worker policy wins local writes and policy removal restores the local valu
     changedListener({pinned: {oldValue: false}}, 'managed');
     await waitFor(() => prefs.pinned === true);
     assert.equal(notifications, 1, 'removing policy reveals and publishes the local value');
+  }
+  finally {
+    delete globalThis.chrome;
+  }
+});
+
+test('one bulk storage change performs one authoritative preference refresh', async () => {
+  const state = {
+    local: {audio: false, pinned: false},
+    managed: {}
+  };
+  const reads = {local: [], managed: []};
+  let changedListener;
+  const area = name => ({
+    get(query, callback) {
+      reads[name].push(query);
+      const source = state[name];
+      if (query === null) {
+        callback(structuredClone(source));
+      }
+      else if (Array.isArray(query)) {
+        callback(Object.fromEntries(query.filter(key => key in source)
+          .map(key => [key, source[key]])));
+      }
+      else {
+        callback({...query, ...Object.fromEntries(Object.keys(query)
+          .filter(key => key in source).map(key => [key, source[key]]))});
+      }
+    },
+    remove(keys, callback) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        delete state[name][key];
+      }
+      callback();
+    },
+    set(values, callback) {
+      Object.assign(state[name], structuredClone(values));
+      callback();
+    }
+  });
+  globalThis.chrome = {
+    runtime: {lastError: null},
+    storage: {
+      local: area('local'),
+      managed: area('managed'),
+      session: area('local'),
+      onChanged: {
+        addListener(listener) {
+          changedListener = listener;
+        }
+      }
+    }
+  };
+
+  try {
+    const {prefs, storage} = await import(`../v3/worker/core/prefs.mjs?bulk=${Date.now()}`);
+    await storage({audio: true, pinned: false});
+    storage.on('audio', () => {});
+    storage.on('pinned', () => {});
+    reads.local.length = 0;
+    reads.managed.length = 0;
+
+    Object.assign(state.local, {audio: true, pinned: true});
+    changedListener({
+      audio: {newValue: true, oldValue: false},
+      pinned: {newValue: true, oldValue: false}
+    }, 'local');
+    await waitFor(() => prefs.audio === true && prefs.pinned === true);
+
+    const localPreferenceReads = reads.local.filter(query =>
+      query !== null && !Array.isArray(query)
+    );
+    assert.equal(localPreferenceReads.length, 1,
+      'one change event must use one authoritative local-layer read');
+    assert.equal(reads.managed.length, 1,
+      'one change event must use one authoritative managed-layer read');
+    assert.deepEqual(new Set(Object.keys(localPreferenceReads[0])), new Set(['audio', 'pinned']));
   }
   finally {
     delete globalThis.chrome;

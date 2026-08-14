@@ -172,7 +172,7 @@ test('strict release gate requires Chrome external API evidence from the extract
 
   assert.match(block, /script: path\.join\(repositoryRoot, 'e2e', 'external-api-smoke\.cjs'\)/);
   assert.match(block, /'--extension', extractedRoot/);
-  assert.match(block, /'--profile-root', path\.join\(outputDirectory, 'profiles', 'chrome-external-api'\)/);
+  assert.match(block, /'--profile-root', path\.join\(outputDirectory, 'p', 'cx'\)/);
   assert.match(block, /'--results', path\.join\(evidenceRoot, 'chrome-external-api'\)/);
   assert.match(block, /reportDirectory: path\.join\(evidenceRoot, 'chrome-external-api'\)/);
   assert.match(block, /report\.outcome !== 'passed'/);

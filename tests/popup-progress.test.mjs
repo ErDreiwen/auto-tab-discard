@@ -572,6 +572,78 @@ test('replacement lineage migrates a provisional predecessor into one authoritat
   });
 });
 
+test('task result keeps a replacement logical target exact after shared lineage retirement', async () => {
+  const manager = createPopupProgressManager({
+    // Model the real Edge boundary where ownership has already retired its
+    // global predecessor edge by the time the aggregate result is merged.
+    resolveId: id => id,
+    store: memoryStore()
+  });
+  const predecessor = {id: 610};
+  const successor = {id: 710};
+  const result = await manager.run({cmd: 'discard-tree', windowId: 28}, async progress => {
+    await progress.addTargets([predecessor]);
+    const discard = trackPopupTabTask(progress, async () => ({
+      ok: true,
+      status: 'succeeded',
+      tab: successor
+    }), POPUP_CODES.TAB_DISCARDED);
+    const disposition = await discard(predecessor);
+    return {succeeded: [disposition]};
+  });
+
+  assert.equal(result.state, 'complete');
+  assert.equal(result.total, 1);
+  assert.equal(result.completed, 1);
+  assert.deepEqual(result.targetIds, [710]);
+  assert.deepEqual(result.summary, {failed: 0, skipped: 0, success: 1});
+  assert.equal(Object.hasOwn(result.outcomes, 610), false);
+  assert.deepEqual(result.outcomes[710], {
+    code: POPUP_CODES.TAB_DISCARDED,
+    status: 'success',
+    tabId: 710
+  });
+});
+
+test('lost shared lineage keeps the exact no-keeper physical-only partial at four targets', async () => {
+  const manager = createPopupProgressManager({resolveId: id => id, store: memoryStore()});
+  const root = {active: true, id: 720};
+  const loaded = {id: 721};
+  const frozenPredecessor = {id: 722};
+  const frozenSuccessor = {id: 822};
+  const external = {id: 723};
+  const result = await manager.run({cmd: 'discard-tree', windowId: 29}, async progress => {
+    await progress.addTargets([root, loaded, frozenPredecessor, external]);
+    const discard = trackPopupTabTask(progress, async tab => ({
+      ok: true,
+      status: 'succeeded',
+      tab: tab.id === frozenPredecessor.id ? frozenSuccessor : tab
+    }), POPUP_CODES.TAB_DISCARDED);
+    const loadedResult = await discard(loaded);
+    const frozenResult = await discard(frozenPredecessor);
+    const externalResult = await discard(external);
+    return {
+      blocked: true,
+      candidates: [root],
+      physicalOnly: [frozenResult],
+      succeeded: [loadedResult, frozenResult, externalResult]
+    };
+  });
+
+  assert.equal(result.state, 'partial');
+  assert.equal(result.total, 4);
+  assert.equal(result.completed, 4);
+  assert.deepEqual(result.targetIds, [720, 721, 822, 723]);
+  assert.deepEqual(result.summary, {failed: 0, skipped: 1, success: 3});
+  assert.deepEqual(Object.values(result.outcomes).map(outcome => outcome.code).sort(), [
+    POPUP_CODES.TAB_DISCARDED,
+    POPUP_CODES.TAB_DISCARDED,
+    POPUP_CODES.TAB_DISCARDED_VISUAL_UNAVAILABLE,
+    POPUP_CODES.TAB_NO_SAFE_KEEPER
+  ].sort());
+  assert.equal(Object.hasOwn(result.outcomes, frozenPredecessor.id), false);
+});
+
 test('popup cancellation is wired to the real queued and running takeover tokens', async () => {
   const [menu, popup] = await Promise.all([
     readFile(new URL('../v3/worker/menu.mjs', import.meta.url), 'utf8'),

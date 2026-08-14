@@ -128,6 +128,38 @@ const allowIncognito = async (context, extensionId) => {
   }
 };
 
+const reopenExtensionDriver = async isolated => {
+  await waitFor(async () => {
+    let candidate = isolated.driver;
+    try {
+      if (!candidate || candidate.isClosed()) {
+        candidate = await isolated.context.newPage();
+      }
+      await candidate.goto(
+        `chrome-extension://${isolated.extensionId}/data/options/index.html`,
+        {waitUntil: 'domcontentloaded'}
+      );
+      const ready = await candidate.evaluate(id =>
+        globalThis.chrome?.runtime?.id === id && Boolean(chrome.tabs),
+      isolated.extensionId);
+      if (ready) {
+        isolated.driver = candidate;
+        return true;
+      }
+    }
+    catch (error) {
+      // Chrome can reject Target.createTarget briefly while applying the
+      // incognito configuration and reloading the extension. Retry against a
+      // fresh page instead of turning that bounded transition into a failure.
+    }
+    if (candidate && candidate !== isolated.driver) {
+      await candidate.close().catch(() => {});
+    }
+    return false;
+  }, 'the extension controller page after its incognito reload');
+  return isolated.driver;
+};
+
 const createWindowFixture = (driver, definition) => driver.evaluate(options => new Promise((resolve, reject) => {
   chrome.windows.create({
     focused: options.focused,
@@ -226,13 +258,13 @@ const sendRejectedPopupCommand = async (driver, fixture, expectedType) => {
     windowId: fixture.windowId
   });
   assert.equal(delivery.error, undefined, `${expectedType}: runtime message channel failed`);
-  assert.equal(delivery.response?.ok, true, delivery.response?.error ||
-    `${expectedType}: popup progress response failed`);
-  assert.equal(delivery.response.value?.state, 'failed',
-    `${expectedType}: non-normal window command must fail closed`);
-  assert.equal(delivery.response.value?.errorCode, 'POPUP_COMMAND_FAILED',
-    `${expectedType}: non-normal window command must expose a terminal failure code`);
-  return delivery.response.value.errorCode;
+  assert.equal(delivery.response?.ok, false,
+    `${expectedType}: non-normal window command must fail before progress starts`);
+  assert.equal(delivery.response?.error, 'No active tab is available',
+    `${expectedType}: rejection must come from the authoritative normal-window gate`);
+  assert.equal(delivery.response?.value, undefined,
+    `${expectedType}: rejected command must not create a progress value`);
+  return 'NO_ACTIVE_NORMAL_TAB';
 };
 
 const countDiscarded = states => states.filter(entry => entry.state?.discarded === true).length;
@@ -285,11 +317,7 @@ const main = async () => {
     });
     report.browser = {version: isolated.context.browser().version()};
     await allowIncognito(isolated.context, isolated.extensionId);
-    if (isolated.driver.isClosed()) isolated.driver = await isolated.context.newPage();
-    await isolated.driver.goto(
-      `chrome-extension://${isolated.extensionId}/data/options/index.html`,
-      {waitUntil: 'domcontentloaded'}
-    );
+    await reopenExtensionDriver(isolated);
     await isolated.driver.evaluate(async () => {
       await chrome.storage.local.set({
         audio: false,
@@ -501,9 +529,11 @@ module.exports = {
   allowIncognito,
   countDiscarded,
   createWindowFixture,
+  reopenExtensionDriver,
   registerSensitivePath,
   sanitizeReport,
   sanitizeReportText,
+  sendRejectedPopupCommand,
   startFixture
 };
 

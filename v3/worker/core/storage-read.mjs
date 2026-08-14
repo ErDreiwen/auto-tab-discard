@@ -1,4 +1,6 @@
 const STORAGE_READ_TIMEOUT = 2000;
+const MANAGED_STORAGE_READ_TIMEOUT = 10_000;
+const FIREFOX_MANAGED_MANIFEST_MISSING = 'Managed storage manifest not found';
 
 const storageReadError = error => {
   if (error instanceof Error) {
@@ -57,4 +59,29 @@ const readStorageArea = (area, query, {timeoutMs = STORAGE_READ_TIMEOUT} = {}) =
     }
   });
 
-export {readStorageArea, STORAGE_READ_TIMEOUT};
+// Firefox exposes storage.managed even when the administrator has installed no
+// policy manifest, then reports this one fixed absence condition as an error.
+// It is semantically the empty managed layer—not a failed read. Every other
+// error channel remains fail-closed, including the same text outside Firefox.
+const readManagedStorageArea = async (area, query, {
+  firefox = /\bFirefox\//.test(globalThis.navigator?.userAgent || ''),
+  timeoutMs = MANAGED_STORAGE_READ_TIMEOUT
+} = {}) => {
+  try {
+    return await readStorageArea(area, query, {timeoutMs});
+  }
+  catch (error) {
+    if (firefox === true && error?.message === FIREFOX_MANAGED_MANIFEST_MISSING) {
+      return {};
+    }
+    throw error;
+  }
+};
+
+export {
+  FIREFOX_MANAGED_MANIFEST_MISSING,
+  MANAGED_STORAGE_READ_TIMEOUT,
+  readManagedStorageArea,
+  readStorageArea,
+  STORAGE_READ_TIMEOUT
+};

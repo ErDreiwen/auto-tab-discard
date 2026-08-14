@@ -124,7 +124,7 @@ test('strict release gate requires Chrome form-protection evidence from the extr
   assert.match(block, /script: path\.join\(repositoryRoot, 'e2e', 'form-protection-smoke\.cjs'\)/);
   assert.match(block, /'--extension', extractedRoot/);
   assert.match(block,
-    /'--profile-root', path\.join\(outputDirectory, 'profiles', 'chrome-form-protection'\)/);
+    /'--profile-root', path\.join\(outputDirectory, 'p', 'cf'\)/);
   assert.match(block, /'--results', path\.join\(evidenceRoot, 'chrome-form-protection'\)/);
   assert.match(block, /reportDirectory: path\.join\(evidenceRoot, 'chrome-form-protection'\)/);
   assert.match(block, /report\.outcome !== 'passed'/);

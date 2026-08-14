@@ -28,6 +28,7 @@ import {
   SETTINGS_IMPORT_TRANSACTION_KEY,
   withSettingsImportLock
 } from '../../worker/core/settings-import-transaction.mjs';
+import {readManagedStorageArea} from '../../worker/core/storage-read.mjs';
 
 'use strict';
 
@@ -174,21 +175,24 @@ const migrateLocalPreferences = () => {
   return localPreferenceMigration;
 };
 
-const storage = prefs => withImportLock(async () => {
-  await recoverInterruptedImport({lockHeld: true});
-  await migrateLocalPreferences();
+const storage = async prefs => {
   const keys = Object.keys(prefs);
   const managedKeys = expandPluginPolicyKeys(keys);
-  const [local, managed] = await Promise.all([
-    call(chrome.storage.local, 'get', prefs),
-    call(chrome.storage.managed, 'get', managedKeys).catch(() => ({}))
-  ]);
+  // Managed policy initialization is independent of the local import
+  // transaction and can be slow on a cold browser profile. Never hold the
+  // origin import lock while waiting for that browser-owned callback.
+  const managed = await readManagedStorageArea(chrome.storage.managed, managedKeys);
+  const local = await withImportLock(async () => {
+    await recoverInterruptedImport({lockHeld: true});
+    await migrateLocalPreferences();
+    return call(chrome.storage.local, 'get', prefs);
+  });
   const effective = overlayPreferenceLayers(prefs, local, Object.fromEntries(
     managedKeys.filter(key => Object.prototype.hasOwnProperty.call(managed || {}, key))
       .map(key => [key, managed[key]])
   ));
   return Object.fromEntries(keys.map(key => [key, effective[key]]));
-});
+};
 const restore = () => storage({
   'period': 10 * 60, // in seconds
   'number': 6, // number of tabs before triggering discard

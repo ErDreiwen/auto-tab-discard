@@ -66,6 +66,58 @@ test('window scope smoke exercises normal, background, minimized, incognito, and
   assert.match(source, /regular command must never cross into the incognito context/);
   assert.match(source, /normal-window command must never touch popup-window tabs/);
   assert.match(source, /rejected popup-window command must have zero tab mutation/);
+  assert.match(source,
+    /non-normal window command must fail before progress starts/);
+  assert.match(source,
+    /rejection must come from the authoritative normal-window gate/);
+});
+
+test('window scope retries its extension driver across the incognito reload boundary', async () => {
+  let attempts = 0;
+  const page = {
+    close: async () => {},
+    evaluate: async () => true,
+    goto: async () => {},
+    isClosed: () => false
+  };
+  const isolated = {
+    context: {
+      async newPage() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Error('Target.createTarget is temporarily unavailable');
+        }
+        return page;
+      }
+    },
+    driver: {isClosed: () => true},
+    extensionId: 'abcdefghijklmnopabcdefghijklmnop'
+  };
+
+  assert.equal(await windowSmoke.reopenExtensionDriver(isolated), page);
+  assert.equal(attempts, 2);
+  assert.equal(isolated.driver, page);
+});
+
+test('window scope requires the exact outer fail-closed response for non-normal windows', async () => {
+  const fixture = {keeperId: 31, windowId: 41};
+  const driver = {
+    async evaluate() {
+      return {response: {error: 'No active tab is available', ok: false}};
+    }
+  };
+  assert.equal(await windowSmoke.sendRejectedPopupCommand(driver, fixture, 'popup'),
+    'NO_ACTIVE_NORMAL_TAB');
+
+  const wrongBoundary = {
+    async evaluate() {
+      return {response: {error: 'some other failure', ok: false}};
+    }
+  };
+  await assert.rejects(
+    windowSmoke.sendRejectedPopupCommand(wrongBoundary, fixture, 'popup'),
+    /authoritative normal-window gate/
+  );
 });
 
 test('window scope smoke reports unavailable app/workspace capabilities without claiming them', () => {
@@ -101,7 +153,7 @@ test('strict release gate requires Chrome window-scope evidence from the extract
   assert.match(block, /script: path\.join\(repositoryRoot, 'e2e', 'window-scope-smoke\.cjs'\)/);
   assert.match(block, /'--extension', extractedRoot/);
   assert.match(block,
-    /'--profile-root', path\.join\(outputDirectory, 'profiles', 'chrome-window-scope'\)/);
+    /'--profile-root', path\.join\(outputDirectory, 'p', 'cw'\)/);
   assert.match(block, /'--results', path\.join\(evidenceRoot, 'chrome-window-scope'\)/);
   assert.match(block, /reportDirectory: path\.join\(evidenceRoot, 'chrome-window-scope'\)/);
   assert.match(block, /report\.outcome !== 'passed'/);

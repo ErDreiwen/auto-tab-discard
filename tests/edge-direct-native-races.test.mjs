@@ -207,7 +207,7 @@ test('strict release gate digest-binds the exact direct-native matrices and clea
     /script: path\.join\(repositoryRoot, 'e2e', 'edge-direct-native-races\.cjs'\)/);
   assert.match(block, /'--allow-edge', '--extension', extractedRoot/);
   assert.match(block,
-    /'--profile-root', path\.join\(outputDirectory, 'profiles', 'edge-direct-native-races'\)/);
+    /'--profile-root', path\.join\(outputDirectory, 'p', 'ed'\)/);
   assert.match(block,
     /'--results', path\.join\(evidenceRoot, 'edge-direct-native-races'\)/);
   assert.match(block,
