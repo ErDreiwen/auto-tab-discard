@@ -460,7 +460,9 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(source, /target silently disappeared/);
   assert.match(source, /disposition: 'handled'/);
   assert.match(source, /disposition: 'unsupported'/);
-  assert.match(source, /\['TAB_DISCARDED', 'TAB_FAILED', 'TAB_UNSUPPORTED'\]/);
+  assert.match(source, /const discardedCodes = \['TAB_DISCARDED', 'TAB_DISCARDED_VISUAL_UNAVAILABLE'\]/);
+  assert.match(source, /\[\.\.\.discardedCodes, 'TAB_FAILED', 'TAB_UNSUPPORTED'\]/);
+  assert.match(source, /failure must name why the page is unsupported/);
   assert.match(source, /every requested scheme must be capability-reported and reconciled/);
 });
 

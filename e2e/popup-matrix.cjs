@@ -3933,6 +3933,8 @@ const main = async () => {
       const available = capabilities.filter(entry => entry.availability === 'available');
       assert.ok(available.length > 0, `${name}: the browser exposed none of the requested scheme fixtures`);
       const terminalStates = {expectedStates: ['complete', 'partial', 'failed']};
+      // An extension page can be discarded without a visual sleep marker.
+      const discardedCodes = ['TAB_DISCARDED', 'TAB_DISCARDED_VISUAL_UNAVAILABLE'];
       const normal = await clickPopup(layout, 'discard-window', false, terminalStates);
       assert.equal(normal?.kind, 'response', `${name}: normal command must retain its response channel`);
       const normalOutcomes = normal.progress?.outcomes || {};
@@ -3940,7 +3942,7 @@ const main = async () => {
         const tab = layout.tabs[capability.key];
         const outcome = outcomeForTabLineage(normalOutcomes, tab);
         assert.ok(outcome, `${name}: normal ${capability.scheme} target silently disappeared`);
-        if (outcome.code === 'TAB_DISCARDED') {
+        if (discardedCodes.includes(outcome.code)) {
           assert.equal(outcome.status, 'success');
           capability.normal = {
             code: outcome.code,
@@ -3970,11 +3972,16 @@ const main = async () => {
           };
         }
         else {
+          // Failed and unsupported outcomes carry their diagnostic cause.
           assert.deepEqual(outcome, {
             code: 'TAB_UNSUPPORTED',
+            failureCause: outcome.failureCause,
             status: 'failed',
             tabId: tab.id
           }, `${name}: normal ${capability.scheme} failure must be explicit`);
+          assert.ok(['METADATA_SCAN_FAILED', 'UNSUPPORTED_PAGE', 'UNSUPPORTED_SCHEME']
+            .includes(outcome.failureCause),
+          `${name}: normal ${capability.scheme} failure must name why the page is unsupported`);
           capability.normal = {
             code: outcome.code,
             disposition: 'unsupported',
@@ -4022,7 +4029,7 @@ const main = async () => {
         }
         assert.ok(outcome && ['success', 'failed'].includes(outcome.status),
           `${name}: Shift ${capability.scheme} target silently disappeared`);
-        assert.ok(['TAB_DISCARDED', 'TAB_FAILED', 'TAB_UNSUPPORTED'].includes(outcome.code),
+        assert.ok([...discardedCodes, 'TAB_FAILED', 'TAB_UNSUPPORTED'].includes(outcome.code),
           `${name}: Shift ${capability.scheme} target has no precise terminal code`);
         const current = final.tabs[capability.key];
         if (outcome.status === 'success') {
