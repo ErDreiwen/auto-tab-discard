@@ -19,11 +19,10 @@ import {deriveReleaseManifests} from './manifest-policy.mjs';
 
 const exec = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_TARGET = path.join(
-  process.env.LOCALAPPDATA || path.join(os.homedir(), '.local', 'share'),
-  'AutoTabDiscardHardened',
-  'chromium'
-);
+// Documents, not AppData: AppData is hidden in the folder picker, and Windows
+// redirects AppData writes from packaged (MSIX) apps into private storage
+// that the browser cannot see.
+const DEFAULT_TARGET = path.join(os.homedir(), 'Documents', 'AutoTabDiscardHardened', 'chromium');
 // Same package contents as scripts/package-release.mjs: the tracked v3 tree
 // without its icon scratch files, plus the release root documents.
 const ROOT_FILES = [
