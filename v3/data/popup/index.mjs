@@ -6,7 +6,10 @@ import {
   FAILURE_CAUSES,
   failureCauseFrom,
   failureCausePolicy,
-  matchesFailureCausePolicy
+  matchesFailureCausePolicy,
+  matchesProtectionRulePolicy,
+  protectionRuleFrom,
+  protectionRulePolicy
 } from '../../worker/core/failure-causes.mjs';
 import {
   announcementKey,
@@ -156,6 +159,19 @@ const normalizeDiagnosticGroup = value => {
         code === 'TAB_UNSUPPORTED' ?
           FAILURE_CAUSES.UNSUPPORTED_PAGE : FAILURE_CAUSES.OPERATION_FAILED
       ));
+    }
+  }
+  else if (code === 'TAB_PROTECTED') {
+    const hasProjectedPolicy = Object.hasOwn(value, 'stage') || Object.hasOwn(value, 'reasonCode');
+    if (hasProjectedPolicy) {
+      if (!matchesProtectionRulePolicy(value.stage, value.reasonCode)) {
+        return undefined;
+      }
+      stage = value.stage;
+      reasonCode = value.reasonCode;
+    }
+    else {
+      [stage, reasonCode] = protectionRulePolicy(protectionRuleFrom(value));
     }
   }
   else if ((value.stage && value.stage !== stage) ||

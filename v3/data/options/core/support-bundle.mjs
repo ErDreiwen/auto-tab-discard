@@ -5,7 +5,10 @@ import {
   CLICK_VALUES,
   NUMBER_RANGES
 } from './settings-backup.mjs';
-import {matchesFailureCausePolicy} from '../../../worker/core/failure-causes.mjs';
+import {
+  matchesFailureCausePolicy,
+  matchesProtectionRulePolicy
+} from '../../../worker/core/failure-causes.mjs';
 import {normalizeEnvelope} from '../../../worker/core/diagnostic-journal.mjs';
 
 const SUPPORT_BUNDLE_FORMAT = 'auto-tab-discard-support';
@@ -175,7 +178,9 @@ const safeGroups = value => {
     const expected = SAFE_GROUPS.get(entry.code);
     const validPolicy = GENERIC_FAILURE_CODES.has(entry.code) ?
       matchesFailureCausePolicy(entry.stage, entry.reasonCode) :
-      expected && entry.stage === expected[0] && entry.reasonCode === expected[1];
+      entry.code === 'TAB_PROTECTED' ?
+        matchesProtectionRulePolicy(entry.stage, entry.reasonCode) :
+        expected && entry.stage === expected[0] && entry.reasonCode === expected[1];
     if (!validPolicy) {
       continue;
     }

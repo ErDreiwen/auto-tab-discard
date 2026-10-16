@@ -267,7 +267,7 @@ test('command result classifications produce truthful failed, partial, and physi
       ],
       missing: [targets[7]],
       physicalOnly: [{reason: 'already physically discarded', tab: targets[1]}],
-      protected: [{reason: 'protected by policy', tab: targets[2]}],
+      protected: [{reason: 'tab has unsaved form input', tab: targets[2]}],
       succeeded: [{tab: targets[0]}],
       unknownOwnership: [{reason: 'ownership unavailable', tab: targets[5]}],
       unknownSuspension: [{reason: 'frozen state unavailable', tab: targets[4]}],
@@ -289,6 +289,7 @@ test('command result classifications produce truthful failed, partial, and physi
   });
   assert.deepEqual(mixed.outcomes[103], {
     code: POPUP_CODES.TAB_PROTECTED,
+    protectionRule: 'PROTECTED_FORM_INPUT',
     status: 'skipped',
     tabId: 103
   });

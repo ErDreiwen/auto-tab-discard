@@ -3,7 +3,10 @@ import {
   FAILURE_CAUSES,
   failureCauseFrom,
   failureCausePolicy,
-  matchesFailureCausePolicy
+  matchesFailureCausePolicy,
+  matchesProtectionRulePolicy,
+  protectionRuleFrom,
+  protectionRulePolicy
 } from './failure-causes.mjs';
 
 const DIAGNOSTIC_FORMAT = 'auto-tab-discard-diagnostic-journal';
@@ -187,12 +190,17 @@ const GENERIC_FAILURE_CODES = new Set([
   POPUP_CODES.TAB_FAILED,
   POPUP_CODES.TAB_UNSUPPORTED
 ]);
-const projectedPolicy = (code, failureCause) => GENERIC_FAILURE_CODES.has(code) ?
-  failureCausePolicy(failureCause) : GROUP_POLICY.get(code);
+// Protected outcomes name their fixed protection rule instead of one generic
+// PROTECTION_RULE group.
+const projectedPolicy = (code, failureCause, protectionRule) => GENERIC_FAILURE_CODES.has(code) ?
+  failureCausePolicy(failureCause) : code === POPUP_CODES.TAB_PROTECTED ?
+    protectionRulePolicy(protectionRule) : GROUP_POLICY.get(code);
 const storedPolicyMatches = value => GENERIC_FAILURE_CODES.has(value.code) ?
   matchesFailureCausePolicy(value.stage, value.reasonCode) :
-  value.stage === GROUP_POLICY.get(value.code)?.[0] &&
-    value.reasonCode === GROUP_POLICY.get(value.code)?.[1];
+  value.code === POPUP_CODES.TAB_PROTECTED ?
+    matchesProtectionRulePolicy(value.stage, value.reasonCode) :
+    value.stage === GROUP_POLICY.get(value.code)?.[0] &&
+      value.reasonCode === GROUP_POLICY.get(value.code)?.[1];
 
 const clone = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 const byteLength = value => new TextEncoder().encode(value).byteLength;
@@ -339,7 +347,7 @@ const projectDiagnosticIncident = (snapshot, {
       outcome,
       code === POPUP_CODES.TAB_UNSUPPORTED ?
         FAILURE_CAUSES.UNSUPPORTED_PAGE : FAILURE_CAUSES.OPERATION_FAILED
-    ));
+    ), protectionRuleFrom(outcome));
     if (!code || !status || !policy) {
       continue;
     }
@@ -720,7 +728,7 @@ const diagnosticStorageAdapter = (
   },
   async read() {
     if (!area?.get) throw Error('diagnostic storage read is unavailable');
-    const values = await invokeStorage(area, 'get', [{[key]: undefined}], timeoutMs);
+    const values = await invokeStorage(area, 'get', [[key]], timeoutMs);
     return values?.[key];
   },
   async remove() {
@@ -752,7 +760,7 @@ const diagnosticSessionStorageAdapter = (
 ) => ({
   async read() {
     if (!area?.get) throw Error('diagnostic session storage read is unavailable');
-    const values = await invokeStorage(area, 'get', [{[key]: undefined}], timeoutMs);
+    const values = await invokeStorage(area, 'get', [[key]], timeoutMs);
     return values?.[key];
   },
   async remove() {

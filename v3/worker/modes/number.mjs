@@ -17,6 +17,7 @@ import {
 import {
   FAILURE_CAUSES,
   failureCauseFrom,
+  protectionRuleFor,
   safeFailureCause
 } from '../core/failure-causes.mjs';
 import {
@@ -95,6 +96,9 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
       const value = {tab, reason: outcomeReason};
       if (kind === 'unsupported') {
         value.failureCause = safeFailureCause(failureCause) || FAILURE_CAUSES.UNSUPPORTED_PAGE;
+      }
+      else if (kind === 'protected') {
+        value.protectionRule = protectionRuleFor(outcomeReason);
       }
       classifications.set(tab.id, {
         kind,
