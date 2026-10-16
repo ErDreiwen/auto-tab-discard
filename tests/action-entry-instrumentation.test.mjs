@@ -23,6 +23,9 @@ test('every worker action ingress is connected to the strict diagnostic adapter'
     /request\.method === 'popup'[\s\S]*?correlation[\s\S]*?diagnosticCapabilities\.remember[\s\S]*?actionDiagnostics\.run/);
   assert.match(menu,
     /request\.method === 'popup-progress-cancel'[\s\S]*?cancelPopupProgressWithDiagnostics\(\{/);
+  // A command may activate a keeper, so cancel must not pin the popup's opening tab.
+  assert.match(menu,
+    /request\.method === 'popup-progress-cancel'[\s\S]*?popupAuthorization\(\{\.\.\.request, tabId: undefined\}, sender\)[\s\S]*?job\.windowId !== authorized\.windowId/);
   assert.match(menu,
     /job\.jobId !== request\.jobId[\s\S]*?job\.privateContext !== \(tab\.incognito === true\)/);
   assert.match(menu,

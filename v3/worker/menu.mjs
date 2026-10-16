@@ -772,7 +772,10 @@ import {interrupts} from './plugins/loader.mjs';
     else if (request.method === 'popup-progress-cancel') {
       return respondAsync(async () => {
         const correlation = diagnosticCorrelation(request);
-        const {request: authorized, tab} = await popupAuthorization(request, sender);
+        // A running command may activate a keeper (discard-tree, for one), so
+        // the tab the popup opened on is no longer active. Cancellation is
+        // bound to the job's window and privacy context, not to that tab.
+        const {request: authorized, tab} = await popupAuthorization({...request, tabId: undefined}, sender);
         const job = await popupProgress.snapshot(authorized);
         if (!job || job.jobId !== request.jobId ||
             !['running', 'cancelling'].includes(job.state) ||
