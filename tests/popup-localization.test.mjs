@@ -236,7 +236,10 @@ test('long pseudo-localized and RTL popup text uses wrapping and logical layout'
   assert.ok(text.length > 100);
   assert.match(script, /getMessage\('@@bidi_dir'\)/);
   assert.match(css, /overflow-wrap:\s*anywhere/);
-  assert.match(css, /@media\s*\(max-width:\s*377px\)[\s\S]*?body\s*\{[\s\S]*?min-width:\s*unset/);
+  // Chromium sizes the action popup from a tiny viewport, so a max-width query
+  // must never drop the body minimum; only Firefox's fixed overflow widths do.
+  assert.doesNotMatch(css, /@media\s*\(max-width:\s*377px\)\s*\{\s*body\s*\{[^}]*min-width:\s*unset/);
+  assert.match(css, /@media \(width: 348px\) or \(width: 377px\)\s*\{\s*body\s*\{[^}]*min-width:\s*unset/);
   assert.match(css, /\.mlt\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(7\.5rem,\s*45%\)/);
   assert.match(css, /\.mlt\s*>\s*label\s*\{[\s\S]*?display:\s*grid/);
   assert.doesNotMatch(css, /\.mlt\s*>\s*label\s*\{[^}]*display:\s*contents/);

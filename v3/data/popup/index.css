@@ -32,17 +32,15 @@ body {
   display: none !important;
 }
 
-/* Never force a horizontal scrollbar when the browser gives the popup less
-   than its preferred width (including space consumed by a vertical bar). */
-@media (max-width: 377px) {
-  body {
-    min-width: unset;
-  }
-}
+/* Chromium sizes the action popup from a tiny initial viewport up to the
+   page's preferred width, so the 350px minimum must hold at narrow widths;
+   with overflow-wrap: anywhere the popup would otherwise collapse to about
+   one character per line. Only Firefox's fixed-width overflow menu drops it. */
 
 /* FF overflow menu */
 @media (width: 348px) or (width: 377px) {
   body {
+    min-width: unset;
     overflow: hidden;
   }
   header {
