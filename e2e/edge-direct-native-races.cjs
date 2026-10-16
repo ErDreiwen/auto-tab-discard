@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
+const {browserEnvironment} = require('./browser-environment.cjs');
 
 const SCRIPT_DIR = __dirname;
 const WORKSPACE_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -414,7 +415,7 @@ const launchEdge = async ({executable, extension, profile}) => {
     'about:blank'
   ];
   const child = spawn(executable, args, {
-    stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true
+    env: browserEnvironment(), stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true
   });
   emergencyChild = child;
   let spawnError;

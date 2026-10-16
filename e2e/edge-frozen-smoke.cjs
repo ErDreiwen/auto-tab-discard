@@ -6,6 +6,7 @@ const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const {createHash, randomUUID} = require('node:crypto');
+const {browserEnvironment} = require('./browser-environment.cjs');
 
 const SCRIPT_DIR = __dirname;
 const WORKSPACE_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -813,6 +814,7 @@ const launchEdge = async ({executable, extension, profile}) => {
     '--window-size=1100,800',
     'about:blank'
   ], {
+    env: browserEnvironment(),
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: false
   });

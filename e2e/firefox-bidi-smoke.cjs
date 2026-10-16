@@ -862,6 +862,24 @@ const killDetachedProcessGroup = child => {
   }
 };
 
+// Firefox also records its WebDriver BiDi listener in the profile. Use it when
+// the "listening on" line does not reach the harness through the launcher pipe.
+const readBiDiServerFile = profile => {
+  let server;
+  try {
+    server = JSON.parse(fs.readFileSync(path.join(profile, 'WebDriverBiDiServer.json'), 'utf8'));
+  }
+  catch {
+    return undefined;
+  }
+  const port = Number(server?.ws_port);
+  if (!['127.0.0.1', 'localhost'].includes(server?.ws_host) ||
+      !Number.isInteger(port) || port <= 0 || port > 65535) {
+    return undefined;
+  }
+  return `ws://${server.ws_host}:${port}`;
+};
+
 const launchFirefox = async ({allowSystemAccess, executable, headed, onBind, onSpawn, profile, protocolLog}) => {
   const args = [
     '--no-remote',
@@ -878,6 +896,7 @@ const launchFirefox = async ({allowSystemAccess, executable, headed, onBind, onS
     MOZ_HEADLESS: headed ? '0' : '1',
     MOZ_NO_REMOTE: '1'
   };
+  fs.rmSync(path.join(profile, 'WebDriverBiDiServer.json'), {force: true});
   const launched = process.platform === 'win32' ? launchProcessInExactJob({
     args,
     environment,
@@ -922,7 +941,7 @@ const launchFirefox = async ({allowSystemAccess, executable, headed, onBind, onS
         throw Error(`Firefox exited before WebDriver BiDi started (${child.exitCode ?? child.signalCode})`);
       }
       const match = buffer.match(/WebDriver BiDi listening on (ws:\/\/\S+)/);
-      return match?.[1];
+      return match?.[1] || readBiDiServerFile(profile);
     }, 'Firefox did not publish its WebDriver BiDi endpoint', 20000, 50);
     const endpoint = new URL(url);
     return {

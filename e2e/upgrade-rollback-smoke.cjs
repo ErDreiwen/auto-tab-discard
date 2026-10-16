@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
+const {browserEnvironment} = require('./browser-environment.cjs');
 const {chromium} = require('./playwright-runtime.cjs');
 
 const arg = (name, fallback) => {
@@ -198,7 +199,7 @@ const launch = async ({controller, edge, executable, extension, profile}) => {
   ];
   if (edge) args.splice(-1, 0, '--disable-background-networking');
   const child = spawn(executable, args, {
-    stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true
+    env: browserEnvironment(), stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true
   });
   emergencyChild = child;
   let spawnError;
@@ -305,6 +306,19 @@ const wakeWorker = page => page.evaluate(() => new Promise((resolve, reject) => 
     error ? reject(Error(error.message)) : resolve(response);
   });
 }));
+// Edge 155 can close the first runtime message channel while the worker settles
+// after a full browser restart. Retry that one message once, and only for the
+// closed-channel error, so any other failure still fails the gate.
+const wakeWorkerAfterRestart = async page => {
+  try {
+    return await wakeWorker(page);
+  }
+  catch (error) {
+    if (!String(error?.message).includes('message channel closed before a response was received')) throw error;
+    await sleep(1000);
+    return wakeWorker(page);
+  }
+};
 const workerTarget = async (cdp, extensionId, excludedTargetId) => {
   const {targetInfos} = await cdp.send('Target.getTargets');
   return targetInfos.find(info => info.type === 'service_worker' &&
@@ -478,7 +492,7 @@ const main = async () => {
     const browserVersion = browser.version();
     const restartDriver = await openDriver(context, extensionId);
     assert.equal(await extensionVersion(restartDriver), currentVersion);
-    await wakeWorker(restartDriver);
+    await wakeWorkerAfterRestart(restartDriver);
     const restored = await waitFor(async () => {
       const tabs = await liveFixtureTabs(restartDriver);
       const counts = fixture.counts();

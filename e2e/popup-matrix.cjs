@@ -5,6 +5,7 @@ const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const {pathToFileURL} = require('node:url');
+const {browserEnvironment} = require('./browser-environment.cjs');
 
 let emergencyBrowserProcess;
 let emergencyManagedBrowser;
@@ -1658,6 +1659,7 @@ const launchManualOverCDP = async ({edgePrivacy, executablePath, extensionPath, 
     'about:blank'
   ];
   const browserProcess = spawn(executablePath, args, {
+    env: browserEnvironment(),
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: false
   });
