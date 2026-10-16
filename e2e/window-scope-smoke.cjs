@@ -8,6 +8,7 @@ const {
   closeIsolated,
   hashDirectory,
   launchIsolated,
+  openPopupSender,
   sendMessage,
   waitFor
 } = require('./isolated-chromium.cjs');
@@ -114,6 +115,11 @@ const allowIncognito = async (context, extensionId) => {
   const page = await context.newPage();
   try {
     await page.goto('chrome://extensions/', {waitUntil: 'domcontentloaded'});
+    // The incognito change reloads the unpacked extension, and Chrome disables a
+    // reloaded unpacked extension as unsupported unless developer mode is on.
+    await page.evaluate(() => chrome.developerPrivate.updateProfileConfiguration({
+      inDeveloperMode: true
+    }));
     await page.evaluate(id => chrome.developerPrivate.updateExtensionConfiguration({
       extensionId: id,
       incognitoAccess: true
@@ -336,6 +342,8 @@ const main = async () => {
       });
       await chrome.storage.session.clear();
     });
+    // Opened after the incognito reload, which closes every extension page.
+    const popupSender = await openPopupSender(isolated);
 
     const definitions = Object.fromEntries(['primary', 'background', 'minimized', 'incognito', 'popup']
       .map(label => [label, {
@@ -384,7 +392,7 @@ const main = async () => {
       report.failedProgress = entry;
     };
     const selectedProgress = await sendPopupCommand(
-      isolated.driver,
+      popupSender.page,
       'discard-window',
       fixtures.primary,
       rememberFailedProgress
@@ -408,7 +416,7 @@ const main = async () => {
     report.scopeTable.at(-1).ok = true;
 
     await sendPopupCommand(
-      isolated.driver,
+      popupSender.page,
       'discard-other-windows',
       fixtures.primary,
       rememberFailedProgress
@@ -433,7 +441,7 @@ const main = async () => {
     const popupBefore = await tabStates(isolated.driver, [
       {id: fixtures.popup.keeperId, label: 'popup-keeper'}
     ]);
-    const popupReason = await sendRejectedPopupCommand(isolated.driver, fixtures.popup, 'popup');
+    const popupReason = await sendRejectedPopupCommand(popupSender.page, fixtures.popup, 'popup');
     assert.deepEqual(await tabStates(isolated.driver, [
       {id: fixtures.popup.keeperId, label: 'popup-keeper'}
     ]), popupBefore, 'rejected popup-window command must have zero tab mutation');
@@ -446,7 +454,7 @@ const main = async () => {
         keeperUrl: fixture.url('app-keeper'),
         type: 'app'
       });
-      const appReason = await sendRejectedPopupCommand(isolated.driver, app, 'app');
+      const appReason = await sendRejectedPopupCommand(popupSender.page, app, 'app');
       report.capabilities.app = {available: true, commandRejected: true, reason: appReason};
     }
     catch (error) {

@@ -8,6 +8,7 @@ const {
   closeIsolated,
   hashDirectory,
   launchIsolated,
+  openPopupSender,
   sendMessage,
   sleep,
   waitFor
@@ -299,8 +300,20 @@ const tabState = (driver, id) => driver.evaluate(tabId => new Promise(resolve =>
   }));
 }), id);
 
-const runCheck = async (driver, id) => {
-  const delivery = await sendMessage(driver, {ids: [id], method: 'run-check-on-action'});
+const runCheck = async (driver, popupSender, id) => {
+  // A real popup check runs on the tabs highlighted in the window it opened
+  // from. Keep the driver active and highlight the target beside it.
+  const windowId = await driver.evaluate(async tabId => {
+    const [current, target] = await Promise.all([chrome.tabs.getCurrent(), chrome.tabs.get(tabId)]);
+    if (current.windowId !== target.windowId) throw Error('form target left the driver window');
+    await chrome.tabs.highlight({windowId: target.windowId, tabs: [current.index, target.index]});
+    const highlighted = await chrome.tabs.get(tabId);
+    if (highlighted.highlighted !== true || highlighted.active !== false) {
+      throw Error('form target was not highlighted beside the active driver');
+    }
+    return target.windowId;
+  }, id);
+  const delivery = await sendMessage(popupSender.page, {ids: [id], method: 'run-check-on-action', windowId});
   assert.equal(delivery.error, undefined, 'targeted form check must retain its message channel');
   assert.equal(delivery.response?.ok, true, delivery.response?.error || 'targeted form check failed');
   return delivery.response.value;
@@ -364,6 +377,7 @@ const main = async () => {
       profileRoot
     });
     report.browser = {version: isolated.context.browser().version()};
+    const popupSender = await openPopupSender(isolated);
     assert.deepEqual(manifest.optional_permissions, ['management', 'webNavigation'],
       'the tested artifact must declare diagnostics and frame enumeration as optional permissions');
     assert.equal(manifest.permissions?.includes('webNavigation'), false,
@@ -405,7 +419,7 @@ const main = async () => {
       const target = await createTarget(isolated.driver, isolated.context, url);
       try {
         await edit(target.page);
-        await assertProtected(isolated.driver, target.id, await runCheck(isolated.driver, target.id), label);
+        await assertProtected(isolated.driver, target.id, await runCheck(isolated.driver, popupSender, target.id), label);
         assert.equal(fixture.count(label), 1, `${label}: protection check must not reload the document`);
         report.scenarios.push({edit: label, final: 'protected', ok: true, requests: 1});
       }
@@ -422,7 +436,7 @@ const main = async () => {
         await target.page.locator('#prevent-submit').click();
         await sleep(100);
         assert.equal(fixture.submissionCount(label), 0, 'prevented submit must not reach the server');
-        await assertProtected(isolated.driver, target.id, await runCheck(isolated.driver, target.id), label);
+        await assertProtected(isolated.driver, target.id, await runCheck(isolated.driver, popupSender, target.id), label);
         report.scenarios.push({edit: label, final: 'protected', ok: true, submissions: 0});
       }
       finally {
@@ -462,14 +476,14 @@ const main = async () => {
         await assertProtected(
           isolated.driver,
           target.id,
-          await runCheck(isolated.driver, target.id),
+          await runCheck(isolated.driver, popupSender, target.id),
           `${transition.label} before clear`
         );
         await transition.clear(target.page, transition.label);
         await assertDiscarded(
           isolated.driver,
           target.id,
-          await runCheck(isolated.driver, target.id),
+          await runCheck(isolated.driver, popupSender, target.id),
           transition.label
         );
         assert.equal(fixture.count(transition.label), 1,
@@ -504,14 +518,14 @@ const main = async () => {
         await assertProtected(
           isolated.driver,
           target.id,
-          await runCheck(isolated.driver, target.id),
+          await runCheck(isolated.driver, popupSender, target.id),
           `${label} before revert`
         );
         await input.fill('saved frame text');
         await assertDiscarded(
           isolated.driver,
           target.id,
-          await runCheck(isolated.driver, target.id),
+          await runCheck(isolated.driver, popupSender, target.id),
           label
         );
         assert.equal(fixture.count(label), 1,

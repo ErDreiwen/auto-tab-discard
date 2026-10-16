@@ -1953,6 +1953,26 @@ const run = async () => {
     'Edge retained an unrelated normal window in the isolated frozen smoke run');
     report.fixture.windowIsolation = isolatedWindows;
 
+    // Production accepts popup commands only from the byte-exact popup page.
+    // Host it as the only tab of its own minimized normal window, created after
+    // isolation: command scopes never read an active tab, and Windows does not
+    // hand focus to a minimized window when a disposable control closes.
+    const popupUrl = new URL('/data/popup/index.html', driverUrl).href;
+    const popupWindowId = await evaluate(cdp, driverSession, `chrome.windows.create({
+      focused: false,
+      state: 'minimized',
+      type: 'normal',
+      url: ${JSON.stringify(popupUrl)}
+    }).then(created => created?.id)`);
+    ensure(Number.isInteger(popupWindowId), 'Edge did not create the real popup sender window');
+    const popupTarget = await waitFor(async () => {
+      const {targetInfos = []} = await cdp.send('Target.getTargets');
+      return targetInfos.find(info => info.type === 'page' && info.url === popupUrl) || false;
+    }, 'The real popup sender page did not appear', 15000);
+    const popupSession = await attachPage(cdp, popupTarget.targetId);
+    await waitFor(async () => evaluate(cdp, popupSession, `document.readyState === 'complete' &&
+      Boolean(globalThis.chrome?.runtime?.id)`), 'The real popup sender page did not become ready', 15000);
+
     const modes = [{
       key: 'combined',
       prepends: '\u{1F4A4}',
@@ -2354,7 +2374,7 @@ const run = async () => {
         `${mode.key}: direct native alarm takeover changed browser-window focus`);
 
       const repeatCheckpoint = await evaluate(cdp, driverSession, monitorCheckpointExpression);
-      const repeatResponse = await evaluate(cdp, driverSession, `new Promise(resolve => {
+      const repeatResponse = await evaluate(cdp, popupSession, `new Promise(resolve => {
         const timer = setTimeout(() => resolve({apiError: 'repeat popup response deadline exceeded'}), 10000);
         chrome.runtime.sendMessage({
           method: 'popup',
@@ -2811,7 +2831,7 @@ const run = async () => {
       const groupBaselineRequests = Object.fromEntries(GROUP_FIXTURE_KEYS.map(key => [key, fixture.count(key)]));
       takeoverFailureCodes.length = 0;
       const groupCommandCheckpoint = await evaluate(cdp, driverSession, monitorCheckpointExpression);
-      const groupResponse = await evaluate(cdp, driverSession, `new Promise(resolve => {
+      const groupResponse = await evaluate(cdp, popupSession, `new Promise(resolve => {
         const timer = setTimeout(() => resolve({apiError: 'popup command response deadline exceeded'}), 30000);
         chrome.runtime.sendMessage({
           method: 'popup',
@@ -3429,7 +3449,7 @@ const run = async () => {
           `${name}: blank-helper interrupt changed before the popup command`);
         const noHelperCommandCheckpoint = await evaluate(cdp, driverSession,
           monitorCheckpointExpression);
-        const noHelperResponse = await evaluate(cdp, driverSession, `new Promise(resolve => {
+        const noHelperResponse = await evaluate(cdp, popupSession, `new Promise(resolve => {
           const timer = setTimeout(() => resolve({apiError: 'popup command response deadline exceeded'}), 30000);
           chrome.runtime.sendMessage({
             method: 'popup',

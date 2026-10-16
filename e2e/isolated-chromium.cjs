@@ -248,6 +248,24 @@ const sendMessage = (driver, request) => driver.evaluate(message => new Promise(
   }));
 }), request);
 
+// Production accepts popup commands only from the byte-exact popup page URL.
+// Host that page as the only, active tab of its own unfocused normal window:
+// command scopes read inactive tabs only, so it is never a target, and it never
+// becomes the active tab of a fixture window.
+const openPopupSender = async ({context, driver, extensionId}) => {
+  const url = `chrome-extension://${extensionId}/data/popup/index.html`;
+  const existing = new Set(context.pages());
+  const created = await driver.evaluate(popupUrl => chrome.windows.create({
+    focused: false,
+    type: 'normal',
+    url: popupUrl
+  }), url);
+  const page = await waitFor(() => context.pages().find(candidate =>
+    !existing.has(candidate) && candidate.url() === url), 'real popup sender page');
+  await page.waitForFunction(() => document.readyState === 'complete');
+  return {page, windowId: created.id};
+};
+
 module.exports = {
   argument,
   assertSafeProfile,
@@ -255,6 +273,7 @@ module.exports = {
   crashCount,
   hashDirectory,
   launchIsolated,
+  openPopupSender,
   sendMessage,
   sleep,
   waitFor
