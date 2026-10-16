@@ -3054,13 +3054,18 @@ const main = async () => {
     const openPopup = async layout => {
       await focusSelected(layout);
       const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const url = `chrome-extension://${extensionId}/data/popup/index.html#e2e-${nonce}`;
+      // Production requires the exact popup URL as a sender-authority boundary.
+      // Keep the page URL byte-exact and distinguish this newly created page by
+      // object identity instead of adding a fragment that changes sender.url.
+      const url = `chrome-extension://${extensionId}/data/popup/index.html`;
+      const existingPages = new Set(context.pages());
       const created = await driver.evaluate(({windowId, url}) => chrome.tabs.create({
         active: false,
         url,
         windowId
       }), {url, windowId: layout.primaryWindowId});
-      const page = await waitFor(() => context.pages().find(candidate => candidate.url() === url),
+      const page = await waitFor(() => context.pages().find(candidate =>
+        existingPages.has(candidate) === false && candidate.url() === url),
         `popup test page ${nonce}`, 10000);
       await page.waitForSelector('[data-cmd="discard-tab"]');
       await page.waitForFunction(() =>

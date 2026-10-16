@@ -859,67 +859,82 @@ test('sanitized support bundle excludes URL, title, rule, marker, local, ownersh
   assert.equal(/whitelist|ownership|title|prepends/i.test(text), false);
 });
 
-test('support bundle v2 includes only the strict sanitized diagnostic incident schema', () => {
+test('support bundle v2 includes bounded sanitized session events and incidents', () => {
   const canary = 'SECRET-CANARY-diagnostic-92f4';
   const text = serializeSupportBundle({audio: true}, {
     journal: {
       format: 'auto-tab-discard-diagnostic-journal',
-      incidents: [{
-        command: 'discard-window',
-        durationMs: 1_500_000,
-        endedAt: '2026-08-14T04:00:01.482Z',
-        error: {message: canary, stack: `https://${canary}.invalid/`},
-        forced: false,
-        groups: [{
-          code: 'TAB_FAILED',
-          count: 47,
-          message: canary,
-          reasonCode: 'NATIVE_TIMEOUT',
-          stage: 'native-discard',
-          status: 'failed',
-          tabId: 91
+      sessions: [{
+        id: 'ATDS-MABC-SESSION',
+        records: [{
+          action: 'COMMAND_CONTROL',
+          code: 'CONTROL_ACTIVATED',
+          correlation: 'ATDC-0123456789ABCDEF',
+          counts: {failed: 47, skipped: 19, total: 66},
+          error: canary,
+          kind: 'event',
+          offsetMs: 500,
+          outcome: 'STARTED',
+          phase: 'CLICK',
+          runtime: {browserFamily: 'Edge', extensionVersion: '0.6.9.2'},
+          sequence: 1,
+          source: 'popup',
+          tabId: 91,
+          timestamp: '2026-08-14T04:00:00.500Z',
+          title: canary,
+          type: 'UI_ACTION',
+          url: `https://${canary}.invalid/`
         }, {
-          code: 'TAB_PROTECTED',
-          count: 19,
-          reasonCode: 'PROTECTION_RULE',
-          stage: 'eligibility',
-          status: 'skipped',
-          windowId: 7
-        }, {
-          code: 'TAB_FAILED',
-          count: 1,
-          reasonCode: 'NATIVE_TIMEOUT',
-          stage: 'release',
-          status: 'failed'
+          incident: {
+            command: 'discard-window',
+            durationMs: 1_500_000,
+            endedAt: '2026-08-14T04:25:00.000Z',
+            forced: false,
+            groups: [{
+              code: 'TAB_FAILED',
+              count: 47,
+              reasonCode: 'NATIVE_TIMEOUT',
+              stage: 'native-discard',
+              status: 'failed'
+            }, {
+              code: 'TAB_UNSUPPORTED',
+              count: 6,
+              reasonCode: 'METADATA_SCAN_FAILED',
+              stage: 'metadata-scan',
+              status: 'failed'
+            }, {
+              code: 'TAB_UNSUPPORTED',
+              count: 1,
+              reasonCode: canary,
+              stage: canary,
+              status: 'failed'
+            }, {
+              code: 'TAB_PROTECTED',
+              count: 19,
+              reasonCode: 'PROTECTION_RULE',
+              stage: 'eligibility',
+              status: 'skipped'
+            }],
+            id: 'ATD-MABC-1',
+            runtime: {browserFamily: 'Edge', extensionVersion: '0.6.9.2'},
+            startedAt: '2026-08-14T04:00:00.000Z',
+            state: 'failed',
+            summary: {failed: 47, skipped: 19, success: 0},
+            total: 67
+          },
+          kind: 'incident',
+          offsetMs: 1_500_000,
+          sequence: 2,
+          timestamp: '2026-08-14T04:25:00.000Z'
         }],
-        id: 'ATD-MABC-1',
-        runtime: {
-          browserFamily: 'Edge',
-          extensionVersion: '0.6.9.2',
-          userAgent: canary
-        },
-        startedAt: '2026-08-14T04:00:00.000Z',
-        state: 'failed',
-        summary: {failed: 47, skipped: 19, success: 0},
-        title: canary,
-        total: 67,
-        url: `https://${canary}.invalid/`,
-        windowId: 7
+        startedAt: '2026-08-14T04:00:00.000Z'
       }, {
-        command: 'discard-window',
-        durationMs: 1,
-        endedAt: '2026-08-14T04:00:01.000Z',
-        forced: false,
-        groups: [],
         id: canary,
-        runtime: {browserFamily: 'Edge', extensionVersion: '0.6.9.2'},
-        startedAt: '2026-08-14T04:00:00.000Z',
-        state: 'failed',
-        summary: {failed: 1, skipped: 0, success: 0},
-        total: 1
+        records: [],
+        startedAt: '2026-08-14T04:00:00.000Z'
       }],
       updatedAt: '2026-08-14T04:00:01.482Z',
-      version: 1
+      version: 2
     },
     manifest: {manifest_version: 3, version: '0.6.9.2'},
     now: () => new Date('2026-08-14T05:00:00.000Z'),
@@ -930,19 +945,41 @@ test('support bundle v2 includes only the strict sanitized diagnostic incident s
 
   assert.equal(journal.available, true);
   assert.equal(journal.format, 'auto-tab-discard-diagnostic-journal');
-  assert.equal(journal.version, 1);
+  assert.equal(journal.version, 2);
   assert.equal(journal.updatedAt, '2026-08-14T04:00:01.482Z');
-  assert.equal(journal.incidents.length, 1, 'invalid incident identifiers must be omitted');
-  assert.deepEqual(journal.incidents[0], {
+  assert.equal(journal.omittedRecords, 0);
+  assert.equal(journal.sessions.length, 1, 'invalid session identifiers must be omitted');
+  assert.deepEqual(journal.sessions[0].records[0], {
+    action: 'COMMAND_CONTROL',
+    code: 'CONTROL_ACTIVATED',
+    correlation: 'ATDC-0123456789ABCDEF',
+    counts: {failed: 47, skipped: 19, total: 66},
+    kind: 'event',
+    offsetMs: 500,
+    outcome: 'STARTED',
+    phase: 'CLICK',
+    runtime: {browserFamily: 'Edge', extensionVersion: '0.6.9.2'},
+    sequence: 1,
+    source: 'popup',
+    timestamp: '2026-08-14T04:00:00.500Z',
+    type: 'UI_ACTION'
+  });
+  assert.deepEqual(journal.sessions[0].records[1].incident, {
     command: 'discard-window',
     durationMs: 1_500_000,
-    endedAt: '2026-08-14T04:00:01.482Z',
+    endedAt: '2026-08-14T04:25:00.000Z',
     forced: false,
     groups: [{
       code: 'TAB_FAILED',
       count: 47,
       reasonCode: 'NATIVE_TIMEOUT',
       stage: 'native-discard',
+      status: 'failed'
+    }, {
+      code: 'TAB_UNSUPPORTED',
+      count: 6,
+      reasonCode: 'METADATA_SCAN_FAILED',
+      stage: 'metadata-scan',
       status: 'failed'
     }, {
       code: 'TAB_PROTECTED',
@@ -965,15 +1002,52 @@ test('support bundle v2 includes only the strict sanitized diagnostic incident s
 
 test('support bundle rejects a diagnostic envelope with the wrong format or version', () => {
   for (const journal of [
-    {format: 'foreign-journal', incidents: [], version: 1},
-    {format: 'auto-tab-discard-diagnostic-journal', incidents: [], version: 2}
+    {format: 'foreign-journal', sessions: [], version: 2},
+    {format: 'auto-tab-discard-diagnostic-journal', sessions: [], version: 1}
   ]) {
     const bundle = JSON.parse(serializeSupportBundle({}, {journal}));
     assert.deepEqual(bundle.diagnostics.journal, {
       available: false,
       format: 'auto-tab-discard-diagnostic-journal',
-      incidents: [],
-      version: 1
+      omittedRecords: 0,
+      sessions: [],
+      version: 2
     });
   }
+});
+
+test('support bundle retains a large newest history slice within its shareable size bound', () => {
+  const started = Date.parse('2026-08-14T04:00:00.000Z');
+  const records = Array.from({length: 3000}, (_, index) => ({
+    code: 'SCAN_STARTED',
+    counts: {total: index},
+    kind: 'event',
+    offsetMs: index,
+    outcome: 'PROGRESS',
+    phase: 'metadata-check',
+    runtime: {browserFamily: 'Chromium', extensionVersion: '0.6.9.2'},
+    sequence: index + 1,
+    source: 'automatic',
+    timestamp: new Date(started + index).toISOString(),
+    type: 'ACTION_STAGE'
+  }));
+  const text = serializeSupportBundle({}, {
+    journal: {
+      format: 'auto-tab-discard-diagnostic-journal',
+      sessions: [{
+        id: 'ATDS-LARGE-HISTORY',
+        records,
+        startedAt: new Date(started).toISOString()
+      }],
+      updatedAt: new Date(started + records.length).toISOString(),
+      version: 2
+    },
+    manifest: {manifest_version: 3, version: '0.6.9.2'}
+  });
+  const journal = JSON.parse(text).diagnostics.journal;
+  assert.equal(journal.available, true);
+  assert.ok(journal.sessions[0].records.length <= 2048);
+  assert.equal(journal.omittedRecords,
+    records.length - journal.sessions[0].records.length);
+  assert.ok(new TextEncoder().encode(text).byteLength < MAX_BACKUP_BYTES);
 });

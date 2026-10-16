@@ -1,4 +1,36 @@
 const DEFAULT_RUNTIME_MESSAGE_TIMEOUT = 7000;
+const DEFAULT_BROWSER_CALL_TIMEOUT = 30000;
+
+const boundedBrowserCall = (target, method, args = [], {
+  runtime = globalThis.chrome?.runtime,
+  timeoutMs = DEFAULT_BROWSER_CALL_TIMEOUT
+} = {}) => new Promise((resolve, reject) => {
+  let settled = false;
+  const finish = (error, value) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    error ? reject(error) : resolve(value);
+  };
+  const timer = setTimeout(() => finish(Object.assign(
+    Error(`${method || 'Browser API'} timed out`),
+    {code: 'BROWSER_CALL_TIMEOUT'}
+  )), Math.max(1, Number(timeoutMs) || DEFAULT_BROWSER_CALL_TIMEOUT));
+  try {
+    if (typeof target?.[method] !== 'function') {
+      finish(Error('Browser API is unavailable'));
+      return;
+    }
+    const operation = target[method](...args, (value, compatibilityError) => {
+      const error = runtime?.lastError || compatibilityError;
+      finish(error ? Error(error.message || String(error)) : null, value);
+    });
+    operation?.then?.(value => finish(null, value), error => finish(error));
+  }
+  catch (error) {
+    finish(error);
+  }
+});
 
 const withDeadline = (task, {
   timeoutMessage = 'Operation timed out',
@@ -50,7 +82,9 @@ const boundedRuntimeMessage = (runtime, request, {
 });
 
 export {
+  boundedBrowserCall,
   boundedRuntimeMessage,
+  DEFAULT_BROWSER_CALL_TIMEOUT,
   DEFAULT_RUNTIME_MESSAGE_TIMEOUT,
   withDeadline
 };

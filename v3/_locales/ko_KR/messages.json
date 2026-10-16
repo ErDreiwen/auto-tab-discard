@@ -766,10 +766,10 @@
     "message": "진단"
   },
   "options_diagnostics_privacy": {
-    "message": "정리된 로그에는 URL, 제목, 탭 및 창 ID, 사이트 규칙, 비공개 창 활동이 포함되지 않습니다."
+    "message": "상세하게 정리된 기록은 이 기기에만 저장되며 10,000개 레코드, 브라우저 세션 64개, 30일, 4 MiB로 제한됩니다. 가장 오래된 데이터는 자동으로 정리되며 기록을 수동으로 지울 수도 있습니다. URL, 제목, 호스트 이름, 사이트 규칙, 탭 및 창 ID, 확장 프로그램 ID, 원시 오류, 비공개 창 활동은 포함되지 않습니다."
   },
   "options_diagnostics_download": {
-    "message": "latest.log 다운로드"
+    "message": "session-history.log 다운로드"
   },
   "options_diagnostics_clear": {
     "message": "진단 지우기"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "사용할 수 있는 정리된 진단이 없습니다."
+  },
+  "options_conflict_scan_title": {
+    "message": "확장 프로그램 충돌 검사"
+  },
+  "options_conflict_scan_description": {
+    "message": "선택 사항: 사용 설정된 확장 프로그램을 한 번 검사하여 중복된 Auto Tab Discard 사본과 다른 탭 절전 확장 프로그램을 찾습니다. 브라우저에서 확장 프로그램 관리 권한으로 설명할 수 있습니다. 이 검사는 읽기 전용이며 확장 프로그램 이름이나 ID를 저장하지 않습니다."
+  },
+  "options_conflict_scan_run": {
+    "message": "접근 권한 부여 및 검사"
+  },
+  "options_conflict_scan_remove": {
+    "message": "검사 접근 권한 제거"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "이 브라우저에서는 선택적 충돌 검사를 실행할 수 없습니다."
+  },
+  "options_conflict_scan_ready": {
+    "message": "검사 접근 권한이 꺼져 있습니다. 검사 버튼을 클릭할 때만 요청됩니다."
+  },
+  "options_conflict_scan_result": {
+    "message": "충돌 가능성: $CONFIDENCE$. 중복 사본: $DUPLICATES$; 다른 탭 폐기 확장 프로그램: $DISCARDERS$; 탭 관리자: $MANAGERS$; 외부에서 폐기된 탭: $SLEEPERS$; 외부 자리표시자 탭: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "검사 중..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "충돌 검사 접근 권한이 부여되지 않았습니다."
+  },
+  "options_conflict_scan_failed": {
+    "message": "충돌 검사 실패"
+  },
+  "options_conflict_scan_removed": {
+    "message": "충돌 검사 접근 권한이 제거되었습니다."
   }
 }

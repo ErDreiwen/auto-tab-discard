@@ -8,6 +8,7 @@ import {
   SNAPSHOT_VERSION,
   trackPopupTabTask
 } from '../v3/worker/core/popup-progress.mjs';
+import {cancelPopupProgressWithDiagnostics} from '../v3/worker/core/action-diagnostics.mjs';
 import {FAILURE_CAUSES} from '../v3/worker/core/failure-causes.mjs';
 
 const memoryStore = initial => {
@@ -106,6 +107,45 @@ test('cancels a 50-tab slow takeover batch with monotonic progress and stable pe
     assert.ok(forJob[index].total >= forJob[index - 1].total, 'total count must not decrease');
   }
   assert.deepEqual(await manager.cancel(result.jobId), {accepted: false});
+});
+
+test('a job finishing between cancellation authorization and mutation logs denied no-change', async () => {
+  const manager = createPopupProgressManager({store: memoryStore()});
+  const request = {cmd: 'discard-window', tabId: 10, windowId: 31};
+  let finish;
+  const running = manager.run(request, async progress => {
+    await progress.addTargets([{id: 11}]);
+    await new Promise(resolve => finish = resolve);
+    await progress.settle({id: 11}, 'success', POPUP_CODES.TAB_DISCARDED);
+    return {succeeded: [{tab: {id: 11}}]};
+  });
+  while (!finish) await tick();
+
+  // This is the route's authorization snapshot. The job then finishes before
+  // the authoritative cancel call, reproducing the reviewed TOCTOU exactly.
+  const authorizedSnapshot = await manager.snapshot(request);
+  finish();
+  await running;
+  const events = [];
+  const response = await cancelPopupProgressWithDiagnostics({
+    actionDiagnostics: {event: async event => events.push(structuredClone(event))},
+    cancel: jobId => manager.cancel(jobId),
+    command: authorizedSnapshot.command,
+    correlation: 'ATDC-0123456789ABCDEF',
+    jobId: authorizedSnapshot.jobId,
+    privateContext: authorizedSnapshot.privateContext
+  });
+
+  assert.deepEqual(response, {accepted: false});
+  assert.deepEqual(events, [{
+    code: 'NO_CHANGE',
+    command: 'discard-window',
+    correlation: 'ATDC-0123456789ABCDEF',
+    outcome: 'DENIED',
+    phase: 'CANCEL',
+    source: 'popup',
+    type: 'RESPONSE'
+  }]);
 });
 
 test('a terminal result survives popup closure while a stale running record becomes interrupted', async () => {
@@ -254,6 +294,7 @@ test('command result classifications produce truthful failed, partial, and physi
   });
   assert.deepEqual(mixed.outcomes[104], {
     code: POPUP_CODES.TAB_UNSUPPORTED,
+    failureCause: FAILURE_CAUSES.UNSUPPORTED_PAGE,
     status: 'failed',
     tabId: 104
   });
@@ -429,24 +470,41 @@ test('menu provisional settlement allowlists retained-frozen without publishing 
   )), true);
 });
 
-test('normal-check unsupported outcomes retain their precise popup code', async () => {
+test('normal-check unsupported outcomes retain strict fixed causes and drop raw reasons', async () => {
   const manager = createPopupProgressManager({store: memoryStore()});
-  const target = {id: 350};
+  const targets = Array.from({length: 4}, (_, index) => ({id: 350 + index}));
+  const unsupported = [{
+    failureCause: FAILURE_CAUSES.METADATA_SCAN_FAILED,
+    reason: 'SECRET metadata rejection at https://private.example/',
+    tab: targets[0]
+  }, {
+    failureCause: FAILURE_CAUSES.METADATA_UNAVAILABLE,
+    reason: 'SECRET unloaded title',
+    tab: targets[1]
+  }, {
+    failureCause: 'RAW_PRIVATE_BROWSER_CAUSE',
+    reason: 'SECRET invalid cause',
+    tab: targets[2]
+  }, {
+    reason: 'SECRET legacy unsupported fixture',
+    tab: targets[3]
+  }];
   const result = await manager.run({cmd: 'discard-window', windowId: 23}, async progress => {
-    await progress.mergeCheckResult({
-      unsupported: [{reason: 'renderer unavailable for restricted scheme', tab: target}]
-    }, [target]);
-    return {
-      unsupported: [{reason: 'renderer unavailable for restricted scheme', tab: target}]
-    };
+    await progress.mergeCheckResult({unsupported}, targets);
+    return {unsupported};
   });
 
   assert.equal(result.state, 'failed');
   assert.deepEqual(result.outcomes[350], {
     code: POPUP_CODES.TAB_UNSUPPORTED,
+    failureCause: FAILURE_CAUSES.METADATA_SCAN_FAILED,
     status: 'failed',
     tabId: 350
   });
+  assert.equal(result.outcomes[351].failureCause, FAILURE_CAUSES.METADATA_UNAVAILABLE);
+  assert.equal(result.outcomes[352].failureCause, FAILURE_CAUSES.UNSUPPORTED_PAGE);
+  assert.equal(result.outcomes[353].failureCause, FAILURE_CAUSES.UNSUPPORTED_PAGE);
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|private\.example|RAW_PRIVATE/);
 });
 
 test('authoritative command results replace provisional task outcomes exactly once', async () => {

@@ -297,11 +297,18 @@
 
     <section id="diagnostics" aria-labelledby="diagnostics-title">
       <h2 id="diagnostics-title" data-i18n="options_diagnostics_title">Diagnostics</h2>
-      <p class="wnt backup-note" data-i18n="options_diagnostics_privacy">Diagnostic history stays on this device until you download it. The sanitized log excludes URLs, page titles, hostnames, site rules, tab and window identifiers, and raw error messages.</p>
+      <p class="wnt backup-note" data-i18n="options_diagnostics_privacy">Deep sanitized history stays on this device and is bounded by 10,000 records, 64 browser sessions, 30 days, and 4 MiB. The oldest data is pruned automatically, and you can clear the history manually. It excludes URLs, titles, hostnames, site rules, tab and window IDs, extension IDs, raw errors, and private-window activity.</p>
       <p>
-        <input type="button" id="download-diagnostics" value="Download latest.log" data-i18n="options_diagnostics_download" data-i18n-value="value">
+        <input type="button" id="download-diagnostics" value="Download session-history.log" data-i18n="options_diagnostics_download" data-i18n-value="value">
         <input type="button" id="clear-diagnostics" value="Clear diagnostic history" data-i18n="options_diagnostics_clear" data-i18n-value="value">
         <span id="diagnostics-info" role="status" aria-live="polite"></span>
+      </p>
+      <h3 id="conflict-scan-title" data-i18n="options_conflict_scan_title">Extension conflict scan</h3>
+      <p id="conflict-scan-description" class="wnt backup-note" data-i18n="options_conflict_scan_description">Optional: inspect enabled extensions once to find duplicate Auto Tab Discard copies and other tab suspenders. The browser may describe this as permission to manage extensions; this scan is read-only and never stores extension names or IDs.</p>
+      <p>
+        <input type="button" id="run-conflict-scan" value="Grant access and scan" data-i18n="options_conflict_scan_run" data-i18n-value="value" aria-describedby="conflict-scan-description conflict-scan-info">
+        <input type="button" id="remove-conflict-scan-access" value="Remove scan access" data-i18n="options_conflict_scan_remove" data-i18n-value="value" aria-describedby="conflict-scan-description conflict-scan-info">
+        <span id="conflict-scan-info" role="status" aria-live="polite" aria-atomic="true"></span>
       </p>
     </section>
 

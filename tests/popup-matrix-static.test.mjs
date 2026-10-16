@@ -20,6 +20,19 @@ const {
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
 
+test('popup matrix uses the exact authorized popup URL without test fragments', async () => {
+  const source = await readMatrix();
+  const start = source.indexOf('const openPopup = async layout =>');
+  const end = source.indexOf('const removePopup = async popup =>', start);
+  assert.ok(start >= 0 && end > start);
+  const openPopup = source.slice(start, end);
+  assert.match(openPopup,
+    /const url = `chrome-extension:\/\/\$\{extensionId\}\/data\/popup\/index\.html`/);
+  assert.doesNotMatch(openPopup, /data\/popup\/index\.html[#?]/);
+  assert.match(openPopup,
+    /const existingPages = new Set\(context\.pages\(\)\)[\s\S]*existingPages\.has\(candidate\) === false/);
+});
+
 test('popup serves Chromium 152 own pinned PDF extension fixture', async () => {
   const pdf = loadChromiumPdfFixture();
   assert.equal(pdf.length, 7984);

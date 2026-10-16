@@ -629,10 +629,10 @@
     "message": "Diagnostics"
   },
   "options_diagnostics_privacy": {
-    "message": "Sanitized logs exclude URLs, titles, tab and window IDs, site rules, and private-window activity."
+    "message": "Deep sanitized history stays on this device and is bounded by 10,000 records, 64 browser sessions, 30 days, and 4 MiB. The oldest data is pruned automatically, and you can clear the history manually. It excludes URLs, titles, hostnames, site rules, tab and window IDs, extension IDs, raw errors, and private-window activity."
   },
   "options_diagnostics_download": {
-    "message": "Download latest.log"
+    "message": "Download session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "Clear diagnostics"
@@ -663,5 +663,46 @@
   },
   "options_diagnostics_empty": {
     "message": "No sanitized diagnostics are available."
+  },
+  "options_conflict_scan_title": {
+    "message": "Extension conflict scan"
+  },
+  "options_conflict_scan_description": {
+    "message": "Optional: inspect enabled extensions once to find duplicate Auto Tab Discard copies and other tab suspenders. The browser may describe this as permission to manage extensions; this scan is read-only and never stores extension names or IDs."
+  },
+  "options_conflict_scan_run": {
+    "message": "Grant access and scan"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Remove scan access"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "This browser cannot run the optional conflict scan."
+  },
+  "options_conflict_scan_ready": {
+    "message": "Scan access is off. It is requested only when you click the scan button."
+  },
+  "options_conflict_scan_result": {
+    "message": "Conflict likelihood: $CONFIDENCE$. Duplicate copies: $DUPLICATES$; other discarders: $DISCARDERS$; tab managers: $MANAGERS$; externally discarded tabs: $SLEEPERS$; external placeholder tabs: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Scanning..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "Conflict scan access was not granted."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Conflict scan failed"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Conflict scan access removed."
   }
 }

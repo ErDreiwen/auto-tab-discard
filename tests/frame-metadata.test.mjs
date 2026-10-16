@@ -97,7 +97,7 @@ test('manifest keeps the permanent watcher top-frame-only and frame enumeration 
   const watcher = manifest.content_scripts.find(script => script.js?.includes('/data/inject/watch.js'));
   assert.ok(watcher);
   assert.equal(watcher.all_frames, false);
-  assert.deepEqual(manifest.optional_permissions, ['webNavigation']);
+  assert.deepEqual(manifest.optional_permissions, ['management', 'webNavigation']);
   assert.equal(manifest.permissions.includes('webNavigation'), false,
     'frame enumeration must not create a required install permission');
 });

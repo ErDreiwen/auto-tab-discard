@@ -21,6 +21,7 @@
     "storage"
   ],
   "allowedOptionalPermissions": [
+    "management",
     "webNavigation"
   ],
   "allowedHostPermissions": [

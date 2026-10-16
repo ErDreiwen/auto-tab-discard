@@ -12,7 +12,7 @@ test('current manifest passes static policy with a distinct fork identity', asyn
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.permissionReport.permissions.added, []);
   assert.deepEqual(report.permissionReport.permissions.removed, []);
-  assert.deepEqual(report.permissionReport.optionalPermissions.added, ['webNavigation']);
+  assert.deepEqual(report.permissionReport.optionalPermissions.added, ['management', 'webNavigation']);
   assert.deepEqual(report.permissionReport.optionalPermissions.removed, []);
   assert.deepEqual(report.permissionReport.hostPermissions.added, []);
   assert.deepEqual(report.permissionReport.hostPermissions.removed, []);

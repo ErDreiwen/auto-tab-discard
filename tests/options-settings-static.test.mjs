@@ -15,6 +15,10 @@ const frameMetadataSource = await readFile(
   'utf8'
 );
 const popupSource = await readFile(new URL('../v3/data/popup/index.mjs', import.meta.url), 'utf8');
+const runtimeCallSource = await readFile(
+  new URL('../v3/data/common/runtime-call.mjs', import.meta.url),
+  'utf8'
+);
 
 test('options page loads as a module and presents distinct raw and sanitized exports', () => {
   assert.match(html, /<script type="module" src="index\.js"><\/script>/);
@@ -56,13 +60,19 @@ test('options page exposes local sanitized diagnostic download and clear control
   assert.match(html, /id="download-diagnostics"[^>]+options_diagnostics_download/);
   assert.match(html, /id="clear-diagnostics"[^>]+options_diagnostics_clear/);
   assert.match(html, /id="diagnostics-info"[^>]+role="status"[^>]+aria-live="polite"/);
-  assert.match(html, /Diagnostic history stays on this device/);
-  assert.match(html, /excludes URLs, page titles, hostnames, site rules, tab and window identifiers, and raw error messages/);
+  assert.match(html, /Deep sanitized history stays on this device/);
+  assert.match(html, /10,000 records, 64 browser sessions, 30 days, and 4 MiB/);
+  assert.match(html, /oldest data is pruned automatically/);
+  assert.match(html, /clear the history manually/);
+  assert.match(html,
+    /excludes URLs, titles, hostnames, site rules, tab and window IDs, extension IDs, raw errors, and private-window activity/);
 
-  assert.match(source, /diagnosticsRequest\('diagnostics-export'\)/);
+  assert.match(source,
+    /diagnosticsRequest\('diagnostics-export',\s*\{\s*selector: \{scope: 'all'\}/);
   assert.match(source, /diagnosticsRequest\('diagnostics-clear'\)/);
   assert.match(source, /diagnosticsRequest\('diagnostics-snapshot'\)/);
-  assert.match(source, /auto-tab-discard-latest\.log/);
+  assert.match(source, /auto-tab-discard-session-history\.log/);
+  assert.doesNotMatch(source, /auto-tab-discard-latest\.log/);
   assert.match(source, /text\/plain;charset=utf-8/);
   assert.match(source, /result\?\.cleared !== true/);
   assert.match(source, /options_diagnostics_empty/);
@@ -74,8 +84,59 @@ test('missing locale entries retain explicit English diagnostic fallback text', 
   assert.match(source, /const localized = chrome\.i18n\.getMessage\(e\.dataset\.i18n\)/);
   assert.match(source, /if \(localized\) \{[\s\S]*e\[e\.dataset\.i18nValue \|\| 'textContent'\] = localized/);
   assert.match(html, />Diagnostics<\/h2>/);
-  assert.match(html, /value="Download latest\.log"/);
+  assert.match(html, /value="Download session-history\.log"/);
   assert.match(html, /value="Clear diagnostic history"/);
+});
+
+test('optional conflict scan is accessible, user-triggered, and renders aggregates only', () => {
+  assert.match(html, /id="conflict-scan-title"[^>]+options_conflict_scan_title/);
+  assert.match(html,
+    /id="conflict-scan-description"[^>]+options_conflict_scan_description/);
+  assert.match(html,
+    /id="run-conflict-scan"[^>]+options_conflict_scan_run[^>]+aria-describedby="conflict-scan-description conflict-scan-info"/);
+  assert.match(html,
+    /id="remove-conflict-scan-access"[^>]+options_conflict_scan_remove[^>]+aria-describedby="conflict-scan-description conflict-scan-info"/);
+  assert.match(html,
+    /id="conflict-scan-info"[^>]+role="status"[^>]+aria-live="polite"[^>]+aria-atomic="true"/);
+  assert.match(html, /scan is read-only and never stores extension names or IDs/);
+
+  const handlerStart = source.indexOf("conflictScanRun.addEventListener('click'");
+  const handlerEnd = source.indexOf(
+    "conflictScanRemove.addEventListener('click'",
+    handlerStart
+  );
+  const runHandler = source.slice(handlerStart, handlerEnd);
+  const requestStart = runHandler.indexOf(
+    "call(chrome.permissions, 'request', CONFLICT_SCAN_PERMISSION)"
+  );
+  assert.ok(handlerStart > 0 && handlerEnd > handlerStart && requestStart > 0);
+  assert.match(runHandler, /addEventListener\('click', \(\) => \{/);
+  assert.doesNotMatch(runHandler.slice(0, requestStart), /\bawait\b|queueMicrotask|setTimeout/,
+    'management permissions.request must begin synchronously inside the click gesture');
+  assert.equal((source.match(
+    /call\(chrome\.permissions, 'request', CONFLICT_SCAN_PERMISSION\)/g
+  ) || []).length, 1);
+  assert.match(runHandler,
+    /diagnosticsRequest\(\s*'conflict-scan',\s*\{correlation: trace\.correlation\},\s*\{timeoutMs: 25_000\}\s*\)[\s\S]*conflictScanInfo\.textContent = conflictSummary\(result\)/);
+
+  const summaryStart = source.indexOf('const conflictSummary = result => {');
+  const summaryEnd = source.indexOf("frameAccessEnable.addEventListener('click'", summaryStart);
+  const summary = source.slice(summaryStart, summaryEnd);
+  assert.ok(summaryStart > 0 && summaryEnd > summaryStart);
+  for (const field of [
+    'confidence',
+    'duplicateCopies',
+    'externalDiscarders',
+    'tabManagers',
+    'externalSleepers',
+    'externalPlaceholders'
+  ]) {
+    assert.match(summary, new RegExp(field));
+  }
+  assert.match(summary, /getMessage\('options_conflict_scan_result', values\)/);
+  assert.doesNotMatch(summary,
+    /JSON\.stringify|result\?\.(?:extensions|matches|details|names|ids|signals)/,
+    'Options must render only aggregate conflict counts, never raw extension records');
 });
 
 test('optional bounded frame access is disclosed, accessible, and requested only by an Options click', () => {
@@ -100,15 +161,18 @@ test('optional bounded frame access is disclosed, accessible, and requested only
   assert.doesNotMatch(enableHandler, /\bawait\b/,
     'permissions.request must start synchronously inside the user gesture');
   assert.match(source,
-    /call\(chrome\.permissions, 'request', FRAME_ACCESS_PERMISSION\)\.then\(\s*\(\) => refreshFrameAccess\(\)/);
+    /call\(chrome\.permissions, 'request', FRAME_ACCESS_PERMISSION\)\.then\(\s*granted =>/);
   assert.match(source,
-    /call\(chrome\.permissions, 'remove', FRAME_ACCESS_PERMISSION\)\.then\(\s*\(\) => refreshFrameAccess\(\)/);
+    /call\(chrome\.permissions, 'remove', FRAME_ACCESS_PERMISSION\)\.then\(\s*removed =>/);
   assert.match(source,
     /granted: await call\(chrome\.permissions, 'contains', FRAME_ACCESS_PERMISSION\)/);
-  assert.match(source, /operation\?\.then/,
-    'the Options adapter must retain Promise browser support');
-  assert.match(source, /target\[method\]\(\.\.\.args, value =>/,
-    'the Options adapter must retain callback browser support');
+  assert.match(source, /boundedBrowserCall\(target, method, args/);
+  assert.match(runtimeCallSource, /operation\?\.then/,
+    'the bounded browser adapter must retain Promise support');
+  assert.match(runtimeCallSource, /target\[method\]\(\.\.\.args, \(value, compatibilityError\) =>/,
+    'the bounded browser adapter must retain callback support');
+  assert.match(runtimeCallSource, /BROWSER_CALL_TIMEOUT/,
+    'optional browser calls must have a deterministic timeout');
   assert.match(source, /options_frame_access_limited/);
   assert.match(source, /options_frame_access_unavailable/);
   assert.doesNotMatch(enableHandler, /storage\.(?:local|sync|session)|localStorage/,

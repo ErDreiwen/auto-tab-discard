@@ -6,18 +6,27 @@ import {
   NUMBER_RANGES
 } from './settings-backup.mjs';
 import {matchesFailureCausePolicy} from '../../../worker/core/failure-causes.mjs';
+import {normalizeEnvelope} from '../../../worker/core/diagnostic-journal.mjs';
 
 const SUPPORT_BUNDLE_FORMAT = 'auto-tab-discard-support';
 const SUPPORT_BUNDLE_VERSION = 2;
 const SUPPORT_BUNDLE_LABEL = 'SANITIZED SUPPORT BUNDLE - excludes browsing and site-rule data';
 const SUPPORT_JOURNAL_FORMAT = 'auto-tab-discard-diagnostic-journal';
-const SUPPORT_JOURNAL_VERSION = 1;
-const MAX_SUPPORT_INCIDENTS = 8;
+const SUPPORT_JOURNAL_VERSION = 2;
+const MAX_SUPPORT_RECORDS = 2048;
+const MAX_SUPPORT_INCIDENTS = 64;
+const MAX_SUPPORT_SESSIONS = 32;
+// Candidate records are measured without pretty-print indentation. Keep a
+// conservative margin beneath the 1 MiB shareable-bundle ceiling.
+const MAX_SUPPORT_JOURNAL_BYTES = 384 * 1024;
 
 const SUPPORT_OMISSION_POLICY = Object.freeze({
   browsingData: 'excluded',
+  extensionIdentifiers: 'excluded',
   internalState: 'excluded',
+  privateWindowActivity: 'excluded',
   rawErrorsAndStacks: 'excluded',
+  settingValuesOutsideAllowlist: 'excluded',
   siteRules: 'excluded',
   tabAndWindowIdentifiers: 'excluded'
 });
@@ -85,7 +94,11 @@ const SAFE_GROUPS = new Map([
   ['TAB_SUSPENSION_UNKNOWN', ['verification', 'SUSPENSION_UNKNOWN']],
   ['TAB_UNSUPPORTED', ['eligibility', 'UNSUPPORTED_PAGE']]
 ]);
-const GENERIC_FAILURE_CODES = new Set(['POPUP_COMMAND_FAILED', 'TAB_FAILED']);
+const GENERIC_FAILURE_CODES = new Set([
+  'POPUP_COMMAND_FAILED',
+  'TAB_FAILED',
+  'TAB_UNSUPPORTED'
+]);
 const SAFE_GROUP_STATUS = new Map([
   ['POPUP_BUSY', 'failed'],
   ['POPUP_CANCELLED', 'skipped'],
@@ -120,6 +133,8 @@ const plainObject = value => value !== null && typeof value === 'object' && !Arr
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const safeCount = value => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ?
   value : undefined;
+const safeOrdinal = value => Number.isSafeInteger(value) && value >= 0 &&
+  value <= 10_000_000_000 ? value : undefined;
 const safeDuration = value => Number.isSafeInteger(value) && value >= 0 &&
   value <= 7 * 24 * 60 * 60 * 1000 ? value : undefined;
 const safeIdentifier = value => typeof value === 'string' && value.length <= 80 &&
@@ -228,25 +243,101 @@ const safeIncident = value => {
 // The worker has already projected its private runtime state, but the support
 // boundary independently rebuilds a second, smaller allowlisted view. Unknown
 // fields are ignored instead of being copied recursively.
+const safeEventRecord = value => {
+  if (!plainObject(value) || value.kind !== 'event') return undefined;
+  const event = {
+    kind: 'event',
+    offsetMs: safeOrdinal(value.offsetMs),
+    runtime: safeRuntime(value.runtime),
+    sequence: safeOrdinal(value.sequence),
+    source: typeof value.source === 'string' ? value.source : undefined,
+    timestamp: safeTimestamp(value.timestamp),
+    type: typeof value.type === 'string' ? value.type : undefined
+  };
+  if (event.offsetMs === undefined || !event.runtime || !event.sequence || !event.timestamp ||
+      !event.source || !event.type) return undefined;
+  for (const key of ['action', 'command', 'phase', 'outcome', 'code', 'correlation']) {
+    if (typeof value[key] === 'string' && value[key].length <= 96) event[key] = value[key];
+  }
+  if (Number.isSafeInteger(value.attempt) && value.attempt >= 0 && value.attempt <= 10_000) {
+    event.attempt = value.attempt;
+  }
+  if (plainObject(value.counts)) {
+    const counts = {};
+    for (const [key, count] of Object.entries(value.counts)) {
+      if (safeCount(count) !== undefined && /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(key)) {
+        counts[key] = count;
+      }
+    }
+    if (Object.keys(counts).length) event.counts = counts;
+  }
+  return event;
+};
+
+const safeSupportRecord = value => {
+  if (value?.kind === 'event') return safeEventRecord(value);
+  if (!plainObject(value) || value.kind !== 'incident') return undefined;
+  const incident = safeIncident(value.incident);
+  const offsetMs = safeOrdinal(value.offsetMs);
+  const sequence = safeOrdinal(value.sequence);
+  const timestamp = safeTimestamp(value.timestamp);
+  return incident && offsetMs !== undefined && sequence && timestamp ? {
+    incident,
+    kind: 'incident',
+    offsetMs,
+    sequence,
+    timestamp
+  } : undefined;
+};
+
 const safeJournal = value => {
+  const unavailable = {
+    available: false,
+    format: SUPPORT_JOURNAL_FORMAT,
+    omittedRecords: 0,
+    sessions: [],
+    version: SUPPORT_JOURNAL_VERSION
+  };
   const updatedAt = safeTimestamp(value?.updatedAt);
   if (!plainObject(value) || value.format !== SUPPORT_JOURNAL_FORMAT ||
-      value.version !== SUPPORT_JOURNAL_VERSION || !updatedAt || !Array.isArray(value.incidents)) {
-    return {
-      available: false,
-      format: SUPPORT_JOURNAL_FORMAT,
-      incidents: [],
-      version: SUPPORT_JOURNAL_VERSION
-    };
+      value.version !== SUPPORT_JOURNAL_VERSION || !updatedAt || !Array.isArray(value.sessions)) {
+    return unavailable;
   }
-  const incidents = value.incidents
-    .map(safeIncident)
-    .filter(Boolean)
-    .slice(-MAX_SUPPORT_INCIDENTS);
+  const allNormalized = normalizeEnvelope(value);
+  const normalized = allNormalized.slice(-MAX_SUPPORT_SESSIONS);
+  const selected = [];
+  let bytes = 0;
+  let incidents = 0;
+  let records = 0;
+  const sourceRecordCount = allNormalized.reduce((total, session) => total + session.records.length, 0);
+  for (let sessionIndex = normalized.length - 1; sessionIndex >= 0; sessionIndex -= 1) {
+    const source = normalized[sessionIndex];
+    const retained = [];
+    for (let recordIndex = source.records.length - 1; recordIndex >= 0; recordIndex -= 1) {
+      if (records >= MAX_SUPPORT_RECORDS) break;
+      const candidate = safeSupportRecord(source.records[recordIndex]);
+      if (!candidate || (candidate.kind === 'incident' && incidents >= MAX_SUPPORT_INCIDENTS)) continue;
+      const candidateBytes = new TextEncoder().encode(JSON.stringify(candidate)).byteLength;
+      if (bytes + candidateBytes > MAX_SUPPORT_JOURNAL_BYTES) continue;
+      retained.unshift(candidate);
+      bytes += candidateBytes;
+      records += 1;
+      if (candidate.kind === 'incident') incidents += 1;
+    }
+    if (retained.length) {
+      selected.unshift({
+        id: source.id,
+        records: retained,
+        startedAt: source.startedAt
+      });
+    }
+    if (records >= MAX_SUPPORT_RECORDS || bytes >= MAX_SUPPORT_JOURNAL_BYTES) break;
+  }
   return {
     available: true,
     format: SUPPORT_JOURNAL_FORMAT,
-    incidents,
+    omittedRecords: Math.max(0, sourceRecordCount - records),
+    sessions: selected,
     updatedAt,
     version: SUPPORT_JOURNAL_VERSION
   };

@@ -29,6 +29,12 @@ const required = [
   'popup_diagnostics_reason_row', 'popup_diagnostics_reason_row_detailed',
   'options_diagnostics_title', 'options_diagnostics_privacy', 'options_diagnostics_download',
   'options_diagnostics_clear', 'options_diagnostics_cleared', 'options_diagnostics_empty',
+  'options_conflict_scan_title', 'options_conflict_scan_description',
+  'options_conflict_scan_run', 'options_conflict_scan_remove',
+  'options_conflict_scan_unavailable', 'options_conflict_scan_ready',
+  'options_conflict_scan_result', 'options_conflict_scan_running',
+  'options_conflict_scan_denied', 'options_conflict_scan_failed',
+  'options_conflict_scan_removed',
   'options_frame_access_title', 'options_frame_access_description',
   'options_frame_access_enable', 'options_frame_access_disable',
   'options_frame_access_enabled', 'options_frame_access_limited',
@@ -65,6 +71,15 @@ test('every locale has popup result keys and exact placeholder parity', async ()
           `${directory}.${key}.${name} has a different substitution position`);
       }
     }
+    const retention = catalog.options_diagnostics_privacy.message;
+    assert.match(retention, /10(?:[.,\s])000/,
+      `${directory}.options_diagnostics_privacy must disclose the 10,000-record bound`);
+    assert.match(retention, /64/,
+      `${directory}.options_diagnostics_privacy must disclose the 64-session bound`);
+    assert.match(retention, /30/,
+      `${directory}.options_diagnostics_privacy must disclose the 30-day bound`);
+    assert.match(retention, /4 MiB/,
+      `${directory}.options_diagnostics_privacy must disclose the 4-MiB bound`);
   }
 });
 
@@ -102,9 +117,29 @@ test('non-English popup and diagnostic copy is genuinely localized', async () =>
     }
     assert.match(catalog.popup_diagnostics_download.message, /latest\.log/,
       `${directory}.popup_diagnostics_download must preserve the exported filename`);
-    assert.match(catalog.options_diagnostics_download.message, /latest\.log/,
+    assert.match(catalog.options_diagnostics_download.message, /session-history\.log/,
       `${directory}.options_diagnostics_download must preserve the exported filename`);
   }
+});
+
+test('default diagnostics copy describes expanded sanitized session history', async () => {
+  const english = JSON.parse(await readFile(new URL('en/messages.json', localeRoot), 'utf8'));
+  assert.match(english.options_diagnostics_download.message, /session-history\.log/);
+  assert.match(english.options_diagnostics_privacy.message, /Deep sanitized history/);
+  assert.match(english.options_diagnostics_privacy.message, /10,000 records/);
+  assert.match(english.options_diagnostics_privacy.message, /64 browser sessions/);
+  assert.match(english.options_diagnostics_privacy.message, /30 days/);
+  assert.match(english.options_diagnostics_privacy.message, /4 MiB/);
+  assert.match(english.options_diagnostics_privacy.message, /oldest data is pruned automatically/i);
+  assert.match(english.options_diagnostics_privacy.message, /clear the history manually/i);
+  assert.match(english.options_diagnostics_privacy.message, /hostnames/);
+  assert.match(english.options_diagnostics_privacy.message, /extension IDs/);
+  assert.match(english.options_diagnostics_privacy.message, /raw errors/);
+  assert.match(english.options_diagnostics_privacy.message, /private-window activity/);
+  assert.deepEqual(
+    messagePlaceholderNames(english.options_conflict_scan_result.message),
+    ['confidence', 'discarders', 'duplicates', 'managers', 'placeholders', 'sleepers']
+  );
 });
 
 test('internal codes are localized and duplicate snapshots have one announcement identity', () => {

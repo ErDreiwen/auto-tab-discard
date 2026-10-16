@@ -28,10 +28,14 @@ This fork uses its own name, GitHub homepage, and Gecko ID (`{b3b398c4-27bc-46b6
 All install/update/uninstall navigation is disabled by default, strictly
 allowlisted, and documented in [docs/LIFECYCLE_NAVIGATION.md](docs/LIFECYCLE_NAVIGATION.md).
 
-Bulk-command failures now produce a bounded, local, privacy-safe incident
-journal with grouped reason codes and a downloadable `latest.log`. See
-[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for the popup controls, log format,
-retention limits, and excluded browsing data.
+Commands, user controls, automatic scans, recovery, and native boundaries now
+produce a bounded, local, privacy-safe history with browser-session-relative
+ordering, correlated click/request/response events, grouped reason codes, and
+downloadable incident or full-history logs. Options also offers an explicit,
+read-only conflict scan for duplicate installs and other tab discard managers;
+its optional `management` access is requested only by that click. See
+[docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for capacity, export controls, fixed
+event fields, and excluded browsing data.
 
 The full reliability backlog is mirrored in
 [docs/RELIABILITY_ISSUE_MATRIX.md](docs/RELIABILITY_ISSUE_MATRIX.md): exactly 25

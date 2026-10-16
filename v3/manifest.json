@@ -26,6 +26,7 @@
     "scripting"
   ],
   "optional_permissions": [
+    "management",
     "webNavigation"
   ],
   "host_permissions": [

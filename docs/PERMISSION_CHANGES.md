@@ -7,9 +7,9 @@ Baseline: upstream 0.6.9.1 Manifest V3 permission snapshot in `tests/fixtures/re
 - Added extension permissions: none.
 - Removed extension permissions: none.
 - Current extension permissions: `alarms`, `contextMenus`, `idle`, `notifications`, `scripting`, `storage`.
-- Added optional extension permissions: `webNavigation`.
+- Added optional extension permissions: `management`, `webNavigation`.
 - Removed optional extension permissions: none.
-- Current optional extension permissions: `webNavigation`.
+- Current optional extension permissions: `management`, `webNavigation`.
 - Added host permissions: none.
 - Removed host permissions: none.
 - Current host permissions: `*://*/*`.
@@ -29,10 +29,13 @@ Baseline: upstream 0.6.9.1 Manifest V3 permission snapshot in `tests/fixtures/re
 | `notifications` | Optional local failure/status notification. | No notification content is sent off-device. |
 | `scripting` | Read local protection signals and apply the sleep title/favicon marker. | Marker work is top-frame-only. Protection probes target no more than 64 enumerated subframes and 32 bounded watcher starts; production contains no `allFrames` scripting target. |
 | `storage` | Preferences, bounded recovery intent, and ownership markers. | Private versioned records; diagnostics strip IDs, URLs, and secrets. |
+| `management` (optional) | Run a user-requested, read-only conflict scan for enabled duplicate Auto Tab Discard copies and other tab-discarding extensions. | Requested only from the disclosed Diagnostics button. The scan never enables, disables, installs, or removes anything. Names and extension IDs are inspected transiently, reduced to fixed signal codes and aggregate counts, and never stored, logged, or exported. |
 | `webNavigation` (optional) | Enumerate ephemeral frame/document identities so every subframe within the physical cap can be targeted exactly. | Requested only from the disclosed Options button. It is never requested by the worker or popup; returned URLs and identities are discarded after each collection and never stored or logged. |
 | `*://*/*` | Protect forms/media and mark user-requested discards on ordinary web pages. | HTTP(S)/FTP-style web pages only. Browser-internal, extension, file, data, and unsupported schemes fail closed or use a native physical-only fallback. |
 
 The host grant remains required because protection checks and marker preparation must run on arbitrary sites selected by the user or automatic policy. Optional host permission would make automatic checks nondeterministic and could discard a page merely because permission to inspect its protection state had not been granted. The extension therefore keeps the declared all-sites grant but couples it to static privilege-diff CI, top-frame document-start injection, bounded worker-facing subframe results and watcher batches, strict unsupported-scheme handling, and no content-to-network path.
+
+`management` is optional and requested only when the user clicks the conflict-scan control in Options. The API exposes a broad browser warning because it can manage other extensions, but this implementation calls only the read-only `getAll` method. It never calls enable, disable, install, uninstall, or launch methods. Candidate names, descriptions, and IDs are processed in memory and discarded; only aggregate counts and fixed suspicion codes may enter the sanitized journal.
 
 `webNavigation` is optional, not required. Chrome documents its warning as “Read your browsing history,” so Options explains that wording before a direct user click synchronously calls `permissions.request`. Users can remove the grant from the same section. Adding the optional declaration does not add a required install/update warning, and a denied or absent grant never causes a partial-clean decision: one top-targeted fallback checks at most 64 same-origin descendants, while cross-origin, churned, oversized, late rich/PDF-editor, and retained-value-limit branches stay protected. Ordinary controls use reversible baselines capped at 64 entries, 2,048 characters per retained value, and 16,384 retained characters per frame; detached controls are pruned, and uncertain rich/PDF records retain no page content.
 

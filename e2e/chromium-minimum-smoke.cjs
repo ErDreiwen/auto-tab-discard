@@ -441,7 +441,7 @@ const run = async () => {
     pass('extension options page exposes matching runtime identity and version');
     ensure(identityProbe.frameAccess?.error === false &&
       identityProbe.frameAccess.granted === false &&
-      JSON.stringify(identityProbe.frameAccess.optional) === '["webNavigation"]' &&
+      JSON.stringify(identityProbe.frameAccess.optional) === '["management","webNavigation"]' &&
       identityProbe.frameAccess.required.includes('webNavigation') === false,
     'Chromium minimum did not preserve ungranted optional-only frame access');
     pass('frame enumeration remains an ungranted optional permission at Chromium minimum', {

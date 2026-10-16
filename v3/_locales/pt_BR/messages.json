@@ -766,10 +766,10 @@
     "message": "Diagnóstico"
   },
   "options_diagnostics_privacy": {
-    "message": "Os registros sanitizados excluem URLs, títulos, IDs de guias e janelas, regras de sites e atividade de janelas anônimas."
+    "message": "O histórico sanitizado detalhado permanece neste dispositivo e é limitado a 10.000 registros, 64 sessões do navegador, 30 dias e 4 MiB. Os dados mais antigos são removidos automaticamente, e você também pode limpar o histórico manualmente. Ele exclui URLs, títulos, nomes de host, regras de sites, IDs de guias e janelas, IDs de extensões, erros brutos e atividade de janelas anônimas."
   },
   "options_diagnostics_download": {
-    "message": "Baixar latest.log"
+    "message": "Baixar session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "Limpar diagnóstico"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Não há diagnósticos sanitizados disponíveis."
+  },
+  "options_conflict_scan_title": {
+    "message": "Verificação de conflitos de extensões"
+  },
+  "options_conflict_scan_description": {
+    "message": "Opcional: inspecione uma vez as extensões ativadas para encontrar cópias duplicadas do Auto Tab Discard e outros suspensores de guias. O navegador pode descrever isso como permissão para gerenciar extensões; a verificação é somente leitura e nunca armazena nomes ou IDs de extensões."
+  },
+  "options_conflict_scan_run": {
+    "message": "Conceder acesso e verificar"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Remover acesso à verificação"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Este navegador não pode executar a verificação opcional de conflitos."
+  },
+  "options_conflict_scan_ready": {
+    "message": "O acesso à verificação está desativado. Ele só é solicitado quando você clica no botão de verificação."
+  },
+  "options_conflict_scan_result": {
+    "message": "Probabilidade de conflito: $CONFIDENCE$. Cópias duplicadas: $DUPLICATES$; outros descartadores: $DISCARDERS$; gerenciadores de guias: $MANAGERS$; guias descartadas externamente: $SLEEPERS$; guias de espaço reservado externas: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Verificando..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "O acesso à verificação de conflitos não foi concedido."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Falha na verificação de conflitos"
+  },
+  "options_conflict_scan_removed": {
+    "message": "O acesso à verificação de conflitos foi removido."
   }
 }

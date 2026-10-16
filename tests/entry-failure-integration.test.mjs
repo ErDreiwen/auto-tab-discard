@@ -93,9 +93,9 @@ test('production listeners use the shared runner and its reporter uses a browser
   assert.match(menuSource,
     /chrome\.contextMenus\.onClicked\.addListener\([\s\S]*?void runEntry\(info\.menuItemId,/);
   assert.match(menuSource,
-    /chrome\.action\.onClicked\.addListener\(async tab => \{[\s\S]*?return await runEntry\('toolbar',[\s\S]*?return onClicked\(\{menuItemId\}, tab\)/);
+    /chrome\.action\.onClicked\.addListener\(async tab => \{[\s\S]*?return await runEntry\('toolbar',[\s\S]*?actionDiagnostics\.run\([\s\S]*?source: 'toolbar'[\s\S]*?return onClicked\(\{diagnostic, menuItemId\}, tab\)/);
   assert.match(menuSource,
-    /chrome\.commands\.onCommand\.addListener\(async command => \{[\s\S]*?return await runEntry\(command,[\s\S]*?return handleNavigation\(command\)[\s\S]*?return onClicked\(\{/);
+    /chrome\.commands\.onCommand\.addListener\(async command => \{[\s\S]*?return await runEntry\(command,[\s\S]*?source: 'keyboard'[\s\S]*?runNavigationAction\(details,[\s\S]*?handleNavigation\([\s\S]*?command,[\s\S]*?return onClicked\(\{diagnostic, menuItemId: command\}/);
   assert.match(utilsSource, /const notify = e => chrome\.notifications\.create\(/);
   assert.match(utilsSource, /message: e\.message \|\| e/);
 });

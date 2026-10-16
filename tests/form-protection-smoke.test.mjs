@@ -109,7 +109,7 @@ test('form browser smoke uses the real targeted check and requires precise prote
 });
 
 test('exact-artifact form fallback is proven with optional frame access absent', () => {
-  assert.match(source, /manifest\.optional_permissions, \['webNavigation'\]/);
+  assert.match(source, /manifest\.optional_permissions, \['management', 'webNavigation'\]/);
   assert.match(source, /manifest\.permissions\?\.includes\('webNavigation'\), false/);
   assert.match(source,
     /chrome\.permissions\.contains\(\{permissions: \['webNavigation'\]\}, granted =>/);

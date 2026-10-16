@@ -766,10 +766,10 @@
     "message": "診斷"
   },
   "options_diagnostics_privacy": {
-    "message": "已清理的記錄不包含 URL、標題、分頁和視窗 ID、網站規則及私人視窗活動。"
+    "message": "經過清理的詳細歷程只會保留在此裝置上，並限制為 10,000 筆記錄、64 個瀏覽器工作階段、30 天和 4 MiB。系統會自動移除最舊的資料，你也可以手動清除歷程。其中不包含 URL、標題、主機名稱、網站規則、分頁和視窗 ID、擴充功能 ID、原始錯誤及私人視窗活動。"
   },
   "options_diagnostics_download": {
-    "message": "下載 latest.log"
+    "message": "下載 session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "清除診斷資訊"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "沒有可用的已清理診斷資訊。"
+  },
+  "options_conflict_scan_title": {
+    "message": "擴充功能衝突掃描"
+  },
+  "options_conflict_scan_description": {
+    "message": "選用：一次檢查已啟用的擴充功能，以找出重複的 Auto Tab Discard 副本及其他分頁休眠擴充功能。瀏覽器可能會將此描述為管理擴充功能的權限；掃描僅執行讀取操作，絕不會儲存擴充功能名稱或 ID。"
+  },
+  "options_conflict_scan_run": {
+    "message": "授予存取權並掃描"
+  },
+  "options_conflict_scan_remove": {
+    "message": "移除掃描存取權"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "此瀏覽器無法執行選用的衝突掃描。"
+  },
+  "options_conflict_scan_ready": {
+    "message": "掃描存取權已關閉。只有在您按一下掃描按鈕時才會要求此權限。"
+  },
+  "options_conflict_scan_result": {
+    "message": "衝突可能性：$CONFIDENCE$。重複副本：$DUPLICATES$；其他分頁捨棄程式：$DISCARDERS$；分頁管理器：$MANAGERS$；由外部捨棄的分頁：$SLEEPERS$；外部預留位置分頁：$PLACEHOLDERS$。",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "正在掃描..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "未授予衝突掃描存取權。"
+  },
+  "options_conflict_scan_failed": {
+    "message": "衝突掃描失敗"
+  },
+  "options_conflict_scan_removed": {
+    "message": "已移除衝突掃描存取權。"
   }
 }

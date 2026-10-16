@@ -364,8 +364,8 @@ const main = async () => {
       profileRoot
     });
     report.browser = {version: isolated.context.browser().version()};
-    assert.deepEqual(manifest.optional_permissions, ['webNavigation'],
-      'the tested artifact must declare frame enumeration as one optional permission');
+    assert.deepEqual(manifest.optional_permissions, ['management', 'webNavigation'],
+      'the tested artifact must declare diagnostics and frame enumeration as optional permissions');
     assert.equal(manifest.permissions?.includes('webNavigation'), false,
       'the tested artifact must not require frame enumeration at install time');
     const framePermissionGranted = await isolated.driver.evaluate(() => new Promise((resolve, reject) => {

@@ -1047,7 +1047,7 @@ const verifyMinimumRuntime = async ({browser, extensionId, pass, uuid}) => {
         response?.__firefoxMinimumManaged === 'managed-default' &&
         response?.__firefoxMinimumSession === 'session-default' &&
         value.frameAccess?.error === null && value.frameAccess?.granted === false &&
-        JSON.stringify(value.frameAccess?.optional) === '["webNavigation"]' &&
+        JSON.stringify(value.frameAccess?.optional) === '["management","webNavigation"]' &&
         value.frameAccess?.required?.includes('webNavigation') === false &&
         value.badge?.error === null && JSON.stringify(value.badge.color) === '[102,102,102,255]' ? value : undefined;
     }, 'Firefox 140 extension controller loaded, but the background/core runtime did not finish startup', 20000, 100);

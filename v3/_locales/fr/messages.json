@@ -766,10 +766,10 @@
     "message": "Diagnostic"
   },
   "options_diagnostics_privacy": {
-    "message": "Les journaux nettoyés excluent les URL, titres, identifiants d’onglets et de fenêtres, règles de sites et activités des fenêtres privées."
+    "message": "L’historique nettoyé détaillé reste sur cet appareil et est limité à 10 000 enregistrements, 64 sessions de navigateur, 30 jours et 4 MiB. Les données les plus anciennes sont supprimées automatiquement, et vous pouvez aussi effacer l’historique manuellement. Il exclut les URL, titres, noms d’hôte, règles de sites, identifiants d’onglets et de fenêtres, identifiants d’extensions, erreurs brutes et activités des fenêtres privées."
   },
   "options_diagnostics_download": {
-    "message": "Télécharger latest.log"
+    "message": "Télécharger session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "Effacer le diagnostic"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Aucun diagnostic nettoyé disponible."
+  },
+  "options_conflict_scan_title": {
+    "message": "Analyse des conflits d’extensions"
+  },
+  "options_conflict_scan_description": {
+    "message": "Facultatif : inspectez une fois les extensions activées afin de repérer les copies d’Auto Tab Discard et les autres suspendeurs d’onglets. Le navigateur peut présenter cette autorisation comme la gestion des extensions ; l’analyse est en lecture seule et ne stocke jamais les noms ni les identifiants d’extensions."
+  },
+  "options_conflict_scan_run": {
+    "message": "Autoriser et analyser"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Retirer l’accès à l’analyse"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Ce navigateur ne peut pas exécuter l’analyse facultative des conflits."
+  },
+  "options_conflict_scan_ready": {
+    "message": "L’accès à l’analyse est désactivé. Il n’est demandé que lorsque vous cliquez sur le bouton d’analyse."
+  },
+  "options_conflict_scan_result": {
+    "message": "Probabilité de conflit : $CONFIDENCE$. Copies en double : $DUPLICATES$ ; autres outils de déchargement : $DISCARDERS$ ; gestionnaires d’onglets : $MANAGERS$ ; onglets déchargés par une source externe : $SLEEPERS$ ; onglets substituts externes : $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Analyse en cours..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "L’accès à l’analyse des conflits n’a pas été accordé."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Échec de l’analyse des conflits"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Accès à l’analyse des conflits retiré."
   }
 }

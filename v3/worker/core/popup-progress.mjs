@@ -41,8 +41,10 @@ const statusPriority = Object.freeze({skipped: 1, success: 2, failed: 3});
 
 const settledOutcome = (code, status, id, failureCause) => ({
   code,
-  ...(code === POPUP_CODES.TAB_FAILED && {
-    failureCause: normalizeFailureCause(failureCause)
+  ...([POPUP_CODES.TAB_FAILED, POPUP_CODES.TAB_UNSUPPORTED].includes(code) && {
+    failureCause: code === POPUP_CODES.TAB_UNSUPPORTED ?
+      failureCauseFrom({failureCause}, FAILURE_CAUSES.UNSUPPORTED_PAGE) :
+      normalizeFailureCause(failureCause)
   }),
   status,
   tabId: id
@@ -481,7 +483,9 @@ const createPopupProgressManager = ({
         for (const value of result?.[key] || []) {
           await settleAuthoritative(byId.get(canonicalId(value)) || value,
             key === 'protected' ? 'skipped' : 'failed',
-            key === 'protected' ? POPUP_CODES.TAB_PROTECTED : POPUP_CODES.TAB_UNSUPPORTED);
+            key === 'protected' ? POPUP_CODES.TAB_PROTECTED : POPUP_CODES.TAB_UNSUPPORTED,
+            key === 'unsupported' ?
+              failureCauseFrom(value, FAILURE_CAUSES.UNSUPPORTED_PAGE) : undefined);
         }
       }
     };
@@ -521,7 +525,12 @@ const createPopupProgressManager = ({
         );
       }
       for (const value of result.unsupported || []) {
-        await settleAuthoritative(remember(value), 'failed', POPUP_CODES.TAB_UNSUPPORTED);
+        await settleAuthoritative(
+          remember(value),
+          'failed',
+          POPUP_CODES.TAB_UNSUPPORTED,
+          failureCauseFrom(value, FAILURE_CAUSES.UNSUPPORTED_PAGE)
+        );
       }
       for (const value of result.unknownSuspension || []) {
         await settleAuthoritative(

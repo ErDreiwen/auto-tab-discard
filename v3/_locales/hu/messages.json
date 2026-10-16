@@ -766,10 +766,10 @@
     "message": "Diagnosztika"
   },
   "options_diagnostics_privacy": {
-    "message": "A tisztított naplók nem tartalmaznak URL-eket, címeket, lap- és ablakazonosítókat, webhelyszabályokat vagy privát ablakok tevékenységét."
+    "message": "A részletes tisztított előzmények ezen az eszközön maradnak, és legfeljebb 10 000 bejegyzésre, 64 böngésző-munkamenetre, 30 napra és 4 MiB-ra korlátozódnak. A legrégebbi adatok automatikusan törlődnek, és az előzményeket kézzel is törölheti. Nem tartalmaznak URL-eket, címeket, állomásneveket, webhelyszabályokat, lap- és ablakazonosítókat, bővítményazonosítókat, nyers hibákat vagy privát ablakok tevékenységét."
   },
   "options_diagnostics_download": {
-    "message": "latest.log letöltése"
+    "message": "session-history.log letöltése"
   },
   "options_diagnostics_clear": {
     "message": "Diagnosztika törlése"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Nincs elérhető tisztított diagnosztika."
+  },
+  "options_conflict_scan_title": {
+    "message": "Bővítményütközések vizsgálata"
+  },
+  "options_conflict_scan_description": {
+    "message": "Opcionális: egyszer megvizsgálja az engedélyezett bővítményeket, hogy megtalálja az Auto Tab Discard ismétlődő példányait és más lapfelfüggesztőket. A böngésző ezt a bővítmények kezelésére vonatkozó engedélyként írhatja le; a vizsgálat csak olvas, és soha nem tárol bővítményneveket vagy -azonosítókat."
+  },
+  "options_conflict_scan_run": {
+    "message": "Hozzáférés engedélyezése és vizsgálat"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Vizsgálati hozzáférés eltávolítása"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Ez a böngésző nem tudja futtatni az opcionális ütközésvizsgálatot."
+  },
+  "options_conflict_scan_ready": {
+    "message": "A vizsgálati hozzáférés ki van kapcsolva. Csak a vizsgálat gomb megnyomásakor kérjük."
+  },
+  "options_conflict_scan_result": {
+    "message": "Ütközés valószínűsége: $CONFIDENCE$. Ismétlődő példányok: $DUPLICATES$; más lapeldobók: $DISCARDERS$; lapkezelők: $MANAGERS$; külsőleg eldobott lapok: $SLEEPERS$; külső helyőrző lapok: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Vizsgálat..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "Az ütközésvizsgálati hozzáférés nem lett megadva."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Az ütközésvizsgálat sikertelen"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Az ütközésvizsgálati hozzáférés eltávolítva."
   }
 }
