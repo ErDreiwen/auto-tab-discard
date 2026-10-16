@@ -572,6 +572,10 @@ class WorkerDebugger {
       this.trackConfiguration(this.configure(pending.sessionId, info, true));
     });
     raw.on('Target.detachedFromTarget', params => this.forgetSession(params.sessionId));
+    raw.on('Runtime.executionContextsCleared', (params, sessionId) => {
+      const session = this.sessions.get(sessionId);
+      if (session?.ready === true) this.trackConfiguration(this.reconfigure(session));
+    });
   }
 
   isWorker(info) {
@@ -850,7 +854,41 @@ class WorkerDebugger {
       workerURL: this.matchesWorkerURL(workerURL) ? workerURL : undefined
     };
     this.sessions.set(sessionId, session);
+    session.configuration = this.applyConfiguration(session);
+    return session.configuration;
+  }
+
+  // Edge 155 can restart the worker inside the same DevTools target and
+  // session. Debugger stays enabled, but the new isolate has none of the
+  // breakpoints or API telemetry, so configure that session again. A session
+  // that detaches meanwhile was a terminated worker, not a configuration error.
+  reconfigure(session) {
+    const {sessionId} = session;
+    const stale = [...session.breakpoints.values()];
+    session.ready = false;
+    session.breakpoints.clear();
+    for (const stage of TERMINATION_BOUNDARIES) {
+      this.breakpointResolutions.delete(`${sessionId}:${stage}`);
+    }
+    for (const breakpointId of stale) {
+      this.breakpointStages.delete(breakpointId);
+      this.pendingBreakpointLocations.delete(breakpointId);
+    }
     session.configuration = (async () => {
+      for (const breakpointId of stale) {
+        await this.raw.send('Debugger.removeBreakpoint', {breakpointId}, sessionId).catch(() => {});
+      }
+      return this.applyConfiguration(session);
+    })().catch(error => {
+      if (this.sessions.get(sessionId) !== session) return undefined;
+      throw error;
+    });
+    return session.configuration;
+  }
+
+  applyConfiguration(session) {
+    const {sessionId} = session;
+    return (async () => {
       await this.raw.send('Runtime.enable', {}, sessionId);
       await this.raw.send('Debugger.enable', {}, sessionId);
       const definitions = [
@@ -888,7 +926,6 @@ class WorkerDebugger {
       session.ready = true;
       return session;
     })();
-    return session.configuration;
   }
 
   onPaused(params, sessionId) {
@@ -2075,6 +2112,8 @@ const runDirectCancellation = async ({phase, context, debuggerGate, driver, fixt
     await activateLabel(driver, topology.labels.selected);
     const selected = await tabByLabel(driver, topology.labels.selected);
     const beforeRequests = fixture.count(label);
+    // An in-session worker restart reconfigures breakpoints asynchronously.
+    await debuggerGate.awaitReady();
     const beforeNative = debuggerGate.checkpoint();
     const beforeMonitor = await monitorSnapshot(driver);
     let cancellation;
@@ -2230,6 +2269,8 @@ const runQueuedCancellation = async ({context, debuggerGate, driver, fixture}) =
     await activateLabel(driver, topology.selectedLabel);
     const selected = await tabByLabel(driver, topology.selectedLabel);
     const beforeRequests = fixture.count(queuedLabel);
+    // An in-session worker restart reconfigures breakpoints asynchronously.
+    await debuggerGate.awaitReady();
     const beforeNative = debuggerGate.checkpoint();
     const beforeMonitor = await monitorSnapshot(driver);
     debuggerGate.hold(['before-native-invocation']);
