@@ -107,7 +107,8 @@ const stagePackage = async staging => {
     await mkdir(path.dirname(destination), {recursive: true});
     await copyFile(path.join(repositoryRoot, relative), destination);
   }
-  return tracked.length + ROOT_FILES.length;
+  // The root README replaces v3/README.md, so count unique paths.
+  return new Set([...tracked, ...ROOT_FILES]).size;
 };
 
 // Replace the folder's contents, never the folder itself: an unpacked
