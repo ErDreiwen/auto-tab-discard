@@ -111,6 +111,9 @@ const startFixture = () => new Promise((resolve, reject) => {
   });
 });
 
+// Returns the chrome://extensions page, still open. The grant reloads the
+// extension, which closes its options page, and Chrome exits if that closes its
+// last tab; reopenExtensionDriver closes this page once a new controller exists.
 const allowIncognito = async (context, extensionId) => {
   const page = await context.newPage();
   try {
@@ -120,6 +123,8 @@ const allowIncognito = async (context, extensionId) => {
     await page.evaluate(() => chrome.developerPrivate.updateProfileConfiguration({
       inDeveloperMode: true
     }));
+    await waitFor(() => page.evaluate(() => chrome.developerPrivate.getProfileConfiguration()
+      .then(profile => profile.inDeveloperMode === true)), 'developer mode before the incognito reload');
     await page.evaluate(id => chrome.developerPrivate.updateExtensionConfiguration({
       extensionId: id,
       incognitoAccess: true
@@ -128,41 +133,58 @@ const allowIncognito = async (context, extensionId) => {
       chrome.management.get(id, info => resolve(chrome.runtime.lastError ? false :
         info?.enabled === true));
     }), extensionId), 'extension incognito access');
+    return page;
   }
-  finally {
+  catch (error) {
     await page.close().catch(() => {});
+    throw error;
   }
 };
 
-const reopenExtensionDriver = async isolated => {
-  await waitFor(async () => {
-    let candidate = isolated.driver;
-    try {
-      if (!candidate || candidate.isClosed()) {
+const extensionState = (extensionsPage, extensionId) => extensionsPage.evaluate(id =>
+  chrome.developerPrivate.getExtensionInfo(id).then(info => ({
+    disableReasons: Object.keys(info.disableReasons || {}).filter(key => info.disableReasons[key] === true),
+    state: info.state
+  })), extensionId);
+
+const reopenExtensionDriver = async (isolated, extensionsPage) => {
+  // Never reuse the previous options page, and bound each navigation so one
+  // stalled load cannot spend the whole wait.
+  const stale = isolated.driver;
+  let attempts = 0;
+  try {
+    await waitFor(async () => {
+      attempts += 1;
+      let candidate;
+      try {
+        // Chrome can reject Target.createTarget briefly while applying the
+        // incognito configuration and reloading the extension.
         candidate = await isolated.context.newPage();
+        await candidate.goto(
+          `chrome-extension://${isolated.extensionId}/data/options/index.html`,
+          {waitUntil: 'domcontentloaded', timeout: 5000}
+        );
+        const ready = await candidate.evaluate(id =>
+          globalThis.chrome?.runtime?.id === id && Boolean(chrome.tabs),
+        isolated.extensionId);
+        if (ready) {
+          isolated.driver = candidate;
+          return true;
+        }
       }
-      await candidate.goto(
-        `chrome-extension://${isolated.extensionId}/data/options/index.html`,
-        {waitUntil: 'domcontentloaded'}
-      );
-      const ready = await candidate.evaluate(id =>
-        globalThis.chrome?.runtime?.id === id && Boolean(chrome.tabs),
-      isolated.extensionId);
-      if (ready) {
-        isolated.driver = candidate;
-        return true;
-      }
-    }
-    catch (error) {
-      // Chrome can reject Target.createTarget briefly while applying the
-      // incognito configuration and reloading the extension. Retry against a
-      // fresh page instead of turning that bounded transition into a failure.
-    }
-    if (candidate && candidate !== isolated.driver) {
-      await candidate.close().catch(() => {});
-    }
-    return false;
-  }, 'the extension controller page after its incognito reload');
+      catch (error) {}
+      await candidate?.close().catch(() => {});
+      return false;
+    }, 'the extension controller page after its incognito reload');
+  }
+  catch (error) {
+    const state = await extensionState(extensionsPage, isolated.extensionId)
+      .catch(stateError => ({error: stateError.message}));
+    error.message += ` after ${attempts} attempts; extension ${JSON.stringify(state)}`;
+    throw error;
+  }
+  await stale?.close().catch(() => {});
+  await extensionsPage.close().catch(() => {});
   return isolated.driver;
 };
 
@@ -322,8 +344,8 @@ const main = async () => {
       profileRoot
     });
     report.browser = {version: isolated.context.browser().version()};
-    await allowIncognito(isolated.context, isolated.extensionId);
-    await reopenExtensionDriver(isolated);
+    const extensionsPage = await allowIncognito(isolated.context, isolated.extensionId);
+    await reopenExtensionDriver(isolated, extensionsPage);
     await isolated.driver.evaluate(async () => {
       await chrome.storage.local.set({
         audio: false,
