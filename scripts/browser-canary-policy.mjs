@@ -169,7 +169,7 @@ export const deriveCanaryCapabilities = (report, expectedTreeSha256) => {
   const discardScenarios = [
     'discard-tab',
     'discard-tree-ungrouped',
-    'discard-tree-normal-takeover',
+    'discard-tree-normal-leaves-external-asleep',
     'discard-tree-shift-takeover',
     'discard-window-normal-and-fresh-shift',
     'discard-rights-normal-and-fresh-shift',
@@ -184,7 +184,7 @@ export const deriveCanaryCapabilities = (report, expectedTreeSha256) => {
   return {
     artifactTreeAttested: report?.extension?.treeSha256 === expectedTreeSha256,
     crashFree: Array.isArray(report?.crashes) && report.crashes.length === 0,
-    externalTakeover: scenarioPassed(report, 'discard-tree-normal-takeover'),
+    externalTakeover: scenarioPassed(report, 'discard-tree-shift-takeover'),
     freshShiftOverride: [
       'discard-window-normal-and-fresh-shift',
       'discard-rights-normal-and-fresh-shift',

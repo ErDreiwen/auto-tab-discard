@@ -15,7 +15,7 @@ const hash = character => character.repeat(64);
 const scenarioNames = [
   'discard-tab',
   'discard-tree-ungrouped',
-  'discard-tree-normal-takeover',
+  'discard-tree-normal-leaves-external-asleep',
   'discard-tree-shift-takeover',
   'discard-window-normal-and-fresh-shift',
   'discard-rights-normal-and-fresh-shift',

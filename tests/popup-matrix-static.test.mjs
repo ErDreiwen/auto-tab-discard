@@ -722,13 +722,14 @@ test('embedded native-menu UIA helper parses as PowerShell without controlling a
 test('popup matrix covers external takeover with favicon-only and combined visual settings', async () => {
   const source = await readMatrix();
 
-  assert.match(source, /name = 'discard-tree-normal-takeover-favicon-only'/);
+  assert.match(source, /name = 'discard-tree-shift-takeover-favicon-only'/);
   assert.match(source, /chrome\.storage\.local\.set\(\{favicon: true, prepends: ''\}\)/);
   assert.match(source, /favicon-only ownership must confirm favicon preparation/);
   assert.match(source, /favicon-only ownership must confirm complete visual preparation/);
   assert.match(source, /favicon-only ownership must not persist a title marker/);
   assert.match(source, /external sleeper must wake exactly once/);
-  assert.match(source, /name = 'discard-tree-normal-takeover'/);
+  assert.match(source, /name = 'discard-tree-normal-leaves-external-asleep'/);
+  assert.match(source, /a normal click must not take over the in-group external sleeper/);
   assert.match(source, /assertSleepVisual\(after\.tabs\[key\]/);
 });
 
