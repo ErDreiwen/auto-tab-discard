@@ -100,3 +100,15 @@ test('takeover failures are labeled with the step that was running', async () =>
   assert.match(takeover, /no longer an inactive takeover target`,\s*FAILURE_CAUSES\.TAKEOVER_TARGET_CHANGED/);
   assert.match(takeover, /cannot start discard takeover for tab \$\{id\}`,\s*FAILURE_CAUSES\.TAKEOVER_OWNERSHIP_FAILED/);
 });
+
+test('each takeover phase starts its budget when its own slot begins', async () => {
+  const source = await readFile('v3/worker/core/discard.mjs', 'utf8');
+  const takeover = source.slice(source.indexOf('const takeoverOnce = async'),
+    source.indexOf('const takeoverJobs = new Map()'));
+  // Waiting behind other takeovers must not spend a tab's wake or prepare budget.
+  assert.match(takeover,
+    /runPhase\('network', async \(\) => \{[\s\S]{0,240}?takeoverDeadline = Date\.now\(\) \+ discard\.takeoverTimeout;\s*reloadObservation = observeReload/);
+  assert.match(takeover,
+    /runPhase\('cpu', async \(\) => \{[\s\S]{0,240}?takeoverDeadline = Date\.now\(\) \+ discard\.takeoverTimeout;\s*awake = await prepareAwakeTab/);
+  assert.match(source, /^discard\.takeoverTimeout = 15000;$/m);
+});

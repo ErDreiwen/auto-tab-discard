@@ -208,6 +208,7 @@ test('runs the selected-tab and tab-group rows through their real keeper executo
     const calls = [];
 
     const result = await runDirectDiscardCommand({
+      wakeExternalDiscards: true,
       activate: async tab => calls.push(`activate:${tab.id}`),
       adopt: async tab => {
         calls.push(`adopt:${tab.id}`);
@@ -284,6 +285,7 @@ test('revalidates native tab-group membership immediately before keeper activati
   };
   const calls = [];
   await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async tab => calls.push(`activate:${tab.id}`),
     allTabs: [{...selected}, {...child}, keeper],
     command: 'discard-tree',
@@ -329,6 +331,7 @@ test('direct takeover scope preserves only the initially admitted normal window 
       ...(initialWindowType && {windowType: initialWindowType})
     };
     const result = await runDirectDiscardCommand({
+      wakeExternalDiscards: true,
       activate: async () => assert.fail('an inactive target needs no keeper'),
       allTabs: [{...raw}],
       command: 'discard-tree',
@@ -368,6 +371,7 @@ test('aborts a queued group command when move, regroup, or ungroup changes its c
     const child = {id: 2, active: false, discarded: false};
     const calls = [];
     await assert.rejects(runDirectDiscardCommand({
+      wakeExternalDiscards: true,
       activate: async tab => calls.push(`activate:${tab.id}`),
       allTabs: [selected, child, {id: 3, active: false, discarded: false}],
       command: 'discard-tree',
@@ -393,6 +397,7 @@ test('does not discard an active direct target when no keeper exists', async () 
   const active = {id: 1, index: 0, active: true, discarded: false, highlighted: true};
   const calls = [];
   const result = await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async tab => calls.push(`activate:${tab.id}`),
     adopt: async tab => {
       calls.push(`adopt:${tab.id}`);
@@ -418,6 +423,7 @@ test('still takes over discarded group children when the active root has no keep
   const external = {id: 2, index: 1, active: false, discarded: true, highlighted: false};
   const calls = [];
   const result = await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async tab => calls.push(`activate:${tab.id}`),
     adopt: async tab => {
       calls.push(`adopt:${tab.id}`);
@@ -450,6 +456,7 @@ test('discards loaded inactive group children when the active root has no keeper
   const loaded = {id: 2, index: 1, active: false, discarded: false, highlighted: false};
   const calls = [];
   const result = await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async () => assert.fail('there is no keeper to activate'),
     allTabs: [active, loaded],
     command: 'discard-tree',
@@ -469,7 +476,7 @@ test('discards loaded inactive group children when the active root has no keeper
   assert.deepEqual(calls, ['notify', 'discard:2']);
 });
 
-test('a normal command physically upgrades an adopted group child', async () => {
+const adoptedChildCommand = async ({shiftKey}) => {
   const active = {id: 1, index: 0, active: true, discarded: false, highlighted: true};
   const adopted = {id: 2, index: 1, active: false, discarded: true, highlighted: false};
   const calls = [];
@@ -486,18 +493,29 @@ test('a normal command physically upgrades an adopted group child', async () => 
       return {marker: {state: 'owned', source: 'adopted'}, state: 'discarded', tab};
     },
     selected: active,
-    shiftKey: false,
+    shiftKey,
     takeover: async tab => {
       calls.push(`takeover:${tab.id}`);
       return true;
     },
     targets: [active, adopted]
   });
+  return {calls, result};
+};
 
+test('a normal command leaves an adopted group child asleep instead of reloading it', async () => {
+  const {calls, result} = await adoptedChildCommand({shiftKey: false});
   assert.equal(result.blocked, true);
-  assert.deepEqual(calls, ['claim:2', 'notify', 'takeover:2']);
+  assert.deepEqual(calls, ['claim:2', 'notify']);
+  assert.deepEqual(result.protected.map(entry => [entry.tab.id, entry.reason]), [
+    [2, 'tab is already discarded by the browser; it was left asleep (Shift+click takes it over)']
+  ]);
 });
 
+test('Shift+click physically upgrades an adopted group child', async () => {
+  const {calls} = await adoptedChildCommand({shiftKey: true});
+  assert.ok(calls.includes('takeover:2'), JSON.stringify(calls));
+});
 test('computes all five popup X controls from the worker scopes', async () => {
   assert.deepEqual(releaseCommands, RELEASE_COMMANDS);
   const queries = [];
@@ -875,6 +893,7 @@ test('the shared menu executor routes every bulk popup command through ownership
     let queryOptions;
 
     await runScopedCommand({
+      wakeExternalDiscards: true,
       adopt: async tab => {
         calls.push(`adopt:${tab.id}`);
         return true;
@@ -918,6 +937,7 @@ test('never turns an empty scoped discard into an unfiltered global check', asyn
     for (const tabs of [[], [{id: 2, index: command.endsWith('lefts') ? 3 : 7, discarded: true}]]) {
       const calls = [];
       await runScopedCommand({
+        wakeExternalDiscards: true,
         adopt: async tab => {
           calls.push(`adopt:${tab.id}`);
           return true;
@@ -948,6 +968,7 @@ test('normal bulk commands physically take over Edge-style frozen tabs', async (
   for (const command of DISCARD_COMMANDS) {
     const calls = [];
     const result = await runScopedCommand({
+      wakeExternalDiscards: true,
       command,
       selected: {id: 99, index: 5},
       shiftKey: false,
@@ -977,6 +998,7 @@ test('reclassifies a takeover target that wakes before execution into the loaded
   for (const shiftKey of [false, true]) {
     const calls = [];
     const result = await runScopedCommand({
+      wakeExternalDiscards: true,
       command: 'discard-tabs',
       selected: {id: 99, index: 5},
       shiftKey,
@@ -1012,6 +1034,7 @@ test('reclassifies a takeover target that wakes before execution into the loaded
   const directCalls = [];
   const stale = {id: 3, index: 1, active: false, discarded: true, highlighted: false};
   const direct = await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async () => assert.fail('an inactive target does not need a keeper'),
     allTabs: [stale],
     command: 'discard-tree',
@@ -1044,6 +1067,7 @@ test('skips a takeover target that wakes active before execution', async () => {
   for (const shiftKey of [false, true]) {
     const calls = [];
     const result = await runScopedCommand({
+      wakeExternalDiscards: true,
       command: 'discard-tabs',
       selected: {id: 99, index: 5},
       shiftKey,
@@ -1075,6 +1099,7 @@ test('skips a takeover target that wakes active before execution', async () => {
   const directCalls = [];
   const stale = {id: 3, index: 1, active: false, discarded: true, highlighted: false};
   const direct = await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async () => assert.fail('a skipped target does not need a keeper'),
     allTabs: [stale],
     command: 'discard-tree',
@@ -1107,6 +1132,7 @@ test('reclassifies a target that wakes while its takeover waits in the queue', a
     const calls = [];
     let refreshCount = 0;
     const result = await runScopedCommand({
+      wakeExternalDiscards: true,
       command: 'discard-tabs',
       selected: {id: 99, index: 5},
       shiftKey,
@@ -1147,6 +1173,7 @@ test('skips a target that wakes active while its takeover waits in the queue', a
     const calls = [];
     let refreshCount = 0;
     const result = await runScopedCommand({
+      wakeExternalDiscards: true,
       command: 'discard-tabs',
       selected: {id: 99, index: 5},
       shiftKey,
@@ -1236,6 +1263,7 @@ test('does not report a popup discard command complete when a takeover fails', a
 
 test('does not report a normal popup discard command complete when takeover fails', async () => {
   await assert.rejects(runScopedCommand({
+    wakeExternalDiscards: true,
     command: 'discard-tabs',
     selected: {id: 99, index: 5},
     shiftKey: false,

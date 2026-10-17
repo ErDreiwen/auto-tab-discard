@@ -258,6 +258,7 @@ test('issue 3: every suspended protection is explicit for discarded and Edge-fro
     const takeovers = [];
     const settledMarkers = new Map();
     const result = await runScopedCommand({
+      wakeExternalDiscards: true,
       check: async () => assert.fail(`${definition.name}/${medium}: suspended target entered metadata`),
       command: 'discard-tabs',
       discard: async () => assert.fail(`${definition.name}/${medium}: suspended target used loaded discard`),

@@ -168,6 +168,7 @@ test('issue 8: mixed no-keeper group settles loaded, frozen, and external childr
   };
   const calls = [];
   const result = await runDirectDiscardCommand({
+    wakeExternalDiscards: true,
     activate: async () => assert.fail('no keeper exists'),
     allTabs: [active, loaded, frozen, external],
     command: 'discard-tree',

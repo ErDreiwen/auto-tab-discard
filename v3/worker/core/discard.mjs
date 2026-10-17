@@ -1338,6 +1338,9 @@ const takeoverOnce = async (
         if (token.cancelled) {
           throw Error(`discard takeover cancelled for tab ${id}`);
         }
+        // Start the wake budget when this tab's reload slot begins, not while
+        // it waits behind other takeovers.
+        takeoverDeadline = Date.now() + discard.takeoverTimeout;
         reloadObservation = observeReload(id);
         const reloadTimeout = {};
         const reloadLimit = remainingTime(takeoverDeadline);
@@ -1358,6 +1361,8 @@ const takeoverOnce = async (
       if (token.cancelled) {
         throw Error(`discard takeover cancelled for tab ${id}`);
       }
+      // Preparation likewise gets its own budget once its CPU slot begins.
+      takeoverDeadline = Date.now() + discard.takeoverTimeout;
       awake = await prepareAwakeTab(
         id,
         token,
@@ -2213,7 +2218,7 @@ discard.recoverInterruptedPulse = async () => {
 };
 discard.nativeTimeout = 5000;
 discard.getTimeout = 1000;
-discard.takeoverTimeout = 5000;
+discard.takeoverTimeout = 15000;
 discard.takeoverPoll = 50;
 discard.takeoverRetries = 1;
 discard.takeoverFenceTimeout = 10000;

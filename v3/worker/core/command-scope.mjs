@@ -280,7 +280,8 @@ const resolveDiscardedOwnership = async (tab, resolveFresh, retryUnknown) => {
 
 const prepareDiscardTargets = async (command, tabs, resolveFresh, {
   hasBlockingNativeIntent = async () => false,
-  retryUnknown = false
+  retryUnknown = false,
+  wakeExternalDiscards = true
 } = {}) => {
   if (!DISCARD_COMMANDS.has(command)) {
     throw Error(`Unknown discard command: ${command}`);
@@ -406,14 +407,18 @@ const prepareDiscardTargets = async (command, tabs, resolveFresh, {
     .filter(needsMarkerRepair)
     .map(result => result.tab);
   const takeovers = resolved.filter(result => result?.state === 'frozen').map(result => result.tab);
-  takeovers.push(...discarded
+  // Tabs the browser (or another discarder) already put to sleep. Waking one
+  // reloads it, so only an explicit Shift+click takes it over; a normal click
+  // leaves it asleep.
+  const externalDiscards = discarded
     .filter(result => result.fallback?.kind !== 'physical-only' &&
       result.fallback?.kind !== 'unsupported' &&
       result.state !== 'direct-native-orphan' &&
       result.marker?.state !== 'direct-native-pending' &&
       (result.marker?.state !== 'owned' ||
         !['self', 'physical-only'].includes(result.marker.source)))
-    .map(result => result.tab));
+    .map(result => result.tab);
+  if (wakeExternalDiscards) takeovers.push(...externalDiscards);
   takeovers.push(...markerRepairs);
   const errors = resolved.flatMap(result => result?.errors || []);
   const unknownOwnership = resolved
@@ -465,10 +470,16 @@ const prepareDiscardTargets = async (command, tabs, resolveFresh, {
     })),
     markerRepairs,
     physicalOnly,
-    protected: directNativePending.map(entry => outcome(
-      entry.tab,
-      'direct native discard is still settling; no wake or retry was attempted'
-    )),
+    protected: [
+      ...directNativePending.map(entry => outcome(
+        entry.tab,
+        'direct native discard is still settling; no wake or retry was attempted'
+      )),
+      ...(wakeExternalDiscards ? [] : externalDiscards.map(tab => outcome(
+        tab,
+        'tab is already discarded by the browser; it was left asleep (Shift+click takes it over)'
+      )))
+    ],
     succeeded: [],
     takeovers,
     unknownOwnership,
@@ -887,7 +898,9 @@ const runDirectDiscardCommand = async ({
   shiftKey,
   suspendedPolicy,
   takeover,
-  targets
+  targets,
+  // Waking a browser-discarded tab reloads it; only Shift+click does so.
+  wakeExternalDiscards = shiftKey === true
 }) => {
   // createWindowScope() is the authority that admitted this direct command to
   // a normal browser window. commitScope deliberately refreshes `selected`
@@ -901,7 +914,8 @@ const runDirectDiscardCommand = async ({
   });
   const result = await prepareDiscardTargets(command, targets, resolveFresh, {
     hasBlockingNativeIntent,
-    retryUnknown: shiftKey === true
+    retryUnknown: shiftKey === true,
+    wakeExternalDiscards
   });
   await refreshTakeoverTargets(result, refresh);
   await protectSuspendedTargets(result, suspendedPolicy, shiftKey);
@@ -1057,6 +1071,7 @@ const runScopedCommand = async ({
   suspendedPolicy,
   takeoverSnapshot = [],
   takeover,
+  wakeExternalDiscards = shiftKey === true
 }) => {
   const options = scopeQuery(command, selected);
   const scopedTakeover = tab => takeover({
@@ -1071,7 +1086,8 @@ const runScopedCommand = async ({
   if (DISCARD_COMMANDS.has(command)) {
     const result = await prepareDiscardTargets(command, tabs, resolveFresh, {
       hasBlockingNativeIntent,
-      retryUnknown: shiftKey === true
+      retryUnknown: shiftKey === true,
+      wakeExternalDiscards
     });
     await refreshTakeoverTargets(result, refresh);
     await protectSuspendedTargets(result, suspendedPolicy, shiftKey);
