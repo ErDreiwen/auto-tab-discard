@@ -766,10 +766,10 @@
     "message": "Diagnostiek"
   },
   "options_diagnostics_privacy": {
-    "message": "Opgeschoonde logboeken bevatten geen URL's, titels, tabblad- en venster-ID's, siteregels of activiteit in privévensters."
+    "message": "De uitgebreide opgeschoonde geschiedenis blijft op dit apparaat en is beperkt tot 10.000 records, 64 browsersessies, 30 dagen en 4 MiB. De oudste gegevens worden automatisch verwijderd en je kunt de geschiedenis ook handmatig wissen. Ze bevat geen URL's, titels, hostnamen, siteregels, tabblad- en venster-ID's, extensie-ID's, onbewerkte fouten of activiteit in privévensters."
   },
   "options_diagnostics_download": {
-    "message": "latest.log downloaden"
+    "message": "session-history.log downloaden"
   },
   "options_diagnostics_clear": {
     "message": "Diagnostiek wissen"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Er is geen opgeschoonde diagnostiek beschikbaar."
+  },
+  "options_conflict_scan_title": {
+    "message": "Scannen op extensieconflicten"
+  },
+  "options_conflict_scan_description": {
+    "message": "Optioneel: inspecteer ingeschakelde extensies eenmaal om dubbele exemplaren van Auto Tab Discard en andere tabbladonderbrekers te vinden. De browser kan dit omschrijven als toestemming om extensies te beheren; de scan is alleen-lezen en slaat nooit extensienamen of -ID's op."
+  },
+  "options_conflict_scan_run": {
+    "message": "Toegang verlenen en scannen"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Scantoegang verwijderen"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Deze browser kan de optionele conflictscan niet uitvoeren."
+  },
+  "options_conflict_scan_ready": {
+    "message": "Scantoegang is uitgeschakeld. Deze wordt alleen gevraagd wanneer u op de scanknop klikt."
+  },
+  "options_conflict_scan_result": {
+    "message": "Kans op conflict: $CONFIDENCE$. Dubbele exemplaren: $DUPLICATES$; andere tabbladverwijderaars: $DISCARDERS$; tabbladbeheerders: $MANAGERS$; extern verwijderde tabbladen: $SLEEPERS$; externe tijdelijke tabbladen: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Bezig met scannen..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "Toegang voor de conflictscan is niet verleend."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Conflictscan mislukt"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Toegang voor de conflictscan verwijderd."
   }
 }

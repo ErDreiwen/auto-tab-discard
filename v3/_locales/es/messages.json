@@ -766,10 +766,10 @@
     "message": "Diagnóstico"
   },
   "options_diagnostics_privacy": {
-    "message": "Los registros depurados excluyen URL, títulos, identificadores de pestañas y ventanas, reglas de sitios y actividad de ventanas privadas."
+    "message": "El historial depurado detallado permanece en este dispositivo y está limitado a 10.000 registros, 64 sesiones del navegador, 30 días y 4 MiB. Los datos más antiguos se eliminan automáticamente y también puedes borrar el historial manualmente. Excluye URL, títulos, nombres de host, reglas de sitios, identificadores de pestañas y ventanas, identificadores de extensiones, errores sin procesar y actividad de ventanas privadas."
   },
   "options_diagnostics_download": {
-    "message": "Descargar latest.log"
+    "message": "Descargar session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "Borrar diagnóstico"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "No hay diagnósticos depurados disponibles."
+  },
+  "options_conflict_scan_title": {
+    "message": "Análisis de conflictos de extensiones"
+  },
+  "options_conflict_scan_description": {
+    "message": "Opcional: inspecciona una vez las extensiones habilitadas para encontrar copias duplicadas de Auto Tab Discard y otros suspensores de pestañas. El navegador puede describirlo como permiso para administrar extensiones; el análisis es de solo lectura y nunca almacena nombres ni identificadores de extensiones."
+  },
+  "options_conflict_scan_run": {
+    "message": "Conceder acceso y analizar"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Quitar acceso al análisis"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Este navegador no puede ejecutar el análisis opcional de conflictos."
+  },
+  "options_conflict_scan_ready": {
+    "message": "El acceso al análisis está desactivado. Solo se solicita al hacer clic en el botón de análisis."
+  },
+  "options_conflict_scan_result": {
+    "message": "Probabilidad de conflicto: $CONFIDENCE$. Copias duplicadas: $DUPLICATES$; otros descartadores: $DISCARDERS$; administradores de pestañas: $MANAGERS$; pestañas descartadas externamente: $SLEEPERS$; pestañas de marcador externo: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Analizando..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "No se concedió acceso al análisis de conflictos."
+  },
+  "options_conflict_scan_failed": {
+    "message": "El análisis de conflictos falló"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Se quitó el acceso al análisis de conflictos."
   }
 }

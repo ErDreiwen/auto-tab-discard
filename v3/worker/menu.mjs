@@ -17,7 +17,20 @@ import {
   POPUP_CODES,
   trackPopupTabTask as trackTabTask
 } from './core/popup-progress.mjs';
-import {createDiagnosticJournal} from './core/diagnostic-journal.mjs';
+import {diagnosticJournal} from './core/diagnostic-journal.mjs';
+import {
+  cancelPopupProgressWithDiagnostics,
+  createActionDiagnostics,
+  createDiagnosticCapabilityCache,
+  projectActionEvent,
+  runConflictScanEndpoint,
+  terminalDiagnosticResponse
+} from './core/action-diagnostics.mjs';
+import {
+  callApi as callConflictApi,
+  createConflictScanner,
+  SIGNALS as CONFLICT_SIGNALS
+} from './core/conflict-scan.mjs';
 import {FAILURE_CAUSES, safeFailureCause} from './core/failure-causes.mjs';
 import {releaseTab} from './core/release.mjs';
 import {ownership} from './core/ownership.mjs';
@@ -25,16 +38,19 @@ import {SUSPENDED_POLICY_DEFAULTS} from './core/suspended-protection.mjs';
 import {attachWindowScope, createWindowScope} from './core/window-scope.mjs';
 import {
   authorizeDiagnosticAccess,
-  authorizePopupRequest,
+  authorizePopupNavigationRequest,
+  authorizePopupPageRequest,
   dispatchPopup,
   filterPopupTakeoverSnapshot,
-  respondAsync
+  respondAsync,
+  validatePopupTargetIds
 } from './core/respond.mjs';
 import {resolveTreeStyleTabTargets} from './core/tree-style-tab.mjs';
 import {interrupts} from './plugins/loader.mjs';
 
 // Context Menu
 {
+  const actionDiagnostics = createActionDiagnostics(diagnosticJournal);
   const onStartup = () => {
     const contexts = ['action'];
     if (chrome.contextMenus.ContextType.TAB && prefs['tab.context']) {
@@ -119,7 +135,13 @@ import {interrupts} from './plugins/loader.mjs';
       documentUrlPatterns: ['*://*/*']
     } : null].filter(o => o));
   };
-  starters.push(onStartup);
+  starters.push(() => actionDiagnostics.run({
+    command: 'worker-startup',
+    source: 'automatic-startup'
+  }, async diagnostic => {
+    await diagnostic.stage({phase: 'settings'});
+    return onStartup();
+  }));
 
   const setStorage = (area, values) => new Promise((resolve, reject) => area.set(values, () => {
     const error = chrome.runtime.lastError;
@@ -157,7 +179,8 @@ import {interrupts} from './plugins/loader.mjs';
       resolve();
     }
   });
-  const diagnosticJournal = createDiagnosticJournal();
+  const diagnosticCapabilities = createDiagnosticCapabilityCache();
+  const conflictScanner = createConflictScanner({ownership});
   const popupProgress = createPopupProgressManager({
     publish: publishPopupProgress,
     recordDiagnostic: snapshot => diagnosticJournal.record(snapshot),
@@ -192,13 +215,101 @@ import {interrupts} from './plugins/loader.mjs';
   });
   const diagnosticAccess = (request, sender) => authorizeDiagnosticAccess(request, sender, {
     expectedExtensionId: chrome.runtime.id,
+    expectedOptionsUrl: chrome.runtime.getURL('data/options/index.html'),
     expectedPopupUrl: chrome.runtime.getURL('data/popup/index.html'),
     query,
     resolveWindowScopedTab
   });
+  const ownData = (value, key) => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  };
+  const popupAuthorization = (request, sender) => authorizePopupPageRequest(request, sender, {
+    expectedExtensionId: chrome.runtime.id,
+    expectedPopupUrl: chrome.runtime.getURL('data/popup/index.html'),
+    query
+  });
+  const popupNavigationAuthorization = (request, sender) => authorizePopupNavigationRequest(
+    request,
+    sender,
+    {
+      expectedExtensionId: chrome.runtime.id,
+      expectedPopupUrl: chrome.runtime.getURL('data/popup/index.html'),
+      query
+    }
+  );
+  const diagnosticCorrelation = request => {
+    const correlation = ownData(request, 'correlation');
+    if (correlation !== undefined && (typeof correlation !== 'string' ||
+        !/^ATDC-[A-Z0-9]{16,40}$/.test(correlation))) {
+      throw Error('Popup diagnostic correlation is invalid');
+    }
+    return correlation;
+  };
+  const diagnosticAccessForPrivateContext = privateContext => privateContext ? {
+    clearDurable: false,
+    clearPrivate: true,
+    includeDurable: false,
+    includePrivate: true
+  } : {
+    clearDurable: true,
+    clearPrivate: false,
+    includeDurable: true,
+    includePrivate: false
+  };
+  const ingestDiagnosticEvent = async (request, sender) => {
+    const popupUrl = chrome.runtime.getURL('data/popup/index.html');
+    const optionsUrl = chrome.runtime.getURL('data/options/index.html');
+    const source = sender?.id === chrome.runtime.id && sender?.url === popupUrl ? 'popup' :
+      sender?.id === chrome.runtime.id && sender?.url === optionsUrl ? 'options' : undefined;
+    if (!source) throw Error('Diagnostic event sender is not authorized');
+
+    const input = ownData(request, 'event');
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw Error('Diagnostic event payload is invalid');
+    }
+    const candidate = {source};
+    for (const key of [
+      'type', 'action', 'command', 'phase', 'outcome', 'counts', 'code', 'attempt'
+    ]) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (descriptor && Object.hasOwn(descriptor, 'value')) candidate[key] = descriptor.value;
+    }
+    const correlation = ownData(request, 'correlation');
+    if (correlation !== undefined) candidate.correlation = correlation;
+    const projected = projectActionEvent(candidate);
+    if (!projected) throw Error('Diagnostic event payload is invalid');
+
+    let access = source === 'popup' && correlation !== undefined ?
+      diagnosticCapabilities.resolve(correlation) : undefined;
+    let remembered = false;
+    if (!access) {
+      access = await diagnosticAccess(request, sender);
+      if (source === 'popup' && correlation !== undefined) {
+        remembered = diagnosticCapabilities.remember(correlation, access);
+      }
+    }
+    if (access.includePrivate === true && access.includeDurable !== true) {
+      projected.privateContext = true;
+    }
+    const committed = await actionDiagnostics.event(projected);
+    if (!committed) {
+      if (remembered) diagnosticCapabilities.remove(correlation);
+      throw Error('Diagnostic event was not committed');
+    }
+    if (source === 'popup' && terminalDiagnosticResponse(projected)) {
+      diagnosticCapabilities.remove(correlation);
+    }
+    return {accepted: true};
+  };
 
   const onClicked = async (info, tab) => {
-    const {menuItemId, shiftKey, checked, progress} = info;
+    const {menuItemId, shiftKey, checked, progress, diagnostic} = info;
+    await diagnostic?.stage({phase: 'command'});
+    if (scopedCommands.has(menuItemId)) {
+      await diagnostic?.stage({phase: 'scope-query'});
+    }
     const selectedTab = scopedCommands.has(menuItemId) ? await resolveWindowScopedTab(tab) : tab;
     let pluginTransaction;
     if (typeof interrupts !== 'undefined') {
@@ -229,6 +340,7 @@ import {interrupts} from './plugins/loader.mjs';
     };
 
     if (menuItemId === 'whitelist-domain' || menuItemId === 'whitelist-session') {
+      await diagnostic?.stage({phase: 'settings'});
       return storage(prefs).then(async prefs => {
         Object.assign(prefs, await storage({
           'whitelist.session': []
@@ -274,7 +386,7 @@ import {interrupts} from './plugins/loader.mjs';
           const check = () => number.check([], {
             'exclude-active': false,
             'icon-update': true
-          }, 'menu/1');
+          }, 'menu/1', diagnostic);
 
           if (d) {
             await setStorage(chrome.storage.local, {whitelist});
@@ -292,6 +404,7 @@ import {interrupts} from './plugins/loader.mjs';
       });
     }
     else if (menuItemId === 'discard-tab' || menuItemId === 'discard-tree') {
+      await diagnostic?.stage({phase: 'scope-query'});
       // it is possible to have multiple highlighted tabs. Let's discard all of them
       let tabs;
       try {
@@ -325,6 +438,10 @@ import {interrupts} from './plugins/loader.mjs';
         htabs.push(selectedTab);
       }
       await progress?.addTargets(htabs);
+      await diagnostic?.stage({
+        counts: {attempted: htabs.length, total: htabs.length},
+        phase: 'keeper'
+      });
       const groupScope = menuItemId === 'discard-tree' && info.viewType !== 'sidebar' &&
         isNativeGroup(selectedTab) ? {
           groupId: selectedTab.groupId,
@@ -379,6 +496,7 @@ import {interrupts} from './plugins/loader.mjs';
       }));
     }
     else if (menuItemId === 'open-tab-then-discard') {
+      await diagnostic?.stage({phase: 'tab-operation'});
       if (/Firefox/.test(navigator.userAgent)) {
         await chrome.tabs.create({
           active: false,
@@ -402,12 +520,14 @@ import {interrupts} from './plugins/loader.mjs';
       }
     }
     else if (menuItemId === 'auto-discardable') {
+      await diagnostic?.stage({phase: 'settings'});
       const autoDiscardable = info.value || false; // when called from page context menu, there is no value
       await chrome.tabs.update(tab.id, {
         autoDiscardable
       });
     }
     else if (menuItemId === 'toggle-allowed') {
+      await diagnostic?.stage({phase: 'settings'});
       await chrome.tabs.update(tab.id, {
         autoDiscardable: tab.autoDiscardable === false
       });
@@ -415,6 +535,10 @@ import {interrupts} from './plugins/loader.mjs';
     // discard-tabs, discard-window, discard-other-windows, discard-rights, discard-lefts
     // release-tabs, release-window, release-other-windows, release-rights, release-lefts
     else {
+      await diagnostic?.stage({
+        phase: typeof menuItemId === 'string' && menuItemId.startsWith('release-') ?
+          'release' : 'eligibility'
+      });
       let initialScopeRead = true;
       const progressQuery = async options => {
         const tabs = await query(options);
@@ -433,7 +557,7 @@ import {interrupts} from './plugins/loader.mjs';
         query: progressQuery,
         discard: trackTabTask(progress, discard, POPUP_CODES.TAB_DISCARDED),
         // Make sure normal clicks only discard eligible tabs; Shift remains forced.
-        check: trackCheck(progress, tabs => number.check(tabs, number.IGNORE, 'menu/2')),
+        check: trackCheck(progress, tabs => number.check(tabs, number.IGNORE, 'menu/2', diagnostic)),
         reload: trackTabTask(
           progress,
           (tab, options) => chrome.tabs.reload(ownership.resolveId(tab.id), options),
@@ -457,36 +581,62 @@ import {interrupts} from './plugins/loader.mjs';
     }
   };
 
-  const handleNavigation = async method => {
+  const activeNavigationTarget = async target => {
+    const pinned = Number.isInteger(target?.tabId) && Number.isInteger(target?.windowId);
+    const tabs = await query(pinned ? {
+      active: true,
+      windowId: target.windowId,
+      windowType: 'normal'
+    } : {
+      active: true,
+      currentWindow: true,
+      windowType: 'normal'
+    });
+    const active = tabs[0];
+    if (pinned && (!active || active.id !== target.tabId || active.windowId !== target.windowId ||
+        (typeof target.incognito === 'boolean' && active.incognito !== target.incognito))) {
+      throw Error('The navigation target changed before the command could run');
+    }
+    return active;
+  };
+  const handleNavigation = async (method, diagnostic, target) => {
+    await diagnostic?.stage({phase: 'tab-operation'});
     if (method !== 'close') {
-      return navigate(method);
+      return navigate(method, false, target);
     }
 
     const options = await storage({
       'discard-protected-on-close': false
     });
     if (options['discard-protected-on-close'] !== true) {
-      return navigate(method);
+      return navigate(method, false, target);
     }
 
-    const tabs = await query({
-      active: true,
-      currentWindow: true
-    });
-    const active = tabs[0];
+    const active = await activeNavigationTarget(target);
     if (!active) {
       return false;
     }
     const protectedTab = active.pinned === true ||
       (Number.isInteger(active.groupId) && active.groupId !== -1);
     if (!protectedTab) {
-      return navigate(method);
+      return navigate(method, false, target);
     }
 
-    const result = await onClicked({menuItemId: 'discard-tab'}, active);
+    const current = await activeNavigationTarget(target);
+    const result = await onClicked({diagnostic, menuItemId: 'discard-tab'}, current);
     if (result?.blocked === true) {
       throw Error('cannot discard the protected active tab without a safe keeper');
     }
+    return result;
+  };
+  const runNavigationAction = async (details, task) => {
+    let result;
+    await actionDiagnostics.run(details, async diagnostic => {
+      result = await task(diagnostic);
+      // Keep the runtime response backward compatible while making the journal
+      // terminal truthful: a navigation with no candidate changed nothing.
+      return result === false ? {code: 'NO_CHANGE'} : result;
+    });
     return result;
   };
 
@@ -495,11 +645,32 @@ import {interrupts} from './plugins/loader.mjs';
   });
 
   chrome.contextMenus.onClicked.addListener((info, tab) => {
-    void runEntry(info.menuItemId, () => onClicked(info, tab));
+    void runEntry(info.menuItemId, () => actionDiagnostics.run({
+      command: info.menuItemId,
+      privateContext: tab?.incognito === true,
+      source: 'context-menu'
+    }, diagnostic => onClicked({...info, diagnostic}, tab)));
   });
   chrome.action.onClicked.addListener(async tab => {
     return await runEntry('toolbar', async () => {
-      const menuItemId = await actionCommand(storage);
+      let menuItemId;
+      try {
+        menuItemId = await actionCommand(storage);
+      }
+      catch (error) {
+        return actionDiagnostics.run({
+          privateContext: tab?.incognito === true,
+          source: 'toolbar'
+        }, async () => {
+          throw error;
+        });
+      }
+      return actionDiagnostics.run({
+        command: menuItemId,
+        privateContext: tab?.incognito === true,
+        source: 'toolbar'
+      }, async diagnostic => {
+        await diagnostic.stage({phase: 'settings'});
       if (menuItemId === 'popup') {
         await chrome.action.setPopup({popup: '/data/popup/index.html'});
         if (chrome.action.openPopup) {
@@ -507,45 +678,130 @@ import {interrupts} from './plugins/loader.mjs';
         }
       }
       else {
-        return onClicked({menuItemId}, tab);
+          return onClicked({diagnostic, menuItemId}, tab);
       }
+      });
     });
   });
   // commands
   chrome.commands.onCommand.addListener(async command => {
     return await runEntry(command, async () => {
-      if (command.startsWith('move-') || command === 'close') {
-        return handleNavigation(command);
+      let tabs;
+      try {
+        tabs = await query({active: true, currentWindow: true});
       }
-      else {
-        const tabs = await query({
-          active: true,
-          currentWindow: true
+      catch (error) {
+        return actionDiagnostics.run({
+          command,
+          privateContext: true,
+          source: 'keyboard'
+        }, async () => {
+          throw error;
         });
-        if (tabs.length) {
-          return onClicked({
-            menuItemId: command
-          }, tabs[0]);
-        }
       }
+      const details = {
+        command,
+        privateContext: tabs[0]?.incognito === true,
+        source: 'keyboard'
+      };
+      if (command.startsWith('move-') || command === 'close') {
+        const active = tabs[0];
+        return runNavigationAction(details, diagnostic => active ? handleNavigation(
+          command,
+          diagnostic,
+          {
+            incognito: active?.incognito === true,
+            tabId: active?.id,
+            windowId: active?.windowId
+          }
+        ) : false);
+      }
+      return actionDiagnostics.run(details, async diagnostic => {
+        if (tabs.length) {
+          return onClicked({diagnostic, menuItemId: command}, tabs[0]);
+        }
+      });
     });
   });
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.method === 'popup') {
       return respondAsync(async () => {
-        const {request: authorized} = await authorizePopupRequest(request, query);
-        return scopedCommands.has(authorized.cmd) ? popupProgress.run(
-          authorized,
-          progress => dispatchPopup({...authorized, progress}, query, onClicked),
-          progress => Promise.all(progress.targetIds().map(id => discard.cancelTakeover(id)))
-        ) : dispatchPopup(authorized, query, onClicked);
+        let authorized;
+        const correlation = diagnosticCorrelation(request);
+        try {
+          ({request: authorized} = await popupAuthorization(request, sender));
+        }
+        catch (error) {
+          if (sender?.id === chrome.runtime.id &&
+              sender?.url === chrome.runtime.getURL('data/popup/index.html')) {
+            await actionDiagnostics.event({
+              code: 'REQUEST_DENIED',
+              outcome: 'denied',
+              phase: 'admission',
+              privateContext: true,
+              source: 'popup',
+              type: 'RESPONSE'
+            });
+          }
+          throw error;
+        }
+        if (correlation !== undefined) {
+          diagnosticCapabilities.remember(
+            correlation,
+            diagnosticAccessForPrivateContext(authorized.incognito === true)
+          );
+        }
+        return actionDiagnostics.run({
+          command: authorized.cmd,
+          correlation,
+          privateContext: authorized.incognito === true,
+          source: 'popup'
+        }, diagnostic => scopedCommands.has(authorized.cmd) ? popupProgress.run(
+            authorized,
+            progress => dispatchPopup({...authorized, progress}, query, onClicked, diagnostic),
+            progress => Promise.all(progress.targetIds().map(id => discard.cancelTakeover(id)))
+          ) : dispatchPopup(authorized, query, onClicked, diagnostic));
       }, sendResponse);
     }
     else if (request.method === 'popup-progress-snapshot') {
-      return respondAsync(() => popupProgress.snapshot(request), sendResponse);
+      return respondAsync(async () => {
+        const {request: authorized} = await popupAuthorization(request, sender);
+        return popupProgress.snapshot(authorized);
+      }, sendResponse);
     }
     else if (request.method === 'popup-progress-cancel') {
-      return respondAsync(() => popupProgress.cancel(request.jobId), sendResponse);
+      return respondAsync(async () => {
+        const correlation = diagnosticCorrelation(request);
+        // A running command may activate a keeper (discard-tree, for one), so
+        // the tab the popup opened on is no longer active. Cancellation is
+        // bound to the job's window and privacy context, not to that tab.
+        const {request: authorized, tab} = await popupAuthorization({...request, tabId: undefined}, sender);
+        const job = await popupProgress.snapshot(authorized);
+        if (!job || job.jobId !== request.jobId ||
+            !['running', 'cancelling'].includes(job.state) ||
+            job.windowId !== authorized.windowId ||
+            job.privateContext !== (tab.incognito === true)) {
+          throw Error('Popup cancellation target is not authorized');
+        }
+        if (correlation !== undefined) {
+          diagnosticCapabilities.remember(
+            correlation,
+            diagnosticAccessForPrivateContext(tab.incognito === true)
+          );
+        }
+        return cancelPopupProgressWithDiagnostics({
+          actionDiagnostics,
+          cancel: jobId => popupProgress.cancel(jobId),
+          command: job.command,
+          correlation,
+          jobId: request.jobId,
+          privateContext: tab.incognito === true,
+          source: 'popup'
+        });
+      }, sendResponse);
+    }
+    else if (request.method === 'diagnostic-event') {
+      return respondAsync(() => ingestDiagnosticEvent(request, sender), sendResponse);
     }
     else if (request.method === 'diagnostics-latest') {
       return respondAsync(async () => diagnosticJournal.latest(
@@ -555,7 +811,7 @@ import {interrupts} from './plugins/loader.mjs';
     }
     else if (request.method === 'diagnostics-export') {
       return respondAsync(async () => diagnosticJournal.exportText(
-        request.incidentId,
+        request.selector ?? request.incidentId,
         await diagnosticAccess(request, sender)
       ), sendResponse);
     }
@@ -569,30 +825,107 @@ import {interrupts} from './plugins/loader.mjs';
         await diagnosticAccess(request, sender)
       ), sendResponse);
     }
+    else if (request.method === 'conflict-scan') {
+      return respondAsync(() => runConflictScanEndpoint({
+        actionDiagnostics,
+        authorize: async () => {
+          const optionsUrl = chrome.runtime.getURL('data/options/index.html');
+          if (sender?.id !== chrome.runtime.id || sender?.url !== optionsUrl) {
+            throw Error('Conflict scan is restricted to the Options page');
+          }
+          const correlation = ownData(request, 'correlation');
+          if (correlation !== undefined && (typeof correlation !== 'string' ||
+              !/^ATDC-[A-Z0-9]{16,40}$/.test(correlation))) {
+            throw Error('Conflict scan diagnostic correlation is invalid');
+          }
+          const access = await diagnosticAccess(request, sender);
+          return {
+            correlation,
+            privateContext: access.includePrivate === true && access.includeDurable !== true
+          };
+        },
+        checkPermission: () => callConflictApi(
+            chrome.permissions,
+            'contains',
+            [{permissions: ['management']}]
+          ),
+        scan: ({privateContext}) => conflictScanner.scan({privateContext}),
+        signalCodes: Object.values(CONFLICT_SIGNALS)
+      }), sendResponse);
+    }
     else if (request.method === 'simulate') {
-      return respondAsync(() => onClicked({
-        menuItemId: request.cmd
-      }, sender.tab), sendResponse);
+      return respondAsync(() => actionDiagnostics.run({
+        command: request.cmd,
+        privateContext: sender.tab?.incognito === true,
+        source: 'runtime'
+      }, diagnostic => onClicked({diagnostic, menuItemId: request.cmd}, sender.tab)), sendResponse);
     }
     else if (request.method === 'build-context') {
-      return respondAsync(() => onStartup(), sendResponse);
+      return respondAsync(() => actionDiagnostics.run({
+        source: 'settings'
+      }, async diagnostic => {
+        await diagnostic.stage({phase: 'settings'});
+        return onStartup();
+      }), sendResponse);
     }
     else if (request.method === 'takeover-snapshot') {
       return respondAsync(async () => {
-        const {tab} = await authorizePopupRequest(request, query);
+        const {tab} = await popupAuthorization(request, sender);
         const selected = await resolveWindowScopedTab(tab);
         return filterPopupTakeoverSnapshot(discard.takeoverSnapshot(), selected);
       }, sendResponse);
     }
     else if (request.method === 'run-check-on-action') {
-      const tabs = request.ids.map(id => ({id}));
-      return respondAsync(() => number.check(tabs, {
-        'exclude-active': false,
-        'icon-update': true
-      }, 'menu/3'), sendResponse);
+      return respondAsync(async () => {
+        const correlation = diagnosticCorrelation(request);
+        const {request: authorized, tab} = await popupAuthorization(request, sender);
+        const highlighted = await query({
+          highlighted: true,
+          windowId: authorized.windowId,
+          windowType: 'normal'
+        });
+        const tabs = validatePopupTargetIds(request.ids, highlighted);
+        if (tabs.some(target => (target.incognito === true) !== (tab.incognito === true))) {
+          throw Error('Popup target privacy changed');
+        }
+        if (correlation !== undefined) {
+          diagnosticCapabilities.remember(
+            correlation,
+            diagnosticAccessForPrivateContext(tab.incognito === true)
+          );
+        }
+        return actionDiagnostics.run({
+          command: 'automatic-scan',
+          correlation,
+          privateContext: tab.incognito === true,
+          source: 'popup'
+        }, diagnostic => number.check(tabs, {
+          'exclude-active': false,
+          'icon-update': true
+        }, 'menu/3', diagnostic));
+      }, sendResponse);
     }
-    else if (request.method === 'close' || request.method?.startsWith('move-')) {
-      return respondAsync(() => handleNavigation(request.method), sendResponse);
+    else if (['close', 'move-next', 'move-previous'].includes(request.method)) {
+      return respondAsync(async () => {
+        const correlation = diagnosticCorrelation(request);
+        const {request: authorized, tab} = await popupNavigationAuthorization(request, sender);
+        if (correlation !== undefined) {
+          diagnosticCapabilities.remember(
+            correlation,
+            diagnosticAccessForPrivateContext(tab.incognito === true)
+          );
+        }
+        return runNavigationAction({
+          command: authorized.method,
+          correlation,
+          privateContext: tab.incognito === true,
+          source: 'popup'
+        }, diagnostic => handleNavigation(authorized.method, diagnostic, {
+          incognito: tab.incognito === true,
+          tabId: authorized.tabId,
+          windowId: authorized.windowId
+        }));
+      }, sendResponse);
     }
   });
 }

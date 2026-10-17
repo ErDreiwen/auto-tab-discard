@@ -766,10 +766,10 @@
     "message": "診断"
   },
   "options_diagnostics_privacy": {
-    "message": "サニタイズ済みログには、URL、タイトル、タブとウィンドウの ID、サイトルール、プライベートウィンドウの操作は含まれません。"
+    "message": "詳細なサニタイズ済み履歴はこのデバイス内に保存され、上限は 10,000 件、ブラウザーセッション 64 回、30 日間、4 MiB です。古いデータは自動的に削除され、履歴は手動でも消去できます。URL、タイトル、ホスト名、サイトルール、タブとウィンドウの ID、拡張機能 ID、未加工のエラー、プライベートウィンドウの操作は含まれません。"
   },
   "options_diagnostics_download": {
-    "message": "latest.log をダウンロード"
+    "message": "session-history.log をダウンロード"
   },
   "options_diagnostics_clear": {
     "message": "診断を消去"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "利用できるサニタイズ済み診断はありません。"
+  },
+  "options_conflict_scan_title": {
+    "message": "拡張機能の競合スキャン"
+  },
+  "options_conflict_scan_description": {
+    "message": "任意: 有効な拡張機能を一度検査し、Auto Tab Discard の重複コピーや他のタブ休止拡張機能を探します。ブラウザーでは拡張機能を管理する権限と表示される場合があります。このスキャンは読み取り専用で、拡張機能の名前や ID を保存することはありません。"
+  },
+  "options_conflict_scan_run": {
+    "message": "アクセスを許可してスキャン"
+  },
+  "options_conflict_scan_remove": {
+    "message": "スキャンアクセスを削除"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "このブラウザーでは任意の競合スキャンを実行できません。"
+  },
+  "options_conflict_scan_ready": {
+    "message": "スキャンアクセスはオフです。スキャンボタンをクリックしたときだけ要求されます。"
+  },
+  "options_conflict_scan_result": {
+    "message": "競合の可能性: $CONFIDENCE$。重複コピー: $DUPLICATES$、他の破棄拡張機能: $DISCARDERS$、タブ管理拡張機能: $MANAGERS$、外部で破棄されたタブ: $SLEEPERS$、外部プレースホルダータブ: $PLACEHOLDERS$。",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "スキャン中..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "競合スキャンへのアクセスは許可されませんでした。"
+  },
+  "options_conflict_scan_failed": {
+    "message": "競合スキャンに失敗しました"
+  },
+  "options_conflict_scan_removed": {
+    "message": "競合スキャンへのアクセスを削除しました。"
   }
 }

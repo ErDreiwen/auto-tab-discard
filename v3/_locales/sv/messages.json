@@ -766,10 +766,10 @@
     "message": "Diagnostik"
   },
   "options_diagnostics_privacy": {
-    "message": "Rensade loggar utesluter webbadresser, titlar, flik- och fönster-ID:n, webbplatsregler och aktivitet i privata fönster."
+    "message": "Den detaljerade rensade historiken stannar på den här enheten och är begränsad till 10 000 poster, 64 webbläsarsessioner, 30 dagar och 4 MiB. De äldsta uppgifterna tas bort automatiskt, och du kan även rensa historiken manuellt. Den innehåller inte webbadresser, titlar, värdnamn, webbplatsregler, flik- och fönster-ID:n, tilläggs-ID:n, obearbetade fel eller aktivitet i privata fönster."
   },
   "options_diagnostics_download": {
-    "message": "Hämta latest.log"
+    "message": "Hämta session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "Rensa diagnostik"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Ingen rensad diagnostik är tillgänglig."
+  },
+  "options_conflict_scan_title": {
+    "message": "Sökning efter tilläggskonflikter"
+  },
+  "options_conflict_scan_description": {
+    "message": "Valfritt: granska aktiverade tillägg en gång för att hitta dubbla kopior av Auto Tab Discard och andra flikvilolägestillägg. Webbläsaren kan beskriva detta som behörighet att hantera tillägg; sökningen är skrivskyddad och lagrar aldrig tilläggsnamn eller ID:n."
+  },
+  "options_conflict_scan_run": {
+    "message": "Ge åtkomst och sök"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Ta bort sökåtkomst"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Den här webbläsaren kan inte utföra den valfria konfliktsökningen."
+  },
+  "options_conflict_scan_ready": {
+    "message": "Sökåtkomst är avstängd. Den begärs endast när du klickar på sökknappen."
+  },
+  "options_conflict_scan_result": {
+    "message": "Sannolikhet för konflikt: $CONFIDENCE$. Dubbla kopior: $DUPLICATES$; andra flikurlastare: $DISCARDERS$; flikhanterare: $MANAGERS$; externt urlastade flikar: $SLEEPERS$; externa platshållarflikar: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Söker..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "Åtkomst till konfliktsökningen beviljades inte."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Konfliktsökningen misslyckades"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Åtkomsten till konfliktsökningen har tagits bort."
   }
 }

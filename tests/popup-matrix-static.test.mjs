@@ -20,6 +20,19 @@ const {
 const matrixUrl = new URL('../e2e/popup-matrix.cjs', import.meta.url);
 const readMatrix = () => readFile(matrixUrl, 'utf8');
 
+test('popup matrix uses the exact authorized popup URL without test fragments', async () => {
+  const source = await readMatrix();
+  const start = source.indexOf('const openPopup = async layout =>');
+  const end = source.indexOf('const removePopup = async popup =>', start);
+  assert.ok(start >= 0 && end > start);
+  const openPopup = source.slice(start, end);
+  assert.match(openPopup,
+    /const url = `chrome-extension:\/\/\$\{extensionId\}\/data\/popup\/index\.html`/);
+  assert.doesNotMatch(openPopup, /data\/popup\/index\.html[#?]/);
+  assert.match(openPopup,
+    /const existingPages = new Set\(context\.pages\(\)\)[\s\S]*existingPages\.has\(candidate\) === false/);
+});
+
 test('popup serves Chromium 152 own pinned PDF extension fixture', async () => {
   const pdf = loadChromiumPdfFixture();
   assert.equal(pdf.length, 7984);
@@ -447,7 +460,9 @@ test('popup matrix drives a real context-menu event and reconciles every restric
   assert.match(source, /target silently disappeared/);
   assert.match(source, /disposition: 'handled'/);
   assert.match(source, /disposition: 'unsupported'/);
-  assert.match(source, /\['TAB_DISCARDED', 'TAB_FAILED', 'TAB_UNSUPPORTED'\]/);
+  assert.match(source, /const discardedCodes = \['TAB_DISCARDED', 'TAB_DISCARDED_VISUAL_UNAVAILABLE'\]/);
+  assert.match(source, /\[\.\.\.discardedCodes, 'TAB_FAILED', 'TAB_UNSUPPORTED'\]/);
+  assert.match(source, /failure must name why the page is unsupported/);
   assert.match(source, /every requested scheme must be capability-reported and reconciled/);
 });
 
@@ -707,13 +722,14 @@ test('embedded native-menu UIA helper parses as PowerShell without controlling a
 test('popup matrix covers external takeover with favicon-only and combined visual settings', async () => {
   const source = await readMatrix();
 
-  assert.match(source, /name = 'discard-tree-normal-takeover-favicon-only'/);
+  assert.match(source, /name = 'discard-tree-shift-takeover-favicon-only'/);
   assert.match(source, /chrome\.storage\.local\.set\(\{favicon: true, prepends: ''\}\)/);
   assert.match(source, /favicon-only ownership must confirm favicon preparation/);
   assert.match(source, /favicon-only ownership must confirm complete visual preparation/);
   assert.match(source, /favicon-only ownership must not persist a title marker/);
   assert.match(source, /external sleeper must wake exactly once/);
-  assert.match(source, /name = 'discard-tree-normal-takeover'/);
+  assert.match(source, /name = 'discard-tree-normal-leaves-external-asleep'/);
+  assert.match(source, /a normal click must not take over the in-group external sleeper/);
   assert.match(source, /assertSleepVisual\(after\.tabs\[key\]/);
 });
 

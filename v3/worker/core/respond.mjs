@@ -7,6 +7,28 @@ const durableDiagnosticAccess = () => ({
   includeDurable: true,
   includePrivate: false
 });
+const privateDiagnosticAccess = () => ({
+  clearDurable: false,
+  clearPrivate: true,
+  includeDurable: false,
+  includePrivate: true
+});
+
+const authorizeOptionsPageRequest = (sender, {
+  expectedExtensionId = globalThis.chrome?.runtime?.id,
+  expectedOptionsUrl = globalThis.chrome?.runtime?.getURL?.('data/options/index.html')
+} = {}) => {
+  if (typeof expectedExtensionId !== 'string' || expectedExtensionId.length === 0 ||
+      typeof expectedOptionsUrl !== 'string' || expectedOptionsUrl.length === 0 ||
+      sender?.id !== expectedExtensionId || sender?.url !== expectedOptionsUrl) {
+    throw Error('Options sender is not authorized');
+  }
+  // The page-provided request has no privacy authority. open_in_tab gives the
+  // worker a browser-owned Tabs.Tab bit; without it, fail closed.
+  if (sender?.tab?.incognito === true) return privateDiagnosticAccess();
+  if (sender?.tab?.incognito === false) return durableDiagnosticAccess();
+  throw Error('Options context is incomplete');
+};
 
 const withRejectingTimeout = (task, timeoutMs, message) => new Promise((resolve, reject) => {
   let settled = false;
@@ -73,14 +95,58 @@ const authorizePopupRequest = async (request, query) => {
   };
 };
 
-const dispatchPopup = async (request, query, onClicked) => {
+const authorizePopupPageRequest = async (request, sender, {
+  expectedExtensionId = globalThis.chrome?.runtime?.id,
+  expectedPopupUrl = globalThis.chrome?.runtime?.getURL?.('data/popup/index.html'),
+  query
+} = {}) => {
+  if (typeof expectedExtensionId !== 'string' || expectedExtensionId.length === 0 ||
+      typeof expectedPopupUrl !== 'string' || expectedPopupUrl.length === 0 ||
+      sender?.id !== expectedExtensionId || sender?.url !== expectedPopupUrl) {
+    throw Error('Popup sender is not authorized');
+  }
+  if (typeof query !== 'function') throw Error('Popup authorization is unavailable');
+  return authorizePopupRequest(request, query);
+};
+
+const authorizePopupNavigationRequest = (request, sender, options) => {
+  if (!['close', 'move-next', 'move-previous'].includes(request?.method) ||
+      !Number.isInteger(request?.tabId) || !Number.isInteger(request?.windowId)) {
+    throw Error('Popup navigation context is incomplete');
+  }
+  return authorizePopupPageRequest(request, sender, options);
+};
+
+const validatePopupTargetIds = (ids, tabs, {maxTargets = 10_000} = {}) => {
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > maxTargets || !Array.isArray(tabs)) {
+    throw Error('Popup target scope is invalid');
+  }
+  const available = new Map(tabs
+    .filter(tab => Number.isSafeInteger(tab?.id) && tab.id >= 0)
+    .map(tab => [tab.id, tab]));
+  const selected = [];
+  const seen = new Set();
+  for (const id of ids) {
+    if (!Number.isSafeInteger(id) || id < 0 || seen.has(id) || !available.has(id)) {
+      throw Error('Popup target scope changed');
+    }
+    seen.add(id);
+    selected.push(available.get(id));
+  }
+  return selected;
+};
+
+const dispatchPopup = async (request, query, onClicked, diagnostic) => {
   const authorized = await authorizePopupRequest(request, query);
   const value = await onClicked({
     menuItemId: authorized.request.cmd,
     value: authorized.request.value,
     checked: authorized.request.checked,
     shiftKey: authorized.request.shiftKey,
-    progress: authorized.request.progress
+    progress: authorized.request.progress,
+    // This capability is created by the worker after popup authorization. A
+    // page-supplied `diagnostic` property is deliberately never forwarded.
+    diagnostic
   }, authorized.tab);
 
   return value === undefined ? true : value;
@@ -91,6 +157,7 @@ const filterPopupTakeoverSnapshot = (snapshot, selected) => (Array.isArray(snaps
 
 const authorizeDiagnosticAccess = async (request, sender, {
   expectedExtensionId = globalThis.chrome?.runtime?.id,
+  expectedOptionsUrl = globalThis.chrome?.runtime?.getURL?.('data/options/index.html'),
   expectedPopupUrl = globalThis.chrome?.runtime?.getURL?.('data/popup/index.html'),
   query,
   resolveWindowScopedTab,
@@ -99,11 +166,13 @@ const authorizeDiagnosticAccess = async (request, sender, {
   const trustedPopup = typeof expectedExtensionId === 'string' && expectedExtensionId.length > 0 &&
     typeof expectedPopupUrl === 'string' && expectedPopupUrl.length > 0 &&
     sender?.id === expectedExtensionId && sender?.url === expectedPopupUrl;
-  if (!trustedPopup) {
-    // Options and other extension pages may inspect only the durable regular
-    // journal. Private incidents never participate in this fallback.
-    return durableDiagnosticAccess();
+  const trustedOptions = typeof expectedExtensionId === 'string' && expectedExtensionId.length > 0 &&
+    typeof expectedOptionsUrl === 'string' && expectedOptionsUrl.length > 0 &&
+    sender?.id === expectedExtensionId && sender?.url === expectedOptionsUrl;
+  if (trustedOptions) {
+    return authorizeOptionsPageRequest(sender, {expectedExtensionId, expectedOptionsUrl});
   }
+  if (!trustedPopup) throw Error('Diagnostic sender is not authorized');
   if (!Number.isInteger(request?.tabId) || !Number.isInteger(request?.windowId)) {
     // The popup document is shared by regular and private windows in Chromium
     // spanning mode. Without both identities there is no safe fallback side.
@@ -116,20 +185,18 @@ const authorizeDiagnosticAccess = async (request, sender, {
     const {tab} = await authorizePopupRequest(request, query);
     return resolveWindowScopedTab(tab);
   }, timeoutMs, 'Diagnostic popup authorization timed out');
-  const privateContext = selected?.incognito === true;
-  return {
-    clearDurable: !privateContext,
-    clearPrivate: privateContext,
-    includeDurable: !privateContext,
-    includePrivate: privateContext
-  };
+  return selected?.incognito === true ? privateDiagnosticAccess() : durableDiagnosticAccess();
 };
 
 export {
   authorizeDiagnosticAccess,
+  authorizeOptionsPageRequest,
+  authorizePopupNavigationRequest,
+  authorizePopupPageRequest,
   authorizePopupRequest,
   DEFAULT_DIAGNOSTIC_ACCESS_TIMEOUT,
   dispatchPopup,
   filterPopupTakeoverSnapshot,
-  respondAsync
+  respondAsync,
+  validatePopupTargetIds
 };

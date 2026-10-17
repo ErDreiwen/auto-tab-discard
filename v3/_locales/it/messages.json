@@ -766,10 +766,10 @@
     "message": "Diagnostica"
   },
   "options_diagnostics_privacy": {
-    "message": "I registri ripuliti escludono URL, titoli, ID di schede e finestre, regole dei siti e attività delle finestre private."
+    "message": "La cronologia ripulita dettagliata rimane su questo dispositivo ed è limitata a 10.000 record, 64 sessioni del browser, 30 giorni e 4 MiB. I dati meno recenti vengono eliminati automaticamente e puoi anche cancellare manualmente la cronologia. Esclude URL, titoli, nomi host, regole dei siti, ID di schede e finestre, ID delle estensioni, errori non elaborati e attività delle finestre private."
   },
   "options_diagnostics_download": {
-    "message": "Scarica latest.log"
+    "message": "Scarica session-history.log"
   },
   "options_diagnostics_clear": {
     "message": "Cancella diagnostica"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Nessuna diagnostica ripulita disponibile."
+  },
+  "options_conflict_scan_title": {
+    "message": "Scansione dei conflitti tra estensioni"
+  },
+  "options_conflict_scan_description": {
+    "message": "Facoltativo: esamina una volta le estensioni abilitate per trovare copie duplicate di Auto Tab Discard e altri sospensori di schede. Il browser potrebbe descriverlo come autorizzazione a gestire le estensioni; la scansione è di sola lettura e non memorizza mai nomi o ID delle estensioni."
+  },
+  "options_conflict_scan_run": {
+    "message": "Concedi accesso e avvia la scansione"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Rimuovi accesso alla scansione"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Questo browser non può eseguire la scansione facoltativa dei conflitti."
+  },
+  "options_conflict_scan_ready": {
+    "message": "L’accesso alla scansione è disattivato. Viene richiesto solo quando fai clic sul pulsante di scansione."
+  },
+  "options_conflict_scan_result": {
+    "message": "Probabilità di conflitto: $CONFIDENCE$. Copie duplicate: $DUPLICATES$; altri strumenti di scarto: $DISCARDERS$; gestori di schede: $MANAGERS$; schede scartate esternamente: $SLEEPERS$; schede segnaposto esterne: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Scansione in corso..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "L’accesso alla scansione dei conflitti non è stato concesso."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Scansione dei conflitti non riuscita"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Accesso alla scansione dei conflitti rimosso."
   }
 }

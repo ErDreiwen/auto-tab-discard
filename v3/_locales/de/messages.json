@@ -766,10 +766,10 @@
     "message": "Diagnose"
   },
   "options_diagnostics_privacy": {
-    "message": "Bereinigte Protokolle enthalten keine URLs, Titel, Tab- und Fenster-IDs, Websiteregeln oder Aktivitäten privater Fenster."
+    "message": "Der ausführliche bereinigte Verlauf bleibt auf diesem Gerät und ist auf 10.000 Einträge, 64 Browsersitzungen, 30 Tage und 4 MiB begrenzt. Die ältesten Daten werden automatisch entfernt; der Verlauf kann auch manuell gelöscht werden. Er enthält keine URLs, Titel, Hostnamen, Websiteregeln, Tab- und Fenster-IDs, Erweiterungs-IDs, Rohfehler oder Aktivitäten privater Fenster."
   },
   "options_diagnostics_download": {
-    "message": "latest.log herunterladen"
+    "message": "session-history.log herunterladen"
   },
   "options_diagnostics_clear": {
     "message": "Diagnose löschen"
@@ -800,5 +800,46 @@
   },
   "options_diagnostics_empty": {
     "message": "Keine bereinigten Diagnosen verfügbar."
+  },
+  "options_conflict_scan_title": {
+    "message": "Prüfung auf Erweiterungskonflikte"
+  },
+  "options_conflict_scan_description": {
+    "message": "Optional: Aktivierte Erweiterungen einmalig prüfen, um doppelte Auto Tab Discard-Installationen und andere Tab-Ruhezustandserweiterungen zu finden. Der Browser kann dies als Berechtigung zum Verwalten von Erweiterungen beschreiben; die Prüfung ist schreibgeschützt und speichert niemals Erweiterungsnamen oder -IDs."
+  },
+  "options_conflict_scan_run": {
+    "message": "Zugriff gewähren und prüfen"
+  },
+  "options_conflict_scan_remove": {
+    "message": "Prüfzugriff entfernen"
+  },
+  "options_conflict_scan_unavailable": {
+    "message": "Dieser Browser kann die optionale Konfliktprüfung nicht ausführen."
+  },
+  "options_conflict_scan_ready": {
+    "message": "Der Prüfzugriff ist deaktiviert. Er wird nur angefordert, wenn Sie auf die Prüfschaltfläche klicken."
+  },
+  "options_conflict_scan_result": {
+    "message": "Konfliktwahrscheinlichkeit: $CONFIDENCE$. Doppelte Installationen: $DUPLICATES$; andere Tab-Entlader: $DISCARDERS$; Tab-Manager: $MANAGERS$; extern entladene Tabs: $SLEEPERS$; externe Platzhalter-Tabs: $PLACEHOLDERS$.",
+    "placeholders": {
+      "confidence": {"content": "$1"},
+      "duplicates": {"content": "$2"},
+      "discarders": {"content": "$3"},
+      "managers": {"content": "$4"},
+      "sleepers": {"content": "$5"},
+      "placeholders": {"content": "$6"}
+    }
+  },
+  "options_conflict_scan_running": {
+    "message": "Prüfung läuft..."
+  },
+  "options_conflict_scan_denied": {
+    "message": "Der Zugriff für die Konfliktprüfung wurde nicht gewährt."
+  },
+  "options_conflict_scan_failed": {
+    "message": "Konfliktprüfung fehlgeschlagen"
+  },
+  "options_conflict_scan_removed": {
+    "message": "Zugriff für die Konfliktprüfung entfernt."
   }
 }

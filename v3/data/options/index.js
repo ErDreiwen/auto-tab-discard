@@ -7,7 +7,8 @@ import {
 } from './core/settings-backup.mjs';
 import {serializeSupportBundle} from './core/support-bundle.mjs';
 import {restoreModeControl} from './core/mode-control.mjs';
-import {boundedRuntimeMessage} from '../common/runtime-call.mjs';
+import {boundedBrowserCall, boundedRuntimeMessage} from '../common/runtime-call.mjs';
+import {createDiagnosticClient} from '../common/diagnostic-client.mjs';
 import {FORK_REPOSITORY} from '../../worker/core/lifecycle.mjs';
 import {normalizeTitleMarker} from '../../worker/core/marker-title.mjs';
 import {
@@ -64,7 +65,12 @@ const diagnosticsInfo = document.getElementById('diagnostics-info');
 const frameAccessEnable = document.getElementById('enable-frame-access');
 const frameAccessDisable = document.getElementById('disable-frame-access');
 const frameAccessInfo = document.getElementById('frame-access-info');
+const conflictScanRun = document.getElementById('run-conflict-scan');
+const conflictScanRemove = document.getElementById('remove-conflict-scan-access');
+const conflictScanInfo = document.getElementById('conflict-scan-info');
 let settingsMutating = false;
+const diagnosticClient = createDiagnosticClient({runtime: chrome.runtime});
+const OPTIONS_API_TIMEOUT = 30_000;
 
 const message = (key, fallback) => chrome.i18n.getMessage(key) || fallback;
 const reportError = (key, fallback, error) => {
@@ -74,30 +80,16 @@ const reportDiagnosticsError = (key, fallback, error) => {
   diagnosticsInfo.textContent = `${message(key, fallback)}: ${error?.message || String(error)}`;
 };
 
-const call = (target, method, ...args) => new Promise((resolve, reject) => {
-  let settled = false;
-  const done = (error, value) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    error ? reject(error) : resolve(value);
-  };
-  try {
-    const operation = target[method](...args, value => {
-      const error = chrome.runtime.lastError;
-      done(error ? Error(error.message || String(error)) : null, value);
-    });
-    if (operation?.then) {
-      operation.then(value => done(null, value), error => done(error));
-    }
-  }
-  catch (error) {
-    done(error);
-  }
+const settleTraceError = (trace, error) => error?.code === 'BROWSER_CALL_TIMEOUT' ||
+  error?.code === 'OPTIONS_API_TIMEOUT' ?
+  trace.timedOut() : trace.failed();
+const call = (target, method, ...args) => boundedBrowserCall(target, method, args, {
+  runtime: chrome.runtime,
+  timeoutMs: OPTIONS_API_TIMEOUT
 });
 
 const FRAME_ACCESS_PERMISSION = Object.freeze({permissions: Object.freeze(['webNavigation'])});
+const CONFLICT_SCAN_PERMISSION = Object.freeze({permissions: Object.freeze(['management'])});
 const renderFrameAccess = ({available = true, granted = false} = {}) => {
   frameAccessEnable.disabled = !available || granted;
   frameAccessDisable.disabled = !available || !granted;
@@ -126,30 +118,163 @@ const refreshFrameAccess = async () => {
     renderFrameAccess({available: false});
   }
 };
+const renderConflictAccess = ({available = true, granted = false} = {}) => {
+  conflictScanRun.disabled = !available;
+  conflictScanRemove.disabled = !available || !granted;
+  if (!available) {
+    conflictScanInfo.textContent = message(
+      'options_conflict_scan_unavailable',
+      'This browser cannot run the optional conflict scan.'
+    );
+  }
+  else if (!granted) {
+    conflictScanInfo.textContent = message(
+      'options_conflict_scan_ready',
+      'Scan access is off. It is requested only when you click the scan button.'
+    );
+  }
+};
+const refreshConflictAccess = async () => {
+  if (typeof chrome.permissions?.contains !== 'function') {
+    renderConflictAccess({available: false});
+    return;
+  }
+  try {
+    renderConflictAccess({
+      granted: await call(chrome.permissions, 'contains', CONFLICT_SCAN_PERMISSION)
+    });
+  }
+  catch (e) {
+    renderConflictAccess({available: false});
+  }
+};
+const conflictSummary = result => {
+  const counts = result?.counts || {};
+  const values = [
+    result?.confidence || 'none',
+    counts.duplicateCopies || 0,
+    counts.externalDiscarders || 0,
+    counts.tabManagers || 0,
+    counts.externalSleepers || 0,
+    counts.externalPlaceholders || 0
+  ].map(String);
+  return chrome.i18n.getMessage('options_conflict_scan_result', values) ||
+    `Conflict likelihood: ${values[0]}. Duplicate copies: ${values[1]}; other discarders: ${values[2]}; tab managers: ${values[3]}; externally discarded tabs: ${values[4]}; external placeholder tabs: ${values[5]}.`;
+};
 
 frameAccessEnable.addEventListener('click', () => {
+  const trace = diagnosticClient.start({action: 'ENABLE_FRAME_ACCESS'});
+  trace.click();
+  trace.request();
   // The browser requires request() to begin synchronously inside the click
   // handler. Do not add an asynchronous step before this call.
   frameAccessEnable.disabled = true;
   call(chrome.permissions, 'request', FRAME_ACCESS_PERMISSION).then(
-    () => refreshFrameAccess(),
-    () => renderFrameAccess({available: false})
+    granted => {
+      granted === true ? trace.succeeded() : trace.denied();
+      return refreshFrameAccess();
+    },
+    error => {
+      settleTraceError(trace, error);
+      renderFrameAccess({available: false});
+    }
   );
 });
 frameAccessDisable.addEventListener('click', () => {
+  const trace = diagnosticClient.start({action: 'DISABLE_FRAME_ACCESS'});
+  trace.click();
+  trace.request();
   frameAccessDisable.disabled = true;
   call(chrome.permissions, 'remove', FRAME_ACCESS_PERMISSION).then(
-    () => refreshFrameAccess(),
-    () => renderFrameAccess({available: false})
+    removed => {
+      removed === true ? trace.succeeded() : trace.denied();
+      return refreshFrameAccess();
+    },
+    error => {
+      settleTraceError(trace, error);
+      renderFrameAccess({available: false});
+    }
   );
 });
 chrome.permissions?.onAdded?.addListener(() => void refreshFrameAccess());
 chrome.permissions?.onRemoved?.addListener(() => void refreshFrameAccess());
 
-const diagnosticsRequest = async method => {
-  const response = await boundedRuntimeMessage(chrome.runtime, {method});
+conflictScanRun.addEventListener('click', () => {
+  const trace = diagnosticClient.start({action: 'RUN_CONFLICT_SCAN'});
+  trace.click();
+  trace.request();
+  // Permission requests must begin synchronously in this user gesture.
+  conflictScanRun.disabled = true;
+  conflictScanInfo.textContent = message('options_conflict_scan_running', 'Scanning...');
+  call(chrome.permissions, 'request', CONFLICT_SCAN_PERMISSION).then(async granted => {
+    if (granted !== true) {
+      trace.denied();
+      conflictScanInfo.textContent = message(
+        'options_conflict_scan_denied',
+        'Conflict scan access was not granted.'
+      );
+      return;
+    }
+    const result = await diagnosticsRequest(
+      'conflict-scan',
+      {correlation: trace.correlation},
+      {timeoutMs: 25_000}
+    );
+    trace.succeeded({counts: {
+      conflicts: Array.isArray(result?.signals) ? result.signals.length : 0,
+      discardedTabs: Number(result?.counts?.discardedTabs) || 0,
+      duplicateCopies: Number(result?.counts?.duplicateCopies) || 0,
+      enabledExtensions: Number(result?.counts?.enabledExtensions) || 0,
+      externalDiscarders: Number(result?.counts?.externalDiscarders) || 0,
+      externalPlaceholders: Number(result?.counts?.externalPlaceholders) || 0,
+      externalSleepers: Number(result?.counts?.externalSleepers) || 0,
+      selfOwnedSleepers: Number(result?.counts?.selfOwnedSleepers) || 0,
+      tabManagers: Number(result?.counts?.tabManagers) || 0,
+      unknownSleepers: Number(result?.counts?.unknownSleepers) || 0
+    }});
+    conflictScanInfo.textContent = conflictSummary(result);
+  }).catch(error => {
+    settleTraceError(trace, error);
+    conflictScanInfo.textContent = `${message(
+      'options_conflict_scan_failed',
+      'Conflict scan failed'
+    )}: ${error?.message || String(error)}`;
+  }).finally(() => void refreshConflictAccess());
+});
+conflictScanRemove.addEventListener('click', () => {
+  const trace = diagnosticClient.start({action: 'REMOVE_CONFLICT_SCAN_ACCESS'});
+  trace.click();
+  trace.request();
+  conflictScanRemove.disabled = true;
+  call(chrome.permissions, 'remove', CONFLICT_SCAN_PERMISSION).then(
+    removed => {
+      if (removed === true) {
+        trace.succeeded();
+        conflictScanInfo.textContent = message(
+          'options_conflict_scan_removed',
+          'Conflict scan access removed.'
+        );
+      }
+      else {
+        trace.denied();
+        renderConflictAccess({granted: false});
+      }
+    },
+    error => {
+      settleTraceError(trace, error);
+      renderConflictAccess({available: false});
+    }
+  ).finally(() => void refreshConflictAccess());
+});
+chrome.permissions?.onAdded?.addListener(() => void refreshConflictAccess());
+chrome.permissions?.onRemoved?.addListener(() => void refreshConflictAccess());
+
+const diagnosticsRequest = async (method, details = {}, options) => {
+  const response = await boundedRuntimeMessage(chrome.runtime, {method, ...details}, options);
   if (response?.ok !== true) {
-    throw Error(response?.error || 'Diagnostic request failed');
+    const error = Error(response?.error || 'Diagnostic request failed');
+    if (/timed out/i.test(response?.error || '')) error.code = 'OPTIONS_API_TIMEOUT';
+    throw error;
   }
   return response.value;
 };
@@ -401,6 +526,9 @@ const collectSettings = () => {
 };
 
 document.getElementById('save').addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'SAVE_SETTINGS'});
+  trace.click();
+  trace.request();
   try {
     const settings = collectSettings();
     await withImportLock(async () => {
@@ -410,20 +538,29 @@ document.getElementById('save').addEventListener('click', async () => {
     document.getElementById('prepends').value = settings.prepends;
     info.textContent = chrome.i18n.getMessage('options_save_msg');
     await restore();
+    trace.succeeded();
     window.setTimeout(() => info.textContent = '', 750);
   }
   catch (error) {
+    trace.failed();
     reportError('options_save_failed', 'Save failed', error);
   }
 });
 
-document.getElementById('support').addEventListener('click', () => chrome.tabs.create({
-  url: `${FORK_REPOSITORY}/issues`
-}));
+document.getElementById('support').addEventListener('click', () => {
+  const trace = diagnosticClient.start({action: 'OPEN_SUPPORT'});
+  trace.click();
+  trace.request();
+  void call(chrome.tabs, 'create', {url: `${FORK_REPOSITORY}/issues`}).then(
+    () => trace.succeeded(),
+    () => trace.failed()
+  );
+});
 
 document.addEventListener('DOMContentLoaded', () => {
   restore();
   void refreshFrameAccess();
+  void refreshConflictAccess();
 });
 
 // restart if needed
@@ -449,38 +586,47 @@ const onChanged = (prefs, areaName) => {
 };
 chrome.storage.onChanged.addListener(onChanged);
 // reset
-const reset = () => new Promise((resolve, reject) => chrome.runtime.sendMessage({
-  method: 'reset'
-}, response => {
-  const error = chrome.runtime.lastError;
-  if (error || response?.ok !== true) {
-    reject(Error(error?.message || response?.error || 'Reset failed'));
+const reset = async correlation => {
+  const response = await boundedRuntimeMessage(chrome.runtime, {
+    correlation,
+    method: 'reset'
+  }, {timeoutMs: 30_000});
+  if (response?.ok !== true) {
+    throw Error(response?.error || 'Reset failed');
   }
-  else {
-    resolve(response.value);
-  }
-}));
+  return response.value;
+};
 
 document.getElementById('reset').addEventListener('click', e => {
+  const trace = diagnosticClient.start({action: 'RESET_SETTINGS', attempt: e.detail > 1 ? 1 : 0});
+  trace.click();
   if (e.detail === 1) {
+    trace.denied();
     info.textContent = 'Double-click to reset!';
     window.setTimeout(() => info.textContent = '', 750);
   }
   else {
-    reset().then(() => {
+    trace.request();
+    reset(trace.correlation).then(() => {
+      trace.succeeded();
       localStorage.clear();
       chrome.runtime.reload();
       window.close();
     }).catch(error => {
+      trace.failed();
       info.textContent = error.message;
     });
   }
 });
 // rate
 document.querySelector('#rate input').onclick = () => {
-  chrome.tabs.create({
-    url: `${FORK_REPOSITORY}/issues`
-  });
+  const trace = diagnosticClient.start({action: 'OPEN_SUPPORT'});
+  trace.click();
+  trace.request();
+  call(chrome.tabs, 'create', {url: `${FORK_REPOSITORY}/issues`}).then(
+    () => trace.succeeded(),
+    () => trace.failed()
+  );
 };
 
 const downloadText = (text, download, type) => {
@@ -495,28 +641,39 @@ const downloadText = (text, download, type) => {
 const downloadJSON = (text, download) => downloadText(text, download, 'application/json');
 
 document.getElementById('download-diagnostics').addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'DOWNLOAD_ALL_HISTORY'});
+  trace.click();
+  trace.request();
   diagnosticsInfo.textContent = '';
   try {
-    const result = await diagnosticsRequest('diagnostics-export');
-    if (!result?.incident || typeof result.text !== 'string' || result.text.length === 0) {
+    const result = await diagnosticsRequest('diagnostics-export', {
+      selector: {scope: 'all'}
+    }, {timeoutMs: 30_000});
+    if (typeof result?.text !== 'string' || result.text.length === 0) {
       diagnosticsInfo.textContent = message(
         'options_diagnostics_empty',
         'No diagnostic history is available yet.'
       );
+      trace.denied();
       return;
     }
     downloadText(
       result.text,
-      'auto-tab-discard-latest.log',
+      'auto-tab-discard-session-history.log',
       'text/plain;charset=utf-8'
     );
+    trace.succeeded();
   }
   catch (error) {
+    trace.failed();
     reportDiagnosticsError('options_export_failed', 'Export failed', error);
   }
 });
 
 document.getElementById('clear-diagnostics').addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'CLEAR_DIAGNOSTICS'});
+  trace.click();
+  trace.request();
   diagnosticsInfo.textContent = '';
   try {
     const result = await diagnosticsRequest('diagnostics-clear');
@@ -527,8 +684,10 @@ document.getElementById('clear-diagnostics').addEventListener('click', async () 
       'options_diagnostics_cleared',
       'Diagnostic history cleared.'
     );
+    trace.succeeded();
   }
   catch (error) {
+    trace.failed();
     reportDiagnosticsError('options_save_failed', 'Clear failed', error);
   }
 });
@@ -536,6 +695,9 @@ document.getElementById('clear-diagnostics').addEventListener('click', async () 
 // Raw settings export. The filename and document label deliberately call out
 // that site rules can be present; use the separate support bundle for sharing.
 document.getElementById('export').addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'EXPORT_SETTINGS'});
+  trace.click();
+  trace.request();
   try {
     const prefs = await withImportLock(async () => {
       await recoverInterruptedImport({lockHeld: true});
@@ -545,13 +707,18 @@ document.getElementById('export').addEventListener('click', async () => {
       serializeRawSettingsBackup(prefs, {validateRules}),
       'auto-tab-discard-RAW-settings.json'
     );
+    trace.succeeded();
   }
   catch (error) {
+    trace.failed();
     reportError('options_export_failed', 'Export failed', error);
   }
 });
 
 document.getElementById('export-support').addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'EXPORT_SUPPORT_BUNDLE'});
+  trace.click();
+  trace.request();
   try {
     const [prefs, journal] = await Promise.all([
       withImportLock(async () => {
@@ -565,29 +732,40 @@ document.getElementById('export-support').addEventListener('click', async () => 
       manifest: chrome.runtime.getManifest(),
       userAgent: navigator.userAgent
     }), 'auto-tab-discard-SANITIZED-support.json');
+    trace.succeeded();
   }
   catch (error) {
+    trace.failed();
     reportError('options_export_failed', 'Export failed', error);
   }
 });
 
 // import
 document.getElementById('import').addEventListener('click', () => {
+  const trace = diagnosticClient.start({action: 'IMPORT_SETTINGS'});
+  trace.click();
   const fileInput = document.createElement('input');
   fileInput.style.display = 'none';
   fileInput.type = 'file';
   fileInput.accept = '.json,application/json';
+  fileInput.dataset.diagnosticSynthetic = 'true';
 
   document.body.appendChild(fileInput);
   fileInput.initialValue = fileInput.value;
+  fileInput.addEventListener('cancel', () => {
+    trace.cancelled();
+    fileInput.remove();
+  }, {once: true});
   fileInput.onchange = async () => {
     const file = fileInput.files?.[0];
     if (!file || fileInput.value === fileInput.initialValue) {
+      trace.cancelled();
       fileInput.remove();
       return;
     }
 
     try {
+      trace.request();
       // Size is rejected before the browser allocates the file's text string.
       if (file.size > MAX_BACKUP_BYTES) {
         throw new Error(`backup exceeds the ${MAX_BACKUP_BYTES}-byte limit`);
@@ -598,10 +776,12 @@ document.getElementById('import').addEventListener('click', () => {
       // normalization all complete before the first mutation.
       await applyImportedSettings(backup.settings);
       info.textContent = message('options_import_success', 'Settings imported. Reloading...');
+      trace.succeeded();
       chrome.runtime.reload();
       window.close();
     }
     catch (error) {
+      trace.failed();
       reportError('options_import_failed', 'Import failed', error);
     }
     finally {
@@ -610,6 +790,29 @@ document.getElementById('import').addEventListener('click', () => {
   };
   fileInput.click();
 });
+
+// Every remaining visible Options interaction receives a fixed category event.
+// The target ID, value, rule text, filename, and page data are deliberately not
+// included. High-impact controls above use their more specific action names.
+const specificallyTracedControls = new Set([
+  'clear-diagnostics', 'disable-frame-access', 'download-diagnostics',
+  'enable-frame-access', 'export', 'export-support', 'import',
+  'remove-conflict-scan-access', 'reset', 'run-conflict-scan', 'save', 'support'
+]);
+document.addEventListener('click', event => {
+  const control = event.target.closest('a,button,input,select,textarea');
+  if (!control || control.dataset.diagnosticSynthetic === 'true' ||
+      specificallyTracedControls.has(control.id) || control.closest('#rate')) return;
+  if (control.tagName === 'A') {
+    const trace = diagnosticClient.start({action: 'OPEN_SUPPORT'});
+    trace.click();
+    return;
+  }
+  const action = control.id?.startsWith('./plugins/') || control.closest('#plugins') ?
+    'PLUGIN_CONTROL' : control.tagName === 'TEXTAREA' ? 'SITE_RULE_CONTROL' : 'SETTING_CONTROL';
+  const trace = diagnosticClient.start({action});
+  trace.click();
+}, {capture: true});
 // links
 for (const a of [...document.querySelectorAll('[data-href]')]) {
   if (a.hasAttribute('href') === false) {

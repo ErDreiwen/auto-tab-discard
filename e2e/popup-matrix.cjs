@@ -5,6 +5,7 @@ const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
 const {pathToFileURL} = require('node:url');
+const {browserEnvironment} = require('./browser-environment.cjs');
 
 let emergencyBrowserProcess;
 let emergencyManagedBrowser;
@@ -1658,6 +1659,7 @@ const launchManualOverCDP = async ({edgePrivacy, executablePath, extensionPath, 
     'about:blank'
   ];
   const browserProcess = spawn(executablePath, args, {
+    env: browserEnvironment(),
     stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: false
   });
@@ -3054,13 +3056,18 @@ const main = async () => {
     const openPopup = async layout => {
       await focusSelected(layout);
       const nonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const url = `chrome-extension://${extensionId}/data/popup/index.html#e2e-${nonce}`;
+      // Production requires the exact popup URL as a sender-authority boundary.
+      // Keep the page URL byte-exact and distinguish this newly created page by
+      // object identity instead of adding a fragment that changes sender.url.
+      const url = `chrome-extension://${extensionId}/data/popup/index.html`;
+      const existingPages = new Set(context.pages());
       const created = await driver.evaluate(({windowId, url}) => chrome.tabs.create({
         active: false,
         url,
         windowId
       }), {url, windowId: layout.primaryWindowId});
-      const page = await waitFor(() => context.pages().find(candidate => candidate.url() === url),
+      const page = await waitFor(() => context.pages().find(candidate =>
+        existingPages.has(candidate) === false && candidate.url() === url),
         `popup test page ${nonce}`, 10000);
       await page.waitForSelector('[data-cmd="discard-tab"]');
       await page.waitForFunction(() =>
@@ -3664,28 +3671,40 @@ const main = async () => {
       scenarios.push({name, ok: true, targets: ['d-selected']});
     }
 
-    // Native Chromium/Edge group row: a normal click physically takes over an
-    // existing external discard, applies the portable sleep marker, and then
-    // owns it exactly like the group's loaded members. Shift is not required.
+    // Native Chromium/Edge group row: a normal click discards the loaded
+    // members and leaves an existing external discard asleep and merely
+    // claimed. Waking it would reload the page, so only Shift takes it over.
     {
-      const name = 'discard-tree-normal-takeover';
+      const name = 'discard-tree-normal-leaves-external-asleep';
       const layout = await buildGroup(nextPrefix(name));
       const baseline = counts(layout);
       const start = await telemetryCheckpoint();
-      await clickPopup(layout, 'discard-tree', false);
+      const response = await clickPopup(layout, 'discard-tree', false);
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
-        return ['g-selected', 'g-loaded', 'g-external'].every(key =>
+        return ['g-selected', 'g-loaded'].every(key =>
           snapshot.tabs[key].discarded === true && snapshot.tabs[key].status === 'unloaded' &&
           snapshot.ownership[layout.tabs[key].id]?.source === 'self');
       }, `${name} final state`, 20000);
       const after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout,
         ['g-selected', 'g-loaded', 'g-external', 'g-out-external'], name);
-      for (const key of ['g-selected', 'g-loaded', 'g-external']) {
+      for (const key of ['g-selected', 'g-loaded']) {
         assert.equal(after.tabs[key].groupId, layout.groupIds.inside, `${key} must retain the selected group ID`);
         assertSleepVisual(after.tabs[key], after.ownership[layout.tabs[key].id], `${name} ${key}`);
       }
+      assert.equal(after.tabs['g-external'].groupId, layout.groupIds.inside,
+        'g-external must retain the selected group ID');
+      assert.equal(after.tabs['g-external'].discarded, true, 'in-group external sleeper must stay asleep');
+      assert.equal(after.ownership[layout.tabs['g-external'].id]?.source, 'claimed',
+        'a normal click must not take over the in-group external sleeper');
+      const externalOutcome = outcomeForTabLineage(response?.progress?.outcomes || {},
+        layout.tabs['g-external']);
+      assert.deepEqual(externalOutcome && {
+        code: externalOutcome.code,
+        protectionRule: externalOutcome.protectionRule
+      }, {code: 'TAB_PROTECTED', protectionRule: 'PROTECTED_ALREADY_DISCARDED'},
+      `${name}: the external sleeper must be reported as left asleep`);
       for (const key of ['g-out-loaded', 'g-out-external']) {
         assert.equal(after.tabs[key].groupId, layout.groupIds.outside, `${key} must retain the outsider group ID`);
       }
@@ -3695,30 +3714,24 @@ const main = async () => {
       assert.equal(after.tabs['g-out-external'].discarded, true, 'other group sleeper must stay asleep');
       assert.equal(after.ownership[layout.tabs['g-out-external'].id]?.source, 'claimed');
       const requestAfter = counts(layout);
-      assert.equal(requestAfter['g-external'], baseline['g-external'] + 1,
-        'normal group takeover must wake the external member exactly once');
-      for (const key of Object.keys(layout.tabs).filter(key => key !== 'g-external')) {
-        assert.equal(requestAfter[key], baseline[key], `${key} must not be reloaded by normal group takeover`);
+      for (const key of Object.keys(layout.tabs)) {
+        assert.equal(requestAfter[key], baseline[key], `${key} must not be reloaded by a normal group discard`);
       }
-      const externalId = layout.tabs['g-external'].id;
-      await assertTakeoverApiOrder(start, externalId, name);
-      const externalLineage = lineageFor(externalId);
+      const externalLineage = lineageFor(layout.tabs['g-external'].id);
       assert.equal((await telemetrySince(start)).some(event => event.event === 'tabs.onUpdated' &&
-        externalLineage.has(event.id) && event.tab?.discarded === false), true,
-      'normal group takeover must wake the existing discard');
-      assert.equal(fixture.entries(layout.tabs['g-external'].label).length, 2,
-        'normal group takeover must never enter a reload loop');
+        externalLineage.has(event.id) && event.tab?.discarded === false), false,
+      'a normal group discard must not wake the existing discard');
       await assertStable(layout);
       assertNoCrashes(name);
-      scenarios.push({name, ok: true, sources: {external: 'self', loaded: 'self'}, wakeCount: 1});
+      scenarios.push({name, ok: true, sources: {external: 'claimed', loaded: 'self'}, wakeCount: 0});
     }
 
     {
-      const name = 'discard-tree-normal-takeover-favicon-only';
+      const name = 'discard-tree-shift-takeover-favicon-only';
       await driver.evaluate(() => chrome.storage.local.set({favicon: true, prepends: ''}));
       const layout = await buildGroup(nextPrefix(name));
       const baseline = counts(layout);
-      await clickPopup(layout, 'discard-tree', false);
+      await clickPopup(layout, 'discard-tree', true);
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
         return ['g-selected', 'g-loaded', 'g-external'].every(key =>
@@ -3829,7 +3842,7 @@ const main = async () => {
       let terminal;
       try {
         await focusSelected(layout);
-        await popup.page.locator('[data-cmd="discard-tree"]').click();
+        await popup.page.locator('[data-cmd="discard-tree"]').click({modifiers: ['Shift']});
         await waitFor(async () => {
           const delayed = await delayedStopState(stopToken);
           const snapshot = await compactSnapshot(layout);
@@ -3926,6 +3939,8 @@ const main = async () => {
       const available = capabilities.filter(entry => entry.availability === 'available');
       assert.ok(available.length > 0, `${name}: the browser exposed none of the requested scheme fixtures`);
       const terminalStates = {expectedStates: ['complete', 'partial', 'failed']};
+      // An extension page can be discarded without a visual sleep marker.
+      const discardedCodes = ['TAB_DISCARDED', 'TAB_DISCARDED_VISUAL_UNAVAILABLE'];
       const normal = await clickPopup(layout, 'discard-window', false, terminalStates);
       assert.equal(normal?.kind, 'response', `${name}: normal command must retain its response channel`);
       const normalOutcomes = normal.progress?.outcomes || {};
@@ -3933,7 +3948,7 @@ const main = async () => {
         const tab = layout.tabs[capability.key];
         const outcome = outcomeForTabLineage(normalOutcomes, tab);
         assert.ok(outcome, `${name}: normal ${capability.scheme} target silently disappeared`);
-        if (outcome.code === 'TAB_DISCARDED') {
+        if (discardedCodes.includes(outcome.code)) {
           assert.equal(outcome.status, 'success');
           capability.normal = {
             code: outcome.code,
@@ -3963,11 +3978,16 @@ const main = async () => {
           };
         }
         else {
+          // Failed and unsupported outcomes carry their diagnostic cause.
           assert.deepEqual(outcome, {
             code: 'TAB_UNSUPPORTED',
+            failureCause: outcome.failureCause,
             status: 'failed',
             tabId: tab.id
           }, `${name}: normal ${capability.scheme} failure must be explicit`);
+          assert.ok(['METADATA_SCAN_FAILED', 'UNSUPPORTED_PAGE', 'UNSUPPORTED_SCHEME']
+            .includes(outcome.failureCause),
+          `${name}: normal ${capability.scheme} failure must name why the page is unsupported`);
           capability.normal = {
             code: outcome.code,
             disposition: 'unsupported',
@@ -4015,7 +4035,7 @@ const main = async () => {
         }
         assert.ok(outcome && ['success', 'failed'].includes(outcome.status),
           `${name}: Shift ${capability.scheme} target silently disappeared`);
-        assert.ok(['TAB_DISCARDED', 'TAB_FAILED', 'TAB_UNSUPPORTED'].includes(outcome.code),
+        assert.ok([...discardedCodes, 'TAB_FAILED', 'TAB_UNSUPPORTED'].includes(outcome.code),
           `${name}: Shift ${capability.scheme} target has no precise terminal code`);
         const current = final.tabs[capability.key];
         if (outcome.status === 'success') {
@@ -4038,8 +4058,9 @@ const main = async () => {
       scenarios.push({capabilities, command: 'discard-window', name, ok: true});
     }
 
-    // Every scoped command gets two independent fixtures. The normal fixture
-    // proves external-sleeper takeover. The fresh Shift fixture begins with a
+    // Every scoped command gets two independent fixtures. On the first, a normal
+    // click leaves in-scope external sleepers asleep and a Shift click then takes
+    // them over. The fresh Shift fixture begins with a
     // still-loaded autoDiscardable:false target, so Shift cannot pass merely
     // because a previous normal invocation already self-owned the scope.
     for (const [command, targets] of Object.entries(DISCARD_SPECS)) {
@@ -4054,16 +4075,17 @@ const main = async () => {
       const normalStart = await telemetryCheckpoint();
       await clickPopup(layout, command, false);
       const normalTakeovers = targets.filter(key => SETUP_EXTERNAL.has(key));
+      const normalSource = key => normalTakeovers.includes(key) ? 'claimed' : 'self';
       await waitFor(async () => {
         const snapshot = await compactSnapshot(layout);
         return targets.every(key => snapshot.tabs[key].discarded === true &&
           snapshot.tabs[key].status === 'unloaded' &&
-          snapshot.ownership[layout.tabs[key].id]?.source === 'self');
+          snapshot.ownership[layout.tabs[key].id]?.source === normalSource(key));
       }, `${command} normal final state`, 25000);
       let after = await compactSnapshot(layout);
       assertOwnershipKeys(after, layout, [...targets, ...SETUP_EXTERNAL], `${command} normal`);
-      const normalVisuals = Object.fromEntries(targets.map(key => [key,
-        assertSleepVisual(after.tabs[key], after.ownership[layout.tabs[key].id],
+      const normalVisuals = Object.fromEntries(targets.filter(key => !normalTakeovers.includes(key))
+        .map(key => [key, assertSleepVisual(after.tabs[key], after.ownership[layout.tabs[key].id],
           `${command} normal ${key}`)]));
       for (const key of ALL_SCOPED_TABS.filter(key => !inScope.has(key))) {
         if (SETUP_EXTERNAL.has(key)) {
@@ -4079,29 +4101,7 @@ const main = async () => {
       }
       const normalAfter = counts(layout);
       for (const key of Object.keys(layout.tabs)) {
-        const expectedDelta = normalTakeovers.includes(key) ? 1 : 0;
-        assert.equal(normalAfter[key], baseline[key] + expectedDelta,
-          `${command} normal request delta for ${key}`);
-      }
-      for (const key of normalTakeovers) {
-        const id = layout.tabs[key].id;
-        await assertTakeoverApiOrder(normalStart, id, `${command} normal ${key}`);
-        const idLineage = lineageFor(id);
-        const events = (await telemetrySince(normalStart))
-          .filter(event => event.event === 'tabs.onUpdated' && idLineage.has(event.id));
-        const loading = events.findIndex(event => event.tab?.discarded === false && event.tab?.status === 'loading');
-        const complete = events.findIndex((event, index) => index > loading &&
-          event.tab?.discarded === false && event.tab?.status === 'complete');
-        const unloaded = events.findIndex((event, index) => index > complete &&
-          event.tab?.discarded === true && event.tab?.status === 'unloaded');
-        assert.ok(loading >= 0 && complete > loading && unloaded > complete,
-          `${command} normal takeover must quiesce ${key} in loading -> complete -> unloaded order`);
-        const secondRequest = fixture.entries(layout.tabs[key].label)[1];
-        await waitFor(() => secondRequest?.closedAt, `${command} normal stopped response for ${key}`, 5000);
-        assert.equal(secondRequest.aborted, true);
-        assert.equal(secondRequest.writableFinished, false);
-        assert.equal(fixture.entries(layout.tabs[key].label).length, 2,
-          `${command} normal takeover must wake ${key} exactly once`);
+        assert.equal(normalAfter[key], baseline[key], `${command} normal request delta for ${key}`);
       }
 
       const normalRepeatBaseline = counts(layout);
@@ -4112,7 +4112,8 @@ const main = async () => {
       const normalRepeat = await compactSnapshot(layout);
       for (const key of targets) {
         assert.equal(normalRepeat.tabs[key].discarded, true, `${command} repeat must keep ${key} discarded`);
-        assert.equal(normalRepeat.ownership[layout.tabs[key].id]?.source, 'self');
+        assert.equal(normalRepeat.ownership[layout.tabs[key].id]?.source, normalSource(key));
+        if (normalTakeovers.includes(key)) continue;
         assert.deepEqual(assertSleepVisual(normalRepeat.tabs[key],
           normalRepeat.ownership[layout.tabs[key].id], `${command} repeat normal ${key}`),
           normalVisuals[key], `${command} repeat normal must not mutate ${key}'s visual marker`);
@@ -4137,6 +4138,43 @@ const main = async () => {
           assert.equal(normalRepeat.tabs[key].discarded, false,
             `${command} uncommitted keeper ${key} must remain loaded and unowned`);
         }
+      }
+      await assertStable(layout);
+
+      // Shift on the same fixture physically takes over the in-scope sleepers.
+      const shiftTakeoverBaseline = counts(layout);
+      const shiftTakeoverStart = await telemetryCheckpoint();
+      await clickPopup(layout, command, true);
+      await waitFor(async () => {
+        const snapshot = await compactSnapshot(layout);
+        return normalTakeovers.every(key => snapshot.tabs[key].discarded === true &&
+          snapshot.tabs[key].status === 'unloaded' &&
+          snapshot.ownership[layout.tabs[key].id]?.source === 'self');
+      }, `${command} Shift takeover final state`, 25000);
+      const shiftTakeoverAfter = counts(layout);
+      for (const key of Object.keys(layout.tabs)) {
+        assert.equal(shiftTakeoverAfter[key], shiftTakeoverBaseline[key] + (normalTakeovers.includes(key) ? 1 : 0),
+          `${command} Shift takeover request delta for ${key}`);
+      }
+      for (const key of normalTakeovers) {
+        const id = layout.tabs[key].id;
+        await assertTakeoverApiOrder(shiftTakeoverStart, id, `${command} Shift ${key}`);
+        const idLineage = lineageFor(id);
+        const events = (await telemetrySince(shiftTakeoverStart))
+          .filter(event => event.event === 'tabs.onUpdated' && idLineage.has(event.id));
+        const loading = events.findIndex(event => event.tab?.discarded === false && event.tab?.status === 'loading');
+        const complete = events.findIndex((event, index) => index > loading &&
+          event.tab?.discarded === false && event.tab?.status === 'complete');
+        const unloaded = events.findIndex((event, index) => index > complete &&
+          event.tab?.discarded === true && event.tab?.status === 'unloaded');
+        assert.ok(loading >= 0 && complete > loading && unloaded > complete,
+          `${command} Shift takeover must quiesce ${key} in loading -> complete -> unloaded order`);
+        const secondRequest = fixture.entries(layout.tabs[key].label)[1];
+        await waitFor(() => secondRequest?.closedAt, `${command} Shift stopped response for ${key}`, 5000);
+        assert.equal(secondRequest.aborted, true);
+        assert.equal(secondRequest.writableFinished, false);
+        assert.equal(fixture.entries(layout.tabs[key].label).length, 2,
+          `${command} Shift takeover must wake ${key} exactly once`);
       }
       await assertStable(layout);
 
@@ -4262,7 +4300,7 @@ const main = async () => {
         // Physically take over one external sleeper while discarding the other
         // right-side tabs, then leave every other-window sleeper merely claimed.
         await externalDiscard(layout, ['p-right-mid']);
-        await clickPopup(layout, 'discard-rights', false);
+        await clickPopup(layout, 'discard-rights', true);
         await waitFor(async () => {
           const snapshot = await compactSnapshot(layout);
           return ['p-right-near', 'p-right-mid', 'p-right-far'].every(key =>

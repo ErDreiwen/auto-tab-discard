@@ -1153,7 +1153,8 @@ const takeoverOnce = async (
 ) => {
   const id = tab.id;
   if (!expectedScope) {
-    throw Error(`tab ${id} has no authoritative normal-window takeover scope`);
+    throw failureError(`tab ${id} has no authoritative normal-window takeover scope`,
+      FAILURE_CAUSES.TAKEOVER_TARGET_CHANGED);
   }
   const current = await withTimeout(getTab(id), discard.getTimeout, undefined);
   if (token.cancelled) {
@@ -1164,7 +1165,8 @@ const takeoverOnce = async (
   const recovering = currentState.kind === 'loaded' && initialState.marker?.state === 'takeover-recovery';
   const suspended = isSuspendedTab(current);
   if (!current || current.active === true || (suspended === false && recovering === false)) {
-    throw Error(`tab ${id} is no longer an inactive takeover target`);
+    throw failureError(`tab ${id} is no longer an inactive takeover target`,
+      FAILURE_CAUSES.TAKEOVER_TARGET_CHANGED);
   }
 
   const directNative = isFrozenTab(current);
@@ -1175,7 +1177,8 @@ const takeoverOnce = async (
       if (await waitForOwnership(id, token)) {
         return true;
       }
-      throw Error(`cannot start discard takeover for tab ${id}`);
+      throw failureError(`cannot start discard takeover for tab ${id}`,
+        FAILURE_CAUSES.TAKEOVER_OWNERSHIP_FAILED);
     }
   }
 
@@ -1187,6 +1190,8 @@ const takeoverOnce = async (
   let reloadStarted = false;
   let lateNativePending = false;
   let takeoverDeadline = Date.now() + discard.takeoverTimeout;
+  // Errors without their own cause are labeled with the step that was running.
+  let step = FAILURE_CAUSES.TAKEOVER_FAILED;
   try {
     const takeoverPrefs = await storage({
       favicon: prefs.favicon,
@@ -1233,14 +1238,16 @@ const takeoverOnce = async (
         }
         let live = await validateNativeBoundaryTab({id}, expectedScope);
         if (!live || live.active === true || !isFrozenTab(live)) {
-          throw Error(`tab ${id} changed before direct native discard`);
+          throw failureError(`tab ${id} changed before direct native discard`,
+            FAILURE_CAUSES.TAKEOVER_TARGET_CHANGED);
         }
         attemptId = await ownership.beginDirectNative(live);
         if (!attemptId) {
           if (await waitForOwnership(id, token)) {
             return {existingOwned: true};
           }
-          throw Error(`cannot start discard takeover for tab ${id}`);
+          throw failureError(`cannot start discard takeover for tab ${id}`,
+        FAILURE_CAUSES.TAKEOVER_OWNERSHIP_FAILED);
         }
         token.directNative = true;
         // Capture exact cleanup authority before the mandatory live re-read.
@@ -1250,7 +1257,8 @@ const takeoverOnce = async (
         live = await validateNativeBoundaryTab({id}, expectedScope);
         if (token.cancelled || !live || live.active === true || !isFrozenTab(live) ||
             !ownership.isCurrent(id, attemptId)) {
-          throw Error(`tab ${id} changed before direct native discard`);
+          throw failureError(`tab ${id} changed before direct native discard`,
+            FAILURE_CAUSES.TAKEOVER_TARGET_CHANGED);
         }
 
         const lateAuthority = ownership.lateAuthority(id);
@@ -1325,10 +1333,14 @@ const takeoverOnce = async (
     takeoverDeadline = Date.now() + discard.takeoverTimeout;
     let awake = current;
     if (isDiscardedTab(current)) {
+      step = FAILURE_CAUSES.TAKEOVER_WAKE_FAILED;
       awake = await runPhase('network', async () => {
         if (token.cancelled) {
           throw Error(`discard takeover cancelled for tab ${id}`);
         }
+        // Start the wake budget when this tab's reload slot begins, not while
+        // it waits behind other takeovers.
+        takeoverDeadline = Date.now() + discard.takeoverTimeout;
         reloadObservation = observeReload(id);
         const reloadTimeout = {};
         const reloadLimit = remainingTime(takeoverDeadline);
@@ -1344,10 +1356,13 @@ const takeoverOnce = async (
         return waitForAwake(id, token, takeoverDeadline);
       });
     }
+    step = FAILURE_CAUSES.TAKEOVER_PREPARE_FAILED;
     return await runPhase('cpu', async () => {
       if (token.cancelled) {
         throw Error(`discard takeover cancelled for tab ${id}`);
       }
+      // Preparation likewise gets its own budget once its CPU slot begins.
+      takeoverDeadline = Date.now() + discard.takeoverTimeout;
       awake = await prepareAwakeTab(
         id,
         token,
@@ -1365,13 +1380,15 @@ const takeoverOnce = async (
 
       if (!awake || !isLoadedTab(awake) ||
           awake.active === true || awake.status !== 'complete') {
-        throw Error(`tab ${id} did not wake as a quiescent inactive tab`);
+        throw failureError(`tab ${id} did not wake as a quiescent inactive tab`,
+          FAILURE_CAUSES.TAKEOVER_WAKE_FAILED);
       }
       if (prepend && awake.title?.startsWith(prepend) !== true) {
         throw Error(`tab ${id} did not expose its prepared sleep title`);
       }
       if (!ownership.isCurrent(id, attemptId)) {
-        throw Error(`discard takeover became stale for tab ${id}`);
+        throw failureError(`discard takeover became stale for tab ${id}`,
+          FAILURE_CAUSES.TAKEOVER_OWNERSHIP_FAILED);
       }
 
       const nativeTimeout = {};
@@ -1468,7 +1485,7 @@ const takeoverOnce = async (
       ), {allowCancelled: true}).catch(() => false);
     }
     if (e && typeof e === 'object' && !safeFailureCause(e.failureCause)) {
-      e.failureCause = FAILURE_CAUSES.TAKEOVER_FAILED;
+      e.failureCause = step;
     }
     throw e;
   }
@@ -1659,7 +1676,8 @@ discard.takeover = (tab, {manual = false} = {}) => {
     }
     const live = await validateNativeBoundaryTab({id: job.id}, job.scope);
     if (!live || live.active === true) {
-      throw Error(`tab ${job.id} is no longer an inactive takeover target`);
+      throw failureError(`tab ${job.id} is no longer an inactive takeover target`,
+        FAILURE_CAUSES.TAKEOVER_TARGET_CHANGED);
     }
     job.tab = live;
     let lastError;
@@ -2200,7 +2218,7 @@ discard.recoverInterruptedPulse = async () => {
 };
 discard.nativeTimeout = 5000;
 discard.getTimeout = 1000;
-discard.takeoverTimeout = 5000;
+discard.takeoverTimeout = 15000;
 discard.takeoverPoll = 50;
 discard.takeoverRetries = 1;
 discard.takeoverFenceTimeout = 10000;

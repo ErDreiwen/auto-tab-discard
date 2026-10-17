@@ -9,6 +9,10 @@ import {storage} from './prefs.mjs';
 import {SUSPENDED_POLICY_DEFAULTS} from './suspended-protection.mjs';
 import {query} from './utils.mjs';
 import {number} from '../modes/number.mjs';
+import {diagnosticJournal} from './diagnostic-journal.mjs';
+import {createActionDiagnostics} from './action-diagnostics.mjs';
+
+const actionDiagnostics = createActionDiagnostics(diagnosticJournal);
 
 const readTab = id => new Promise((resolve, reject) => {
   try {
@@ -106,7 +110,13 @@ const installExternalDiscardApi = (runtime = chrome.runtime) => {
       }
       catch (error) {}
     };
-    Promise.resolve().then(() => externalDiscardController.handle(request, sender)).then(
+    Promise.resolve().then(() => actionDiagnostics.run({
+      command: 'external-discard',
+      source: 'external'
+    }, async diagnostic => {
+      await diagnostic.stage({phase: 'command'});
+      return externalDiscardController.handle(request, sender);
+    })).then(
       respond,
       () => respond({error: {code: 'OPERATION_FAILED'}, ok: false})
     );

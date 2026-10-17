@@ -205,7 +205,7 @@ test('Chromium minimum harness uses a public extension-page realm and fail-close
     /chrome\.permissions\.contains\(\{permissions: \['webNavigation'\]\}, granted =>/);
   assert.match(source, /identityProbe\.frameAccess\.granted === false/);
   assert.match(source,
-    /JSON\.stringify\(identityProbe\.frameAccess\.optional\) === '\["webNavigation"\]'/);
+    /JSON\.stringify\(identityProbe\.frameAccess\.optional\) === '\["management","webNavigation"\]'/);
   assert.match(source, /identityProbe\.frameAccess\.required\.includes\('webNavigation'\) === false/);
   assert.match(source,
     /frame enumeration remains an ungranted optional permission at Chromium minimum/);

@@ -84,8 +84,10 @@ const createBrowser = (catalog, {
     held: undefined,
     holdNextPopup: false,
     messages: [],
+    navigationResult: undefined,
     openedOptions: false,
     popupRequests: [],
+    rejectNextCancel: false,
     runtimeListeners: []
   };
   const snapshot = (request, nextState = 'complete') => {
@@ -165,8 +167,9 @@ const createBrowser = (catalog, {
           state.runtimeListeners.push(listener);
         }
       },
-      openOptionsPage() {
+      openOptionsPage(callback) {
         state.openedOptions = true;
+        callback?.();
       },
       sendMessage(request, callback) {
         state.messages.push(request);
@@ -201,13 +204,33 @@ const createBrowser = (catalog, {
           state.diagnosticText = '';
           respond(callback, {ok: true, value: {cleared: true}});
         }
+        else if (request.method === 'diagnostic-event') {
+          respond(callback, {ok: true, value: {accepted: true}});
+        }
         else if (request.method === 'popup-progress-cancel') {
           state.cancelRequests.push(request);
           const command = state.held?.request || {cmd: 'discard-tabs', windowId: selected.windowId};
+          if (state.rejectNextCancel) {
+            state.rejectNextCancel = false;
+            respond(callback, {
+              ok: true,
+              value: {
+                accepted: false,
+                snapshot: snapshot(command, 'complete')
+              }
+            });
+            return;
+          }
           respond(callback, {
             ok: true,
-            value: {snapshot: snapshot(command, 'cancelling')}
+            value: {
+              accepted: true,
+              snapshot: snapshot(command, 'cancelling')
+            }
           });
+        }
+        else if (request.method === 'run-check-on-action') {
+          respond(callback, {ok: true, value: {accepted: true}});
         }
         else if (request.method === 'popup') {
           state.popupRequests.push(request);
@@ -234,7 +257,7 @@ const createBrowser = (catalog, {
           }
         }
         else if (request.method?.startsWith('move-') || request.method === 'close') {
-          respond(callback, {ok: true});
+          respond(callback, {ok: true, value: state.navigationResult});
         }
       }
     },
@@ -413,6 +436,18 @@ test('rendered popup has no serious semantic violations and every command works 
       assert.equal(app.state.popupRequests.at(-1).cmd, command);
     }
     assert.equal(releaseNames.size, releaseCommands.length, 'release controls are not distinguishable by name');
+
+    const allowed = app.document.getElementById('allowed');
+    pressKey(allowed, ' ');
+    await tick();
+    assert.equal(app.selected.autoDiscardable, false,
+      'the auto-discard toggle did not settle after its diagnostic click event');
+
+    pressKey(app.document.querySelector('[data-cmd=open-options]'), 'Enter');
+    await tick();
+    assert.equal(app.state.openedOptions, true);
+    assert.equal(app.state.closed, true,
+      'the popup closed before the Options API produced an affirmative callback');
   }
   finally {
     app.cleanup();
@@ -504,16 +539,29 @@ test('busy, cancel, failed, and retry states manage focus and announcements dete
     assert.equal(cancel.disabled, true);
     assert.equal(app.document.activeElement, status);
     app.state.resolveHeld('cancelled');
+    await tick();
     assert.equal(activity.getAttribute('aria-busy'), 'false');
     assert.equal(retry.hidden, false);
     assert.equal(retry.disabled, false);
     assert.equal(app.document.activeElement, retry);
 
     const beforeRetry = app.state.popupRequests.length;
+    const beforeRetryMessages = app.state.messages.length;
     pressKey(retry, 'Enter');
+    await tick();
     await tick();
     assert.equal(app.state.popupRequests.length, beforeRetry + 1);
     assert.equal(app.state.popupRequests.at(-1).cmd, 'discard-tabs');
+    const retryRequest = app.state.popupRequests.at(-1);
+    const retryEvents = app.state.messages.slice(beforeRetryMessages).filter(request =>
+      request.method === 'diagnostic-event' &&
+      request.event?.command === 'discard-tabs' && request.event?.attempt === 1);
+    assert.deepEqual(new Set(retryEvents.map(request => request.event.phase)),
+      new Set(['CLICK', 'RETRY', 'SEND', 'RESPONSE']),
+      'Retry did not retain its click, retry, request, and response stages');
+    assert.ok(retryEvents.length >= 4 && retryEvents.every(request =>
+      request.correlation === retryRequest.correlation),
+    'Retry split one user action across unrelated diagnostic correlations');
     assert.equal(retry.hidden, true);
     assert.equal(app.document.activeElement, trigger);
 
@@ -531,6 +579,66 @@ test('busy, cancel, failed, and retry states manage focus and announcements dete
     await tick();
     assert.equal(app.state.popupRequests.at(-1).cmd, 'release-tabs');
     assert.equal(app.document.activeElement, release);
+  }
+  finally {
+    app.cleanup();
+  }
+});
+
+test('a cancel rejected after the job settles is denied, not falsely logged as a failure', async () => {
+  const catalog = JSON.parse(await readFile(new URL('v3/_locales/en/messages.json', root), 'utf8'));
+  const app = await installPopup(catalog, {}, 'cancel-race');
+  try {
+    app.state.publish({
+      command: 'discard-tabs',
+      completed: 0,
+      jobId: 'job-cancel-race',
+      state: 'running',
+      summary: {failed: 0, skipped: 0, success: 0},
+      total: 1,
+      windowId: app.selected.windowId
+    });
+    app.state.rejectNextCancel = true;
+    const beforeMessages = app.state.messages.length;
+    pressKey(app.document.getElementById('activity-cancel'), 'Enter');
+    await tick();
+    await tick();
+
+    const request = app.state.cancelRequests.at(-1);
+    assert.equal(request.tabId, app.selected.id);
+    assert.equal(request.windowId, app.selected.windowId);
+    const events = app.state.messages.slice(beforeMessages).filter(message =>
+      message.method === 'diagnostic-event' && message.event?.action === 'CANCEL_COMMAND');
+    assert.ok(events.some(message => message.event.outcome === 'DENIED'));
+    assert.equal(events.some(message => message.event.outcome === 'FAILED'), false,
+      'an authoritative no-longer-running response was logged as a transport failure');
+    assert.ok(events.every(message => message.correlation === request.correlation),
+      'cancel click/request/denial did not share one correlation');
+  }
+  finally {
+    app.cleanup();
+  }
+});
+
+test('a navigation with no eligible target is skipped, not falsely logged as successful', async () => {
+  const catalog = JSON.parse(await readFile(new URL('v3/_locales/en/messages.json', root), 'utf8'));
+  const app = await installPopup(catalog, {}, 'navigation-no-op');
+  try {
+    app.state.navigationResult = false;
+    const beforeMessages = app.state.messages.length;
+    pressKey(app.document.querySelector('[data-cmd=move-next]'), 'Enter');
+    await tick();
+    await tick();
+
+    const navigation = app.state.messages.slice(beforeMessages).find(request =>
+      request.method === 'move-next');
+    const events = app.state.messages.slice(beforeMessages).filter(request =>
+      request.method === 'diagnostic-event' && request.event?.command === 'move-next');
+    assert.ok(events.some(request => request.event.outcome === 'SKIPPED' &&
+      request.event.code === 'NO_CHANGE'));
+    assert.equal(events.some(request => request.event.outcome === 'SUCCEEDED'), false);
+    assert.ok(events.every(request => request.correlation === navigation.correlation),
+      'navigation no-op split one action across unrelated diagnostic correlations');
   }
   finally {
     app.cleanup();
@@ -657,6 +765,30 @@ test('terminal diagnostics disclose grouped causes, copy and download a sanitize
         stage: 'eligibility',
         status: 'skipped'
       }, {
+        code: 'TAB_UNSUPPORTED',
+        count: 2,
+        reasonCode: 'METADATA_SCAN_FAILED',
+        stage: 'metadata-scan',
+        status: 'failed'
+      }, {
+        code: 'TAB_UNSUPPORTED',
+        count: 1,
+        reasonCode: 'METADATA_UNAVAILABLE',
+        stage: 'metadata-check',
+        status: 'failed'
+      }, {
+        code: 'TAB_UNSUPPORTED',
+        count: 1,
+        reasonCode: 'METADATA_NO_INSPECTABLE_DOCUMENT',
+        stage: 'metadata-check',
+        status: 'failed'
+      }, {
+        code: 'TAB_UNSUPPORTED',
+        count: 2,
+        reasonCode: 'METADATA_EVALUATION_FAILED',
+        stage: 'metadata-check',
+        status: 'failed'
+      }, {
         code: 'TAB_FAILED',
         count: 999,
         reasonCode: 'SECRET_PRIVATE_REASON',
@@ -712,6 +844,14 @@ test('terminal diagnostics disclose grouped causes, copy and download a sanitize
       /47 failed: native-discard \/ NATIVE_TIMEOUT \(TAB_FAILED\)/);
     assert.match(reasons.textContent,
       /19 skipped: eligibility \/ PROTECTION_RULE \(TAB_PROTECTED\)/);
+    assert.match(reasons.textContent,
+      /2 failed: metadata-scan \/ METADATA_SCAN_FAILED \(TAB_UNSUPPORTED\)/);
+    assert.match(reasons.textContent,
+      /1 failed: metadata-check \/ METADATA_UNAVAILABLE \(TAB_UNSUPPORTED\)/);
+    assert.match(reasons.textContent,
+      /1 failed: metadata-check \/ METADATA_NO_INSPECTABLE_DOCUMENT \(TAB_UNSUPPORTED\)/);
+    assert.match(reasons.textContent,
+      /2 failed: metadata-check \/ METADATA_EVALUATION_FAILED \(TAB_UNSUPPORTED\)/);
     assert.doesNotMatch(reasons.textContent, /SECRET_PRIVATE_REASON|secret\.invalid/,
       'popup rendered a non-allowlisted stage or reason code');
     assert.equal(log.textContent, app.state.diagnosticText);

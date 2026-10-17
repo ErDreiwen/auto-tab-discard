@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const {spawn, spawnSync} = require('node:child_process');
+const {browserEnvironment} = require('./browser-environment.cjs');
 
 const SCRIPT_DIR = __dirname;
 const WORKSPACE_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -414,7 +415,7 @@ const launchEdge = async ({executable, extension, profile}) => {
     'about:blank'
   ];
   const child = spawn(executable, args, {
-    stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true
+    env: browserEnvironment(), stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true
   });
   emergencyChild = child;
   let spawnError;
@@ -571,6 +572,10 @@ class WorkerDebugger {
       this.trackConfiguration(this.configure(pending.sessionId, info, true));
     });
     raw.on('Target.detachedFromTarget', params => this.forgetSession(params.sessionId));
+    raw.on('Runtime.executionContextsCleared', (params, sessionId) => {
+      const session = this.sessions.get(sessionId);
+      if (session?.ready === true) this.trackConfiguration(this.reconfigure(session));
+    });
   }
 
   isWorker(info) {
@@ -849,7 +854,41 @@ class WorkerDebugger {
       workerURL: this.matchesWorkerURL(workerURL) ? workerURL : undefined
     };
     this.sessions.set(sessionId, session);
+    session.configuration = this.applyConfiguration(session);
+    return session.configuration;
+  }
+
+  // Edge 155 can restart the worker inside the same DevTools target and
+  // session. Debugger stays enabled, but the new isolate has none of the
+  // breakpoints or API telemetry, so configure that session again. A session
+  // that detaches meanwhile was a terminated worker, not a configuration error.
+  reconfigure(session) {
+    const {sessionId} = session;
+    const stale = [...session.breakpoints.values()];
+    session.ready = false;
+    session.breakpoints.clear();
+    for (const stage of TERMINATION_BOUNDARIES) {
+      this.breakpointResolutions.delete(`${sessionId}:${stage}`);
+    }
+    for (const breakpointId of stale) {
+      this.breakpointStages.delete(breakpointId);
+      this.pendingBreakpointLocations.delete(breakpointId);
+    }
     session.configuration = (async () => {
+      for (const breakpointId of stale) {
+        await this.raw.send('Debugger.removeBreakpoint', {breakpointId}, sessionId).catch(() => {});
+      }
+      return this.applyConfiguration(session);
+    })().catch(error => {
+      if (this.sessions.get(sessionId) !== session) return undefined;
+      throw error;
+    });
+    return session.configuration;
+  }
+
+  applyConfiguration(session) {
+    const {sessionId} = session;
+    return (async () => {
       await this.raw.send('Runtime.enable', {}, sessionId);
       await this.raw.send('Debugger.enable', {}, sessionId);
       const definitions = [
@@ -887,7 +926,6 @@ class WorkerDebugger {
       session.ready = true;
       return session;
     })();
-    return session.configuration;
   }
 
   onPaused(params, sessionId) {
@@ -1063,7 +1101,7 @@ const normalizeDriverTopology = async driver => {
   'the isolated release driver topology retained an extra startup tab or window');
 };
 
-const installMonitor = page => page.evaluate(({prefix, telemetryMethod}) => {
+const installMonitor = page => page.evaluate(({prefix, relayMethod, telemetryMethod}) => {
   if (globalThis.__edgeDirectNativeRaces) return true;
   const compactTab = tab => tab && ({
     active: tab.active === true,
@@ -1088,9 +1126,12 @@ const installMonitor = page => page.evaluate(({prefix, telemetryMethod}) => {
     replacements: [],
     workerApi: {executeScript: 0, reload: 0}
   };
+  // Job windows stay out of the reported progress; the popup relay needs one
+  // to pin the cancel to the window that owns the job.
+  const jobWindows = new Map();
   const cancel = jobId => new Promise(resolve => chrome.runtime.sendMessage({
-    jobId,
-    method: 'popup-progress-cancel'
+    method: relayMethod,
+    request: {jobId, method: 'popup-progress-cancel', windowId: jobWindows.get(jobId)}
   }, response => {
     void chrome.runtime.lastError;
     state.cancellation.accepted = response?.ok === true && response?.value?.accepted === true;
@@ -1110,6 +1151,9 @@ const installMonitor = page => page.evaluate(({prefix, telemetryMethod}) => {
       return false;
     }
     if (message?.method !== 'popup-progress-update') return undefined;
+    if (message.snapshot?.jobId && Number.isInteger(message.snapshot.windowId)) {
+      jobWindows.set(message.snapshot.jobId, message.snapshot.windowId);
+    }
     const snapshot = compactProgress(message.snapshot);
     state.progress.push(snapshot);
     if (state.cancellation.phase === 'pre-native' && snapshot.state === 'running' &&
@@ -1158,7 +1202,7 @@ const installMonitor = page => page.evaluate(({prefix, telemetryMethod}) => {
     }
   });
   return true;
-}, {prefix: OWNERSHIP_PREFIX, telemetryMethod: WORKER_API_TELEMETRY_METHOD});
+}, {prefix: OWNERSHIP_PREFIX, relayMethod: POPUP_RELAY_METHOD, telemetryMethod: WORKER_API_TELEMETRY_METHOD});
 
 const setCancellation = (page, phase, targetId) => page.evaluate(({phase, targetId}) => {
   const state = globalThis.__edgeDirectNativeRaces;
@@ -1194,7 +1238,52 @@ const message = (page, request, timeout = 30_000) => bounded(page.evaluate(reque
     resolve(error ? {apiError: error.message || String(error)} : response);
   })), request), timeout, `extension message ${request.method || request.cmd}`);
 
-const popupCommand = (page, command, selected, shiftKey = false) => message(page, {
+// Production accepts popup commands only from the byte-exact popup page. Each
+// driver gets one real popup page, hosted as the only tab of its own minimized
+// normal window: command scopes never read an active tab, and a minimized
+// window is never handed focus. It also relays the monitor's boundary cancel.
+const POPUP_RELAY_METHOD = 'edge-direct-native-races-popup-relay';
+const popupSenders = new WeakMap();
+const popupSender = driver => {
+  const page = popupSenders.get(driver);
+  ensure(page, 'the real popup sender page is not open');
+  return page;
+};
+const openPopupSender = async (context, driver, extensionId) => {
+  const url = `chrome-extension://${extensionId}/data/popup/index.html`;
+  const windowId = await driver.evaluate(popupUrl => chrome.windows.create({
+    focused: false,
+    state: 'minimized',
+    type: 'normal',
+    url: popupUrl
+  }).then(created => created?.id), url);
+  ensure(Number.isInteger(windowId), 'Edge did not create the real popup sender window');
+  const target = await waitFor(async () => {
+    const {targetInfos = []} = await context.raw.send('Target.getTargets');
+    return targetInfos.find(info => info.type === 'page' && info.url === url) || false;
+  }, 'real popup sender page', 15_000, 50);
+  const {sessionId} = await context.raw.send('Target.attachToTarget', {
+    flatten: true,
+    targetId: target.targetId
+  });
+  ensure(sessionId, 'Edge did not attach the real popup sender page');
+  await context.raw.send('Runtime.enable', {}, sessionId);
+  const page = new RawPage(context.raw, target.targetId, sessionId);
+  await waitFor(() => page.evaluate('document.readyState === "complete" && Boolean(globalThis.chrome?.runtime?.id)'),
+    'real popup sender readiness', 15_000, 50);
+  await page.evaluate(relayMethod => chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.method !== relayMethod) return undefined;
+    chrome.runtime.sendMessage(message.request, response => {
+      const error = chrome.runtime.lastError;
+      sendResponse(error ? {apiError: error.message || String(error)} : response);
+    });
+    return true;
+  }), POPUP_RELAY_METHOD);
+  popupSenders.set(driver, page);
+  return page;
+};
+
+const popupCommand = (driver, command, selected, shiftKey = false) => message(popupSender(driver), {
   cmd: command,
   method: 'popup',
   shiftKey,
@@ -1202,8 +1291,8 @@ const popupCommand = (page, command, selected, shiftKey = false) => message(page
   windowId: selected.windowId
 });
 
-const wakeWorker = page => message(page, {method: 'takeover-snapshot'}, 10_000);
-const pokeWorker = page => page.evaluate(() => {
+const wakeWorker = driver => message(popupSender(driver), {method: 'takeover-snapshot'}, 10_000);
+const pokeWorker = driver => popupSender(driver).evaluate(() => {
   try {
     chrome.runtime.sendMessage({method: 'takeover-snapshot'}, () => void chrome.runtime.lastError);
     return true;
@@ -2007,9 +2096,10 @@ const latestRunningJobId = async driver => waitFor(async () => {
   return [...monitor.progress].reverse().find(entry => entry.state === 'running')?.jobId || false;
 }, 'running popup job identity', 10_000);
 
-const cancelPopupJob = (driver, jobId) => message(driver, {
+const cancelPopupJob = (driver, jobId, windowId) => message(popupSender(driver), {
   jobId,
-  method: 'popup-progress-cancel'
+  method: 'popup-progress-cancel',
+  windowId
 }, 20_000);
 
 const runDirectCancellation = async ({phase, context, debuggerGate, driver, fixture}) => {
@@ -2022,6 +2112,8 @@ const runDirectCancellation = async ({phase, context, debuggerGate, driver, fixt
     await activateLabel(driver, topology.labels.selected);
     const selected = await tabByLabel(driver, topology.labels.selected);
     const beforeRequests = fixture.count(label);
+    // An in-session worker restart reconfigures breakpoints asynchronously.
+    await debuggerGate.awaitReady();
     const beforeNative = debuggerGate.checkpoint();
     const beforeMonitor = await monitorSnapshot(driver);
     let cancellation;
@@ -2053,7 +2145,7 @@ const runDirectCancellation = async ({phase, context, debuggerGate, driver, fixt
       }, 'native-pending durable intent', 2000, 10).catch(() => false);
       ensure(durablePending?.directNativePending === 1,
         'native-pending cancellation did not observe its durable intent');
-      const cancel = cancelPopupJob(driver, await latestRunningJobId(driver));
+      const cancel = cancelPopupJob(driver, await latestRunningJobId(driver), selected.windowId);
       debuggerGate.hold([]);
       await debuggerGate.resume(pause);
       cancellation = await cancel;
@@ -2177,6 +2269,8 @@ const runQueuedCancellation = async ({context, debuggerGate, driver, fixture}) =
     await activateLabel(driver, topology.selectedLabel);
     const selected = await tabByLabel(driver, topology.selectedLabel);
     const beforeRequests = fixture.count(queuedLabel);
+    // An in-session worker restart reconfigures breakpoints asynchronously.
+    await debuggerGate.awaitReady();
     const beforeNative = debuggerGate.checkpoint();
     const beforeMonitor = await monitorSnapshot(driver);
     debuggerGate.hold(['before-native-invocation']);
@@ -2187,7 +2281,7 @@ const runQueuedCancellation = async ({context, debuggerGate, driver, fixture}) =
       return marker?.state === 'takeover-queued' ? marker : false;
     }, 'fifth takeover to remain durably queued', 10_000);
     ensure(queuedMarker.source === 'requested', 'queued takeover marker lost explicit-request authority');
-    const cancel = cancelPopupJob(driver, await latestRunningJobId(driver));
+    const cancel = cancelPopupJob(driver, await latestRunningJobId(driver), selected.windowId);
     debuggerGate.hold([]);
     await debuggerGate.resume(firstPause);
     const cancellation = await cancel;
@@ -2312,6 +2406,7 @@ const run = async () => {
     await debuggerGate.enableWorkerControl(driver.sessionId);
     await normalizeDriverTopology(driver);
     await installMonitor(driver);
+    await openPopupSender(launched.context, driver, extensionId);
     await driver.evaluate(prefs => chrome.storage.local.set(prefs), ISOLATED_PREFERENCES);
     await waitFor(() => driver.evaluate(() => new Promise(resolve =>
       chrome.alarms.get('number.check', alarm => resolve(!alarm)))),

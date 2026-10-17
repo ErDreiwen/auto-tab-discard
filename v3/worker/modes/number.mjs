@@ -9,7 +9,17 @@ import {
 } from '../core/frame-metadata.mjs';
 import {createAlarmCatchUp} from '../core/alarm-catch-up.mjs';
 import {markerFallback} from '../core/marker-fallback.mjs';
-import {FAILURE_CAUSES, failureCauseFrom} from '../core/failure-causes.mjs';
+import {diagnosticJournal} from '../core/diagnostic-journal.mjs';
+import {
+  actionCounts,
+  createActionDiagnostics
+} from '../core/action-diagnostics.mjs';
+import {
+  FAILURE_CAUSES,
+  failureCauseFrom,
+  protectionRuleFor,
+  safeFailureCause
+} from '../core/failure-causes.mjs';
 import {
   createSingleFlightQueue,
   METADATA_SCAN_CONCURRENCY,
@@ -34,6 +44,7 @@ const number = {
     'ignore.meta.data': true
   })
 };
+const actionDiagnostics = createActionDiagnostics(diagnosticJournal);
 const pluginFilters = {}; // this object adds custom filters to the number-based discarding
 const frameMetadata = createFrameMetadataCollector({
   enumerateFrames: createOptionalFrameEnumerator(chrome),
@@ -79,12 +90,19 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
   const targeted = targetedInputs.length !== 0;
   const intended = new Map(targetedInputs.map(tab => [tab.id, tab]));
   const classifications = new Map();
-  const classify = (kind, tab, outcomeReason) => {
+  const classify = (kind, tab, outcomeReason, failureCause) => {
     if (targeted && Number.isInteger(tab?.id) && intended.has(tab.id) &&
         classifications.has(tab.id) === false) {
+      const value = {tab, reason: outcomeReason};
+      if (kind === 'unsupported') {
+        value.failureCause = safeFailureCause(failureCause) || FAILURE_CAUSES.UNSUPPORTED_PAGE;
+      }
+      else if (kind === 'protected') {
+        value.protectionRule = protectionRuleFor(outcomeReason);
+      }
       classifications.set(tab.id, {
         kind,
-        value: {tab, reason: outcomeReason}
+        value
       });
     }
   };
@@ -116,6 +134,7 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
     for (const [id, tab] of intended) {
       if (!accounted.has(id)) {
         result.unsupported.push({
+          failureCause: FAILURE_CAUSES.CLASSIFICATION_INCOMPLETE,
           tab,
           reason: 'targeted discard ended without an authoritative tab classification'
         });
@@ -241,7 +260,12 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
       tbs = targetedInputs.flatMap(original => {
         const current = byId.get(original.id);
         if (!current) {
-          classify('unsupported', original, 'target tab is no longer available');
+          classify(
+            'unsupported',
+            original,
+            'target tab is no longer available',
+            FAILURE_CAUSES.TARGET_UNAVAILABLE
+          );
           return [];
         }
         // Preserve caller-visible fields when Chrome withholds a restricted
@@ -252,7 +276,7 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
     catch (error) {
       const failure = `targeted tab query failed: ${error?.message || String(error)}`;
       for (const tab of targetedInputs) {
-        classify('unsupported', tab, failure);
+        classify('unsupported', tab, failure, FAILURE_CAUSES.SCOPE_QUERY_FAILED);
       }
       return finalizeTargeted(emptyResult());
     }
@@ -281,7 +305,7 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
         return false;
       }
       if (fallback.kind === 'unsupported') {
-        classify('unsupported', tab, fallback.reason);
+        classify('unsupported', tab, fallback.reason, FAILURE_CAUSES.UNSUPPORTED_SCHEME);
         return false;
       }
       return true;
@@ -348,8 +372,12 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
         throw error;
       }
       for (const tab of tbs) {
-        classify('unsupported', tab,
-          `plug-in filter ${name} could not prepare: ${error?.message || String(error)}`);
+        classify(
+          'unsupported',
+          tab,
+          `plug-in filter ${name} could not prepare: ${error?.message || String(error)}`,
+          FAILURE_CAUSES.PLUGIN_FILTER_FAILED
+        );
       }
       tbs = [];
       break;
@@ -367,8 +395,12 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
         return accepted;
       }
       catch (error) {
-        classify('unsupported', tab,
-          `plug-in filter ${name} failed: ${error?.message || String(error)}`);
+        classify(
+          'unsupported',
+          tab,
+          `plug-in filter ${name} failed: ${error?.message || String(error)}`,
+          FAILURE_CAUSES.PLUGIN_FILTER_FAILED
+        );
         return false;
       }
     });
@@ -404,8 +436,12 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
         return true;
       }
       catch (e) {
-        classify('unsupported', tb,
-          `tab URL could not be evaluated for whitelist protection: ${e?.message || String(e)}`);
+        classify(
+          'unsupported',
+          tb,
+          `tab URL could not be evaluated for whitelist protection: ${e?.message || String(e)}`,
+          FAILURE_CAUSES.URL_POLICY_EVALUATION_FAILED
+        );
         return false;
       }
     });
@@ -424,8 +460,12 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
         throw error;
       }
       for (const tab of tbs) {
-        classify('unsupported', tab,
-          `focused split-view state could not be queried: ${error?.message || String(error)}`);
+        classify(
+          'unsupported',
+          tab,
+          `focused split-view state could not be queried: ${error?.message || String(error)}`,
+          FAILURE_CAUSES.SPLIT_VIEW_QUERY_FAILED
+        );
       }
       tbs = [];
       focused = [];
@@ -526,9 +566,13 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
     for (const {error, item} of scan.failed) {
       console.warn(error);
       const blocked = error?.code === 'DISCARD_OPERATION_BLOCKED';
-      classify(blocked ? 'protected' : 'unsupported', item,
+      classify(
+        blocked ? 'protected' : 'unsupported',
+        item,
         blocked ? 'a discard transaction already owns this tab; renderer scan was skipped' :
-          `renderer metadata scan failed: ${error?.message || String(error)}`);
+          `renderer metadata scan failed: ${error?.message || String(error)}`,
+        blocked ? undefined : FAILURE_CAUSES.METADATA_SCAN_FAILED
+      );
     }
   }
   if (scan.skipped.length) {
@@ -539,9 +583,16 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
       'skipped tabs',
       scan.skipped.length
     );
-    for (const {item} of scan.skipped) {
-      classify('unsupported', item,
-        'renderer metadata scan deadline was reached before the tab could be inspected');
+    for (const {item, reason} of scan.skipped) {
+      const capacity = reason === 'physical-capacity';
+      classify(
+        'unsupported',
+        item,
+        capacity ?
+          'renderer metadata scan capacity was exhausted before the tab could be inspected' :
+          'renderer metadata scan deadline was reached before the tab could be inspected',
+        capacity ? FAILURE_CAUSES.METADATA_SCAN_CAPACITY : FAILURE_CAUSES.METADATA_SCAN_TIMEOUT
+      );
     }
   }
 
@@ -564,7 +615,13 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
         const detail = tb.status === 'unloaded' ?
           'renderer metadata is unavailable while the tab is unloaded' :
           'renderer metadata returned no inspectable document';
-        classify('unsupported', tb, detail);
+        classify(
+          'unsupported',
+          tb,
+          detail,
+          tb.status === 'unloaded' ? FAILURE_CAUSES.METADATA_UNAVAILABLE :
+            FAILURE_CAUSES.METADATA_NO_INSPECTABLE_DOCUMENT
+        );
         exceptionCount += 1;
         continue;
       }
@@ -679,8 +736,12 @@ const runCheck = async (filterTabsFrom, ops = {}, reason, recoveryIds = undefine
     }
     catch (e) {
       console.warn(e);
-      classify('unsupported', tb,
-        `renderer metadata could not be evaluated: ${e?.message || String(e)}`);
+      classify(
+        'unsupported',
+        tb,
+        `renderer metadata could not be evaluated: ${e?.message || String(e)}`,
+        FAILURE_CAUSES.METADATA_EVALUATION_FAILED
+      );
     }
   }
   // Restore the original query order before stable age sorting. Completion
@@ -833,47 +894,87 @@ const checkQueue = createSingleFlightQueue(async (...args) => {
 
 // Equivalent automatic triggers join one scan. Targeted/manual requests retain
 // their own scopes and wait their turn so no two all-frame scans overlap.
-number.check = (filterTabsFrom, ops, reason) => {
-  const settings = ops === undefined ? {} : ops;
-  const flight = checkQueue.run(
-    metadataFlightKey(filterTabsFrom, ops),
-    filterTabsFrom,
-    settings,
-    reason
-  );
-
-  if (flight.invalidated && flight.joined === false) {
-    log(
-      'number.check',
-      'queued one fresh automatic metadata generation after an in-flight scan',
-      reason,
-      flight.generation
+number.check = (filterTabsFrom, ops, reason, suppliedDiagnostic) => {
+  const run = async diagnostic => {
+    await diagnostic?.stage({phase: 'metadata-check'});
+    const settings = ops === undefined ? {} : ops;
+    const flight = checkQueue.run(
+      metadataFlightKey(filterTabsFrom, ops),
+      filterTabsFrom,
+      settings,
+      reason
     );
-  }
-  else if (flight.joined) {
-    log('number.check', 'joined an automatic metadata scan already in flight', reason);
-  }
-  return flight.promise;
+
+    if (flight.invalidated && flight.joined === false) {
+      log(
+        'number.check',
+        'queued one fresh automatic metadata generation after an in-flight scan',
+        reason,
+        flight.generation
+      );
+      await diagnostic?.retry({
+        attempt: flight.generation,
+        code: FAILURE_CAUSES.METADATA_CHECK_FAILED,
+        phase: 'metadata-check'
+      });
+    }
+    else if (flight.joined) {
+      log('number.check', 'joined an automatic metadata scan already in flight', reason);
+      await diagnostic?.stage({outcome: 'skipped', phase: 'metadata-check'});
+    }
+    const result = await flight.promise;
+    const counts = actionCounts(result);
+    if (result?.scan?.timedOut === true) {
+      await diagnostic?.timeout({
+        code: FAILURE_CAUSES.METADATA_CHECK_FAILED,
+        counts,
+        phase: 'metadata-check'
+      });
+    }
+    else {
+      await diagnostic?.stage({counts, phase: 'eligibility'});
+    }
+    return result;
+  };
+
+  if (suppliedDiagnostic) return run(suppliedDiagnostic);
+  const source = reason === 'external/authorized' ? 'external' :
+    typeof reason === 'string' && reason.startsWith('number/alarm') ? 'automatic-alarm' :
+    typeof reason === 'string' && (reason.startsWith('number/resume') ||
+      reason.startsWith('startup-plugin/')) ? 'automatic-startup' : undefined;
+  if (!source) return run(undefined);
+  return actionDiagnostics.run({
+    command: source === 'external' ? 'external-discard' : 'automatic-scan',
+    privateContext: source !== 'external',
+    source
+  }, run);
 };
 
-number.revalidateOrdinaryIntents = tabs => {
+number.revalidateOrdinaryIntents = async (tabs, diagnostic) => {
   const ids = new Set((tabs || []).map(tab => tab?.id).filter(Number.isInteger));
   if (ids.size === 0) {
-    return Promise.resolve(ids);
+    return ids;
   }
+  await diagnostic?.stage({counts: {attempted: ids.size}, phase: 'metadata-check'});
   // Run one full automatic eligibility pass for the whole restart batch. The
   // private fourth argument turns the final action phase into an ID-only proof
   // and cannot be supplied through extension messages or preferences.
   // Keep restart recovery on the same FIFO as automatic and manual metadata
   // scans. It is intentionally unkeyed: it must run as one fresh generation,
   // never join a pre-existing automatic snapshot with different proof output.
-  return checkQueue.run(
+  const result = await checkQueue.run(
     undefined,
     undefined,
     {},
     'ordinary/restart-revalidation',
     ids
-  ).promise.then(result => result instanceof Set ? result : new Set());
+  ).promise;
+  const selected = result instanceof Set ? result : new Set();
+  await diagnostic?.stage({
+    counts: {eligible: selected.size, total: ids.size},
+    phase: 'eligibility'
+  });
+  return selected;
 };
 
 const alarmCatchUp = createAlarmCatchUp({
@@ -883,9 +984,22 @@ const alarmCatchUp = createAlarmCatchUp({
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'number.check') {
     log('alarm fire', 'number.check', alarm.name);
-    alarmCatchUp.trigger({scheduledTime: alarm.scheduledTime}, 'number/alarm').catch(error =>
-      log('number alarm catch-up failed', error)
-    );
+    void actionDiagnostics.run({
+      command: 'automatic-scan',
+      privateContext: true,
+      source: 'automatic-alarm'
+    }, async diagnostic => {
+      await diagnostic.stage({phase: 'metadata-check'});
+      const result = await alarmCatchUp.trigger({scheduledTime: alarm.scheduledTime}, 'number/alarm');
+      if (result?.coalesced === true && result.reason === 'backoff') {
+        await diagnostic.retry({
+          attempt: result.state?.failures,
+          code: FAILURE_CAUSES.METADATA_CHECK_FAILED,
+          phase: 'metadata-check'
+        });
+      }
+      return result?.value ?? result;
+    }).catch(error => log('number alarm catch-up failed', error));
   }
 });
 // fix outdated alarms
@@ -907,31 +1021,46 @@ chrome.idle.onStateChanged.addListener(state => {
 
 /* start */
 {
-  const check = async (resume = false) => storage({
-    'mode': 'time-based',
-    'period': 10 * 60, // in seconds
-    'tmp_disable': 0
-  }).then(async ps => {
-    if (
-      ps.period &&
-      (ps.mode === 'time-based' || ps.mode === 'url-based') &&
-      ps['tmp_disable'] === 0
-    ) {
-      await number.install(ps.period);
-      if (resume) {
-        return alarmCatchUp.resume(ps.period * 1000, 'number/resume');
+  const check = async (resume = false) => actionDiagnostics.run({
+    ...(resume && {command: 'worker-startup'}),
+    privateContext: resume,
+    source: resume ? 'automatic-startup' : 'settings'
+  }, async diagnostic => {
+    await diagnostic.stage({phase: 'settings'});
+    return storage({
+      'mode': 'time-based',
+      'period': 10 * 60, // in seconds
+      'tmp_disable': 0
+    }).then(async ps => {
+      if (
+        ps.period &&
+        (ps.mode === 'time-based' || ps.mode === 'url-based') &&
+        ps['tmp_disable'] === 0
+      ) {
+        await number.install(ps.period);
+        if (resume) {
+          const result = await alarmCatchUp.resume(ps.period * 1000, 'number/resume');
+          if (result?.coalesced === true && result.reason === 'backoff') {
+            await diagnostic.retry({
+              attempt: result.state?.failures,
+              code: FAILURE_CAUSES.METADATA_CHECK_FAILED,
+              phase: 'metadata-check'
+            });
+          }
+          return result;
+        }
       }
-    }
-    else {
-      return number.remove();
-    }
+      else {
+        return number.remove();
+      }
+    });
   });
   starters.push(() => check(true).catch(error =>
     log('number startup/catch-up failed', error)
   ));
   chrome.storage.onChanged.addListener(ps => {
     if (ps.period || ps.mode || ps['tmp_disable']) {
-      check();
+      void check().catch(error => log('number settings update failed', error));
     }
   });
 }
@@ -977,51 +1106,57 @@ starters.push(() => chrome.app && query({
   };
   chrome.storage.onChanged.addListener(ps => {
     if (ps['tmp_disable']) {
-      if (ps['tmp_disable'].newValue !== 0) {
-        chrome.alarms.create('tmp.disable', {
-          when: Date.now() + ps['tmp_disable'].newValue * 60 * 60 * 1000
-          // when: Date.now() + 120 * 1000
-        });
-        exit();
-      }
-      else {
-        chrome.alarms.clear('tmp.disable');
-        chrome.action.setIcon({
-          path: {
-            '16': '/data/icons/16.png',
-            '32': '/data/icons/32.png'
-          }
-        });
-        chrome.action.setTitle({
-          title: chrome.runtime.getManifest().name
-        });
-      }
-    }
-  });
-  starters.push(() => storage({
-    'tmp_disable': 0
-  }).then(ps => {
-    if (ps['tmp_disable']) {
-      // verify timer is installed
-      chrome.alarms.get('tmp.disable', a => {
-        if (a) {
+      void actionDiagnostics.run({source: 'settings'}, async diagnostic => {
+        await diagnostic.stage({phase: 'settings'});
+        if (ps['tmp_disable'].newValue !== 0) {
+          chrome.alarms.create('tmp.disable', {
+            when: Date.now() + ps['tmp_disable'].newValue * 60 * 60 * 1000
+            // when: Date.now() + 120 * 1000
+          });
           exit();
         }
         else {
-          console.info('tmp timer is not present. Re-enabling the numbered module');
-          chrome.storage.local.set({
-            'tmp_disable': 0
+          chrome.alarms.clear('tmp.disable');
+          chrome.action.setIcon({
+            path: {
+              '16': '/data/icons/16.png',
+              '32': '/data/icons/32.png'
+            }
+          });
+          chrome.action.setTitle({
+            title: chrome.runtime.getManifest().name
           });
         }
-      });
+      }).catch(error => log('temporary-disable settings update failed', error));
     }
+  });
+  starters.push(() => actionDiagnostics.run({
+    command: 'worker-startup',
+    source: 'automatic-startup'
+  }, async diagnostic => {
+    await diagnostic.stage({phase: 'settings'});
+    return storage({'tmp_disable': 0}).then(ps => {
+      if (ps['tmp_disable']) {
+        // verify timer is installed
+        chrome.alarms.get('tmp.disable', a => {
+          if (a) {
+            exit();
+          }
+          else {
+            console.info('tmp timer is not present. Re-enabling the numbered module');
+            chrome.storage.local.set({'tmp_disable': 0});
+          }
+        });
+      }
+    });
   }));
 
   chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === 'tmp.disable') {
-      chrome.storage.local.set({
-        'tmp_disable': 0
-      });
+      void actionDiagnostics.run({source: 'automatic-alarm'}, async diagnostic => {
+        await diagnostic.stage({phase: 'settings'});
+        return chrome.storage.local.set({'tmp_disable': 0});
+      }).catch(error => log('temporary-disable alarm failed', error));
     }
   });
 }

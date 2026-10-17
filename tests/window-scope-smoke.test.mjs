@@ -74,8 +74,9 @@ test('window scope smoke exercises normal, background, minimized, incognito, and
 
 test('window scope retries its extension driver across the incognito reload boundary', async () => {
   let attempts = 0;
+  const closed = [];
   const page = {
-    close: async () => {},
+    close: async () => closed.push('new'),
     evaluate: async () => true,
     goto: async () => {},
     isClosed: () => false
@@ -90,13 +91,17 @@ test('window scope retries its extension driver across the incognito reload boun
         return page;
       }
     },
-    driver: {isClosed: () => true},
+    driver: {close: async () => closed.push('stale'), isClosed: () => false},
     extensionId: 'abcdefghijklmnopabcdefghijklmnop'
   };
+  const extensionsPage = {close: async () => closed.push('extensions')};
 
-  assert.equal(await windowSmoke.reopenExtensionDriver(isolated), page);
+  assert.equal(await windowSmoke.reopenExtensionDriver(isolated, extensionsPage), page);
   assert.equal(attempts, 2);
   assert.equal(isolated.driver, page);
+  // A fresh page replaces the old driver, and chrome://extensions stays open
+  // until it exists so the reload cannot close Chrome's last tab.
+  assert.deepEqual(closed, ['stale', 'extensions']);
 });
 
 test('window scope requires the exact outer fail-closed response for non-normal windows', async () => {

@@ -1,10 +1,15 @@
 import {match, query as queryTabs} from '../../worker/core/utils.mjs';
 import {releaseAvailability, releaseCommands} from '../../worker/core/command-scope.mjs';
 import {boundedRuntimeMessage, withDeadline} from '../common/runtime-call.mjs';
+import {createDiagnosticClient, responseCounts} from '../common/diagnostic-client.mjs';
 import {
+  FAILURE_CAUSES,
   failureCauseFrom,
   failureCausePolicy,
-  matchesFailureCausePolicy
+  matchesFailureCausePolicy,
+  matchesProtectionRulePolicy,
+  protectionRuleFrom,
+  protectionRulePolicy
 } from '../../worker/core/failure-causes.mjs';
 import {
   announcementKey,
@@ -39,6 +44,7 @@ let lastTrigger;
 let activeDiagnostic;
 let diagnosticExportText = '';
 let diagnosticRequestSequence = 0;
+let activeCommandTrace;
 const progressCommands = new Set([
   'discard-tab', 'discard-tree', 'discard-tabs', 'discard-window',
   'discard-other-windows', 'discard-lefts', 'discard-rights',
@@ -61,6 +67,21 @@ const diagnosticsCopy = document.getElementById('activity-diagnostics-copy');
 const diagnosticsDownload = document.getElementById('activity-diagnostics-download');
 const diagnosticsClear = document.getElementById('activity-diagnostics-clear');
 const diagnosticsFeedback = document.getElementById('activity-diagnostics-feedback');
+const diagnosticClient = createDiagnosticClient({
+  authorization: () => ({
+    tabId: Number.isInteger(tab?.id) ? tab.id : undefined,
+    windowId: Number.isInteger(tab?.windowId) ? tab.windowId : undefined
+  }),
+  runtime: chrome.runtime
+});
+const popupOpenTrace = diagnosticClient.start({action: 'OPEN_POPUP'});
+let popupOpenStarted = false;
+let popupOpenSettled = false;
+const settlePopupOpen = failed => {
+  if (!popupOpenStarted || popupOpenSettled) return;
+  popupOpenSettled = true;
+  failed ? popupOpenTrace.failed() : popupOpenTrace.succeeded();
+};
 const getMessage = (key, substitutions) => chrome.i18n.getMessage(key, substitutions);
 const busyState = snapshot => snapshot && ['running', 'cancelling'].includes(snapshot.state);
 const retryableState = snapshot => snapshot &&
@@ -100,7 +121,11 @@ const diagnosticKinds = Object.freeze({
   TAB_SUSPENSION_UNKNOWN: ['failed', 'verification', 'SUSPENSION_UNKNOWN'],
   TAB_UNSUPPORTED: ['failed', 'eligibility', 'UNSUPPORTED_PAGE']
 });
-const genericDiagnosticCodes = new Set(['POPUP_COMMAND_FAILED', 'TAB_FAILED']);
+const genericDiagnosticCodes = new Set([
+  'POPUP_COMMAND_FAILED',
+  'TAB_FAILED',
+  'TAB_UNSUPPORTED'
+]);
 const safeIncidentId = value => typeof value === 'string' &&
   /^ATD-[A-Z0-9]+(?:-[A-Z0-9]+){1,4}$/.test(value) && value.length <= 80 ? value : '';
 const safeCount = value => Number.isInteger(value) && value > 0 && value <= 1_000_000 ? value : 0;
@@ -129,7 +154,24 @@ const normalizeDiagnosticGroup = value => {
       reasonCode = value.reasonCode;
     }
     else {
-      [stage, reasonCode] = failureCausePolicy(failureCauseFrom(value));
+      [stage, reasonCode] = failureCausePolicy(failureCauseFrom(
+        value,
+        code === 'TAB_UNSUPPORTED' ?
+          FAILURE_CAUSES.UNSUPPORTED_PAGE : FAILURE_CAUSES.OPERATION_FAILED
+      ));
+    }
+  }
+  else if (code === 'TAB_PROTECTED') {
+    const hasProjectedPolicy = Object.hasOwn(value, 'stage') || Object.hasOwn(value, 'reasonCode');
+    if (hasProjectedPolicy) {
+      if (!matchesProtectionRulePolicy(value.stage, value.reasonCode)) {
+        return undefined;
+      }
+      stage = value.stage;
+      reasonCode = value.reasonCode;
+    }
+    else {
+      [stage, reasonCode] = protectionRulePolicy(protectionRuleFrom(value));
     }
   }
   else if ((value.stage && value.stage !== stage) ||
@@ -466,6 +508,42 @@ const showLocalizedError = response => {
 };
 
 const runtimeMessage = (request, options) => boundedRuntimeMessage(chrome.runtime, request, options);
+const openOptionsPage = () => withDeadline(() => new Promise((resolve, reject) => {
+  let settled = false;
+  const finish = error => {
+    if (settled) return;
+    settled = true;
+    error ? reject(error) : resolve(true);
+  };
+  try {
+    const operation = chrome.runtime.openOptionsPage((compatibilityError) => {
+      const error = chrome.runtime.lastError || compatibilityError;
+      finish(error ? Error(error.message || String(error)) : null);
+    });
+    operation?.then?.(() => finish(null), error => finish(error));
+  }
+  catch (error) {
+    finish(error);
+  }
+}), {
+  timeoutMessage: 'Opening Options timed out',
+  timeoutMs: 15_000
+});
+const settleTraceFromValue = (trace, value, details = {}) => {
+  const counts = responseCounts(value);
+  const state = value?.state || value?.status;
+  const payload = {...details, ...(counts ? {counts} : {})};
+  if (value === false) trace.skipped(payload);
+  else if (value?.ok === false || state === 'failed') trace.failed(payload);
+  else if (state === 'partial') trace.partial(payload);
+  else if (state === 'cancelled') trace.cancelled(payload);
+  else if (state === 'interrupted') trace.failed(payload);
+  else if (state === 'running' || state === 'cancelling') trace.progress(payload);
+  else if (state === 'complete' || state === 'completed' || state === 'succeeded') {
+    trace.completed(payload);
+  }
+  else trace.succeeded(payload);
+};
 
 const updateTab = (id, properties) => new Promise((resolve, reject) => {
   let settled = false;
@@ -513,6 +591,7 @@ const updateTab = (id, properties) => new Promise((resolve, reject) => {
 });
 
 const failClosedInitialization = error => {
+  settlePopupOpen(true);
   console.error('popup initialization failed', error);
   tab = undefined;
   lastCommand = undefined;
@@ -530,6 +609,9 @@ const failClosedInitialization = error => {
 // works on all highlighted tabs in the current window
 const allowed = document.getElementById('allowed');
 allowed.addEventListener('change', async () => {
+  const trace = diagnosticClient.start({action: 'TOGGLE_AUTODISCARD'});
+  trace.click();
+  trace.request();
   try {
     const tabs = await queryTabs({
       currentWindow: true,
@@ -540,12 +622,18 @@ allowed.addEventListener('change', async () => {
         autoDiscardable: allowed.checked === false
       });
     }
-    chrome.runtime.sendMessage({
+    const response = await runtimeMessage({
+      correlation: trace.correlation,
       method: 'run-check-on-action',
-      ids: tabs.map(t => t.id)
+      ids: tabs.map(t => t.id),
+      tabId: tab?.id,
+      windowId: tab?.windowId
     });
+    if (response?.ok !== true) throw Error('automatic recheck request failed');
+    trace.succeeded({counts: {attempted: tabs.length}});
   }
   catch (error) {
+    trace.failed();
     failClosedInitialization(error);
   }
 });
@@ -592,6 +680,11 @@ const init = async () => {
     throw Error('No valid active tab is available');
   }
   tab = activeTabs[0];
+  if (!popupOpenStarted) {
+    popupOpenStarted = true;
+    popupOpenTrace.click();
+    popupOpenTrace.request();
+  }
 
   try {
     const {protocol = '', hostname} = new URL(tab.url);
@@ -659,15 +752,33 @@ const init = async () => {
     const incident = await requestDiagnostic();
     renderPersistedDiagnostic(incident);
   }
+  settlePopupOpen(false);
 };
 init().catch(failClosedInitialization);
 
-const executeCommand = (request, trigger, {preserveTrigger = false} = {}) => {
+const executeCommand = (request, trigger, {
+  attempt: suppliedAttempt,
+  preserveTrigger = false,
+  trace: suppliedTrace
+} = {}) => {
   const cmd = request?.cmd;
-  if (!cmd || pendingCommand || busyState(activeSnapshot)) {
+  if (!cmd) {
+    return false;
+  }
+  const attempt = Number.isSafeInteger(suppliedAttempt) && suppliedAttempt >= 0 ?
+    suppliedAttempt : preserveTrigger ? (lastCommand?.attempt || 0) + 1 : 0;
+  const trace = suppliedTrace || (cmd === 'open-options' ?
+    diagnosticClient.start({action: 'OPEN_OPTIONS', attempt}) :
+    diagnosticClient.start({command: cmd, attempt}));
+  if (!preserveTrigger) {
+    trace.click();
+  }
+  if (pendingCommand || busyState(activeSnapshot)) {
+    trace.denied({attempt});
     return false;
   }
   lastCommand = {
+    attempt,
     checked: request.checked === true,
     cmd,
     shiftKey: request.shiftKey === true
@@ -681,19 +792,31 @@ const executeCommand = (request, trigger, {preserveTrigger = false} = {}) => {
   activityRetry.setAttribute('aria-disabled', 'true');
 
   if (cmd === 'open-options') {
-    chrome.runtime.openOptionsPage();
-    window.close();
+    trace.request({attempt});
+    void openOptionsPage().then(() => {
+      trace.succeeded({attempt});
+      window.close();
+    }, () => {
+      trace.failed({attempt});
+      showLocalizedError({code: 'POPUP_COMMAND_FAILED'});
+    });
   }
   else if (cmd.startsWith('move-') || cmd === 'close') {
     activity.hidden = true;
-    chrome.runtime.sendMessage({
+    trace.request({attempt});
+    void runtimeMessage({
+      correlation: trace.correlation,
       method: cmd,
-      cmd
-    }, response => {
-      if (!response?.ok) {
+      cmd,
+      tabId: tab?.id,
+      windowId: tab?.windowId
+    }, {timeoutMs: 15_000}).then(response => {
+      if (response?.ok !== true) {
+        trace.failed({attempt});
         showLocalizedError(response);
       }
       else {
+        settleTraceFromValue(trace, response.value, {attempt});
         init();
       }
     });
@@ -715,7 +838,10 @@ const executeCommand = (request, trigger, {preserveTrigger = false} = {}) => {
     else {
       activity.hidden = true;
     }
-    chrome.runtime.sendMessage({
+    trace.request({attempt});
+    activeCommandTrace = {command: cmd, correlation: trace.correlation, jobId: 'pending'};
+    void runtimeMessage({
+      correlation: trace.correlation,
       method: 'popup',
       cmd,
       tabId: tab?.id,
@@ -726,15 +852,21 @@ const executeCommand = (request, trigger, {preserveTrigger = false} = {}) => {
       incognito: tab?.incognito === true || chrome.extension?.inIncognitoContext === true,
       shiftKey: request.shiftKey === true,
       checked: request.checked === true
-    }, response => {
-      const error = chrome.runtime.lastError;
-      if (error || response?.ok === false) {
+    }, {timeoutMs: 60_000}).then(response => {
+      if (response?.ok !== true) {
+        trace.failed({attempt, counts: responseCounts(response)});
         showLocalizedError({code: response?.code || 'POPUP_COMMAND_FAILED'});
       }
       else if (progressCommands.has(cmd)) {
+        if (typeof response.value?.jobId === 'string' && response.value.jobId !== 'pending' &&
+            activeCommandTrace?.command === cmd && activeCommandTrace.jobId === 'pending') {
+          activeCommandTrace.jobId = response.value.jobId;
+        }
+        settleTraceFromValue(trace, response.value, {attempt});
         renderSnapshot(response.value);
       }
       else {
+        settleTraceFromValue(trace, response.value, {attempt});
         init();
       }
     });
@@ -755,21 +887,34 @@ document.addEventListener('click', e => {
 });
 
 activityCancel.addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'CANCEL_COMMAND'});
+  trace.click();
   if (!activeSnapshot?.jobId || activeSnapshot.jobId === 'pending' ||
       !['running', 'cancelling'].includes(activeSnapshot.state)) {
+    trace.denied();
     return;
   }
   activityCancel.disabled = true;
   activityCancel.setAttribute('aria-disabled', 'true');
   focusControl(activityStatus);
+  trace.request();
   const response = await runtimeMessage({
+    correlation: trace.correlation,
     jobId: activeSnapshot.jobId,
-    method: 'popup-progress-cancel'
+    method: 'popup-progress-cancel',
+    tabId: tab?.id,
+    windowId: tab?.windowId
   }, {timeoutMs: 15_000});
-  if (response?.ok === true && response.value?.snapshot) {
+  if (response?.ok === true && response.value?.accepted === true && response.value?.snapshot) {
+    trace.succeeded({counts: responseCounts(response.value.snapshot)});
     renderSnapshot(response.value.snapshot);
   }
-  else if (response?.ok === false) {
+  else if (response?.ok === true && response.value?.accepted === false) {
+    trace.denied({counts: responseCounts(response.value?.snapshot)});
+    if (response.value?.snapshot) renderSnapshot(response.value.snapshot);
+  }
+  else {
+    trace.failed();
     showLocalizedError(response);
   }
 });
@@ -778,7 +923,17 @@ activityRetry.addEventListener('click', () => {
   if (!lastCommand || activityRetry.disabled === true) {
     return;
   }
-  executeCommand(lastCommand, lastTrigger, {preserveTrigger: true});
+  const attempt = (lastCommand.attempt || 0) + 1;
+  const trace = lastCommand.cmd === 'open-options' ?
+    diagnosticClient.start({action: 'OPEN_OPTIONS', attempt}) :
+    diagnosticClient.start({command: lastCommand.cmd, attempt});
+  trace.click();
+  trace.retry({attempt});
+  executeCommand(lastCommand, lastTrigger, {
+    attempt,
+    preserveTrigger: true,
+    trace
+  });
 });
 
 const setDiagnosticControlsDisabled = disabled => {
@@ -797,7 +952,7 @@ const diagnosticExport = async () => {
     incidentId,
     method: 'diagnostics-export'
   }));
-  if (response?.ok === false) {
+  if (response?.ok !== true) {
     throw Error('sanitized diagnostic export failed');
   }
   const exported = responseValue(response);
@@ -854,9 +1009,12 @@ const downloadText = text => {
 };
 
 diagnosticsToggle.addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'SHOW_DIAGNOSTICS'});
+  trace.click();
   const opening = diagnosticsToggle.getAttribute('aria-expanded') !== 'true';
   if (!opening) {
     collapseDiagnostics();
+    trace.succeeded();
     return;
   }
   diagnosticsPanel.hidden = false;
@@ -866,26 +1024,37 @@ diagnosticsToggle.addEventListener('click', async () => {
   if (!diagnosticExportText) {
     setDiagnosticControlsDisabled(true);
     try {
+      trace.request();
       await diagnosticExport();
+      trace.succeeded();
     }
     catch (error) {
+      trace.failed();
       diagnosticsLog.textContent = getMessage('popup_diagnostics_unavailable');
     }
     finally {
       setDiagnosticControlsDisabled(false);
     }
   }
+  else {
+    trace.succeeded();
+  }
 });
 
 diagnosticsCopy.addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'COPY_DIAGNOSTICS'});
+  trace.click();
+  trace.request();
   setDiagnosticControlsDisabled(true);
   diagnosticsFeedback.textContent = '';
   try {
     const text = diagnosticExportText || await diagnosticExport();
     await copyText(text);
+    trace.succeeded();
     diagnosticsFeedback.textContent = getMessage('popup_diagnostics_copied');
   }
   catch (error) {
+    trace.failed();
     diagnosticsFeedback.textContent = getMessage('popup_diagnostics_copy_failed');
   }
   finally {
@@ -894,14 +1063,19 @@ diagnosticsCopy.addEventListener('click', async () => {
 });
 
 diagnosticsDownload.addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'DOWNLOAD_LATEST'});
+  trace.click();
+  trace.request();
   setDiagnosticControlsDisabled(true);
   diagnosticsFeedback.textContent = '';
   try {
     const text = diagnosticExportText || await diagnosticExport();
     downloadText(text);
+    trace.succeeded();
     diagnosticsFeedback.textContent = getMessage('popup_diagnostics_downloaded');
   }
   catch (error) {
+    trace.failed();
     diagnosticsFeedback.textContent = getMessage('popup_diagnostics_download_failed');
   }
   finally {
@@ -910,14 +1084,19 @@ diagnosticsDownload.addEventListener('click', async () => {
 });
 
 diagnosticsClear.addEventListener('click', async () => {
+  const trace = diagnosticClient.start({action: 'CLEAR_DIAGNOSTICS'});
+  trace.click();
+  trace.request();
   setDiagnosticControlsDisabled(true);
   diagnosticsFeedback.textContent = '';
   const response = await runtimeMessage(withDiagnosticContext({method: 'diagnostics-clear'}));
-  if (response?.ok === false || response === undefined) {
+  if (response?.ok !== true || response.value?.cleared !== true) {
+    trace.failed();
     diagnosticsFeedback.textContent = getMessage('popup_diagnostics_clear_failed');
     setDiagnosticControlsDisabled(false);
     return;
   }
+  trace.succeeded();
   activityAnnouncement.textContent = getMessage('popup_diagnostics_cleared');
   diagnosticRequestSequence += 1;
   resetDiagnostics({moveFocus: true});
@@ -925,12 +1104,54 @@ diagnosticsClear.addEventListener('click', async () => {
 
 chrome.runtime.onMessage.addListener(request => {
   if (request?.method === 'popup-progress-update') {
+    const snapshot = request.snapshot;
+    const sameWindow = !Number.isInteger(snapshot?.windowId) ||
+      !Number.isInteger(tab?.windowId) || snapshot.windowId === tab.windowId;
+    const candidateJobId = typeof snapshot?.jobId === 'string' && snapshot.jobId !== 'pending' ?
+      snapshot.jobId : '';
+    if (sameWindow && candidateJobId && activeCommandTrace?.command === snapshot?.command &&
+        activeCommandTrace.jobId === 'pending') {
+      activeCommandTrace.jobId = candidateJobId;
+    }
+    const sameTrace = sameWindow && candidateJobId &&
+      activeCommandTrace?.command === snapshot?.command &&
+      activeCommandTrace.jobId === candidateJobId;
+    const outcome = ['cancelled', 'complete', 'failed', 'interrupted', 'partial'].includes(snapshot?.state) ?
+      (snapshot.state === 'complete' ? 'COMPLETED' :
+        snapshot.state === 'partial' ? 'PARTIAL' :
+          snapshot.state === 'cancelled' ? 'CANCELLED' :
+            snapshot.state === 'interrupted' ? 'INTERRUPTED' : 'FAILED') : 'PROGRESS';
+    if (sameTrace) {
+      void diagnosticClient.emit({
+        code: outcome === 'FAILED' ? 'REQUEST_FAILED' : 'REQUEST_SUCCEEDED',
+        command: activeCommandTrace.command,
+        counts: responseCounts(snapshot),
+        outcome,
+        phase: 'RESPONSE',
+        type: 'RESPONSE'
+      }, {correlation: activeCommandTrace.correlation});
+    }
     renderSnapshot(request.snapshot);
   }
 });
 
 document.getElementById('tmp_disable').addEventListener('change', e => {
-  chrome.storage.local.set({
-    'tmp_disable': Number(e.target.value)
-  });
+  const trace = diagnosticClient.start({action: 'TOGGLE_TEMP_DISABLE'});
+  trace.click();
+  trace.request();
+  let settled = false;
+  const finish = failed => {
+    if (settled) return;
+    settled = true;
+    failed ? trace.failed() : trace.succeeded();
+  };
+  try {
+    const operation = chrome.storage.local.set({
+      'tmp_disable': Number(e.target.value)
+    }, compatibilityError => finish(Boolean(chrome.runtime.lastError || compatibilityError)));
+    operation?.then?.(() => finish(false), () => finish(true));
+  }
+  catch (error) {
+    finish(true);
+  }
 });

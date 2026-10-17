@@ -9,8 +9,11 @@ import {
 
 const area = state => ({
   get(query, callback) {
-    callback(query === null ? {...state} : Object.fromEntries(Object.entries(query)
-      .map(([key, fallback]) => [key, Object.hasOwn(state, key) ? state[key] : fallback])));
+    const keys = typeof query === 'string' ? [query] : query;
+    callback(keys === null ? {...state} : Array.isArray(keys) ?
+      Object.fromEntries(keys.filter(key => Object.hasOwn(state, key)).map(key => [key, state[key]])) :
+      Object.fromEntries(Object.entries(keys).filter(([, fallback]) => fallback !== undefined)
+        .map(([key, fallback]) => [key, Object.hasOwn(state, key) ? state[key] : fallback])));
   },
   remove(keys, callback) {
     for (const key of Array.isArray(keys) ? keys : [keys]) {

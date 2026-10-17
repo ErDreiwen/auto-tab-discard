@@ -76,7 +76,7 @@ const createHelperMetadataStore = ({
       return undefined;
     }
     const key = keyFor(id);
-    const values = await callArea(area(), 'get', {[key]: undefined});
+    const values = await callArea(area(), 'get', [key]);
     // Delete before using the value so page errors, reloads, and duplicate
     // helper pages cannot retain or replay private source-tab metadata.
     await callArea(area(), 'remove', key);

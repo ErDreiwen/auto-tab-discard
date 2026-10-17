@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {FAILURE_CAUSES} from '../v3/worker/core/failure-causes.mjs';
+import {
+  metadataPhysicalPoolSnapshot,
+  runBoundedScan
+} from '../v3/worker/core/metadata-scan.mjs';
 
 const event = () => ({
   addListener() {},
@@ -234,6 +239,9 @@ test('targeted checks retain every restricted and excluded target with a precise
     assert.deepEqual(outcomes.map(entry => entry.tab.id).toSorted((a, b) => a - b),
       tabs.map(tab => tab.id).toSorted((a, b) => a - b));
     assert.equal(outcomes.every(entry => entry.reason || result.succeeded.includes(entry)), true);
+    assert.equal(result.unsupported.every(entry =>
+      Object.values(FAILURE_CAUSES).includes(entry.failureCause)), true,
+    'every unsupported classification must carry one fixed allowlisted cause');
     assert.deepEqual(browser.state.queryCalls[0], {}, 'explicit scope must not use the renderer URL mask');
     return result;
   };
@@ -247,11 +255,13 @@ test('targeted checks retain every restricted and excluded target with a precise
   assert.deepEqual(restricted.unsupported.map(entry => entry.tab.id), [3]);
   assert.match(restricted.protected[0].reason, /renderer/i);
   assert.match(restricted.unsupported[0].reason, /unsupported tab scheme/i);
+  assert.equal(restricted.unsupported[0].failureCause, FAILURE_CAUSES.UNSUPPORTED_SCHEME);
 
   const missing = await run([target(4)], {}, state => {
     state.tabs = [];
   });
   assert.match(missing.unsupported[0].reason, /no longer available/i);
+  assert.equal(missing.unsupported[0].failureCause, FAILURE_CAUSES.TARGET_UNAVAILABLE);
 
   const early = await run([
     target(10, {active: true}),
@@ -462,25 +472,86 @@ test('targeted renderer decisions expose metadata, policy, age, and limit reason
     /not automatically discardable/i);
   assert.match((await runOne(target(36), {period: 60}, meta({time: Date.now()}))).reason,
     /younger|age/i);
-  assert.match((await runOne(target(37), {}, meta(), state => {
+  const collectionRejected = await runOne(target(37), {}, meta(), state => {
     state.metadataFailures.add(37);
-  })).reason, /metadata scan failed/i);
-  assert.match((await runOne(target(38), {}, null)).reason,
+  });
+  assert.match(collectionRejected.reason, /metadata scan failed/i);
+  assert.equal(collectionRejected.failureCause, FAILURE_CAUSES.METADATA_SCAN_FAILED);
+  const incompleteCollection = await runOne(target(38), {}, null);
+  assert.match(incompleteCollection.reason,
     /metadata scan failed: top-frame metadata result was incomplete/i);
+  assert.equal(incompleteCollection.failureCause, FAILURE_CAUSES.METADATA_SCAN_FAILED);
   assert.match((await runOne(target(39), {'max.single.discard': 0}, meta())).reason,
     /discard limit/i);
+
+  const unloaded = await runOne(target(41, {status: 'unloaded'}), {}, meta());
+  assert.match(unloaded.reason, /metadata is unavailable.*unloaded/i);
+  assert.equal(unloaded.failureCause, FAILURE_CAUSES.METADATA_UNAVAILABLE);
+
+  const hostileMetadata = meta();
+  Object.defineProperty(hostileMetadata, 'audible', {
+    enumerable: true,
+    get() { throw Error('SECRET metadata evaluation URL https://private.example/'); }
+  });
+  const evaluationFailed = await runOne(target(42), {}, hostileMetadata);
+  assert.match(evaluationFailed.reason, /metadata could not be evaluated/i);
+  assert.equal(evaluationFailed.failureCause, FAILURE_CAUSES.METADATA_EVALUATION_FAILED);
 
   const nativeSetTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (callback, delay, ...args) =>
     nativeSetTimeout(callback, Math.min(Number(delay) || 0, 2), ...args);
   try {
-    assert.match((await runOne(target(40), {}, meta(), state => {
+    const timedOut = await runOne(target(40), {}, meta(), state => {
       state.metadataHangs.add(40);
-    })).reason, /metadata scan deadline/i);
+    });
+    assert.match(timedOut.reason, /metadata scan deadline/i);
+    assert.equal(timedOut.failureCause, FAILURE_CAUSES.METADATA_SCAN_TIMEOUT);
   }
   finally {
     globalThis.setTimeout = nativeSetTimeout;
   }
+});
+
+test('targeted metadata saturation is distinct from a scan deadline', async t => {
+  const browser = createBrowser();
+  globalThis.chrome = browser.chrome;
+  t.after(() => delete globalThis.chrome);
+  const {number} = await import(
+    `../v3/worker/modes/number.mjs?targeted-capacity=${Date.now()}`
+  );
+  const baseline = metadataPhysicalPoolSnapshot();
+  assert.equal(baseline.queued, 0);
+  let release;
+  const gate = new Promise(resolve => release = resolve);
+  const worker = () => gate;
+  const available = baseline.limit - baseline.active;
+  assert.ok(available > 0);
+
+  const first = await runBoundedScan(
+    Array.from({length: available}, (_, index) => index + 1),
+    worker,
+    {timeout: 2}
+  );
+  assert.equal(first.started, available);
+  const queued = runBoundedScan([5, 6, 7, 8], worker, {timeout: 250});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(metadataPhysicalPoolSnapshot().queued, baseline.maxQueued);
+
+  const tab = target(43);
+  browser.state.tabs = [tab];
+  let result;
+  try {
+    result = await number.check([tab], safeOptions, 'test/metadata-capacity');
+  }
+  finally {
+    release();
+    await queued;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(result.unsupported.length, 1);
+  assert.match(result.unsupported[0].reason, /scan capacity/i);
+  assert.equal(result.unsupported[0].failureCause, FAILURE_CAUSES.METADATA_SCAN_CAPACITY);
+  assert.equal(metadataPhysicalPoolSnapshot().active, baseline.active);
 });
 
 test('automatic scans retain their renderer URL optimization', async t => {

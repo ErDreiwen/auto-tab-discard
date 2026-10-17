@@ -490,8 +490,8 @@ GitHub: [#50](https://github.com/ErDreiwen/auto-tab-discard/issues/50) · Checkl
 - [x] Exclude transient/internal keys from exports.
 - [x] Provide a sanitized support bundle separate from raw reports.
 - [x] Add secret-canary tests for every shareable artifact.
-- [x] Persist only fixed command, stage, reason, count, duration, and browser-family fields in a bounded journal.
-- [x] Offer the same sanitized Minecraft-style `latest.log` from popup and Options without automatic upload.
+- [x] Persist only allowlisted action, command, stage, outcome, count, session-offset, duration, correlation, and browser-family fields in a bounded journal.
+- [x] Offer a compact popup `latest.log` plus complete bounded Options session-history export without automatic upload.
 - [x] Keep private incidents memory-only and bound storage failures so diagnostics can never block commands.
 
 ### P23 — Validate and atomically import settings

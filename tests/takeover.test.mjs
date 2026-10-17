@@ -611,6 +611,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
 
     let settled = false;
     const command = runScopedCommand({
+      wakeExternalDiscards: true,
       command: 'discard-tabs',
       selected: {id: 99, index: 0},
       shiftKey: false,
@@ -1397,6 +1398,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     let committedTakeoverInput;
     nativeImmediate = true;
     const committedGroupResult = await runDirectDiscardCommand({
+      wakeExternalDiscards: true,
       activate: tab => new Promise(resolve => chrome.tabs.update(tab.id, {active: true}, resolve)),
       allTabs: initialGroupTabs,
       command: 'discard-tree',
@@ -1488,6 +1490,7 @@ test('keeps genuine takeovers explicit, bounded, and free of reload feedback loo
     const groupCallStart = calls.length;
     nativeImmediate = true;
     const normalGroup = runDirectDiscardCommand({
+      wakeExternalDiscards: true,
       activate: async () => assert.fail('an all-discarded group does not need a keeper'),
       allTabs: groupTabs,
       command: 'discard-tree',

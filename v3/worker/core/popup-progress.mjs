@@ -1,7 +1,10 @@
 import {
   FAILURE_CAUSES,
   failureCauseFrom,
-  normalizeFailureCause
+  normalizeFailureCause,
+  PROTECTION_RULES,
+  protectionRuleFor,
+  safeProtectionRule
 } from './failure-causes.mjs';
 
 const STORAGE_KEY = '__popupCommandActivity';
@@ -39,10 +42,21 @@ const POPUP_CODES = Object.freeze({
 const terminalStates = new Set(['cancelled', 'complete', 'failed', 'interrupted', 'partial']);
 const statusPriority = Object.freeze({skipped: 1, success: 2, failed: 3});
 
+const protectionRuleOf = value => {
+  const rule = value && typeof value === 'object' && Object.hasOwn(value, 'protectionRule') ?
+    safeProtectionRule(value.protectionRule) : undefined;
+  return rule || protectionRuleFor(value && typeof value === 'object' ? value.reason : undefined);
+};
+// For TAB_PROTECTED the cause argument is the protection rule.
 const settledOutcome = (code, status, id, failureCause) => ({
   code,
-  ...(code === POPUP_CODES.TAB_FAILED && {
-    failureCause: normalizeFailureCause(failureCause)
+  ...([POPUP_CODES.TAB_FAILED, POPUP_CODES.TAB_UNSUPPORTED].includes(code) && {
+    failureCause: code === POPUP_CODES.TAB_UNSUPPORTED ?
+      failureCauseFrom({failureCause}, FAILURE_CAUSES.UNSUPPORTED_PAGE) :
+      normalizeFailureCause(failureCause)
+  }),
+  ...(code === POPUP_CODES.TAB_PROTECTED && {
+    protectionRule: safeProtectionRule(failureCause) || PROTECTION_RULES.UNSPECIFIED
   }),
   status,
   tabId: id
@@ -142,7 +156,7 @@ const storageAdapter = area => ({
       return;
     }
     try {
-      area.get({[STORAGE_KEY]: undefined}, values => {
+      area.get([STORAGE_KEY], values => {
         void globalThis.chrome?.runtime?.lastError;
         resolve(values?.[STORAGE_KEY]);
       });
@@ -481,7 +495,9 @@ const createPopupProgressManager = ({
         for (const value of result?.[key] || []) {
           await settleAuthoritative(byId.get(canonicalId(value)) || value,
             key === 'protected' ? 'skipped' : 'failed',
-            key === 'protected' ? POPUP_CODES.TAB_PROTECTED : POPUP_CODES.TAB_UNSUPPORTED);
+            key === 'protected' ? POPUP_CODES.TAB_PROTECTED : POPUP_CODES.TAB_UNSUPPORTED,
+            key === 'unsupported' ?
+              failureCauseFrom(value, FAILURE_CAUSES.UNSUPPORTED_PAGE) : protectionRuleOf(value));
         }
       }
     };
@@ -521,7 +537,12 @@ const createPopupProgressManager = ({
         );
       }
       for (const value of result.unsupported || []) {
-        await settleAuthoritative(remember(value), 'failed', POPUP_CODES.TAB_UNSUPPORTED);
+        await settleAuthoritative(
+          remember(value),
+          'failed',
+          POPUP_CODES.TAB_UNSUPPORTED,
+          failureCauseFrom(value, FAILURE_CAUSES.UNSUPPORTED_PAGE)
+        );
       }
       for (const value of result.unknownSuspension || []) {
         await settleAuthoritative(
@@ -541,7 +562,8 @@ const createPopupProgressManager = ({
         ['missing', POPUP_CODES.TAB_MISSING]
       ]) {
         for (const value of result[key] || []) {
-          await settleAuthoritative(remember(value), 'skipped', code);
+          await settleAuthoritative(remember(value), 'skipped', code,
+            code === POPUP_CODES.TAB_PROTECTED ? protectionRuleOf(value) : undefined);
         }
       }
       // Ownership retries deliberately retain earlier Error objects for audit.

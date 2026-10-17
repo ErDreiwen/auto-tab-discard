@@ -468,7 +468,7 @@ test('Firefox minimum mode installs the exact XPI and proves Firefox 140 backgro
     /chrome\.permissions\.contains\(\{[\s\S]*permissions: \['webNavigation'\]/);
   assert.match(minimumVerifier, /value\.frameAccess\?\.granted === false/);
   assert.match(minimumVerifier,
-    /JSON\.stringify\(value\.frameAccess\?\.optional\) === '\["webNavigation"\]'/);
+    /JSON\.stringify\(value\.frameAccess\?\.optional\) === '\["management","webNavigation"\]'/);
   assert.match(minimumVerifier,
     /value\.frameAccess\?\.required\?\.includes\('webNavigation'\) === false/);
   assert.match(minimumVerifier,
